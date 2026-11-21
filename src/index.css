@@ -1,0 +1,109 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+  }
+
+  body {
+    background-color: #faf8f5;
+    color: #0f172a;
+    font-family: 'Be Vietnam Pro', 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  /* Custom slim scrollbar — light surface (#FAF8F5) default */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: rgba(148, 163, 184, 0.42);
+    border-radius: 9999px;
+    border: 1px solid transparent;
+    background-clip: content-box;
+    transition: background-color 150ms ease;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(100, 116, 139, 0.65);
+  }
+}
+
+@layer utilities {
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+}
+
+/* Custom slim scrollbar — dark surface (#1E2430 / stage & dark reader) */
+.scrollbar-dark,
+[class*='#1E2430'],
+[class*='#1E2430'] *,
+[class*='#181D27'],
+[class*='#273041'],
+[class*='#1B2230'] {
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+
+.scrollbar-dark::-webkit-scrollbar-thumb,
+[class*='#1E2430']::-webkit-scrollbar-thumb,
+[class*='#1E2430'] *::-webkit-scrollbar-thumb,
+[class*='#181D27']::-webkit-scrollbar-thumb,
+[class*='#273041']::-webkit-scrollbar-thumb,
+[class*='#1B2230']::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+.scrollbar-dark::-webkit-scrollbar-thumb:hover,
+[class*='#1E2430']::-webkit-scrollbar-thumb:hover,
+[class*='#1E2430'] *::-webkit-scrollbar-thumb:hover,
+[class*='#181D27']::-webkit-scrollbar-thumb:hover,
+[class*='#273041']::-webkit-scrollbar-thumb:hover,
+[class*='#1B2230']::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.36);
+}
+
+/* Keep warm light scrollbar inside light Smart Reader surfaces nested in dark panels */
+.scrollbar-light,
+[class*='#F7EFE5'],
+[class*='#F7EFE5'] * {
+  scrollbar-color: rgba(120, 106, 92, 0.35) transparent;
+}
+
+.scrollbar-light::-webkit-scrollbar-thumb,
+[class*='#F7EFE5']::-webkit-scrollbar-thumb,
+[class*='#F7EFE5'] *::-webkit-scrollbar-thumb {
+  background-color: rgba(120, 106, 92, 0.35);
+}
+
+.scrollbar-light::-webkit-scrollbar-thumb:hover,
+[class*='#F7EFE5']::-webkit-scrollbar-thumb:hover,
+[class*='#F7EFE5'] *::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(120, 106, 92, 0.55);
+}

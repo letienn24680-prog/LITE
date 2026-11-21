@@ -1,0 +1,22 @@
+name = "lite-r2-api"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "lite-user-files"
+
+[vars]
+# Comma-separated allowed CORS origins (e.g. "https://your-app.pages.dev,http://localhost:5173") or "*"
+ALLOWED_ORIGIN = "*"
+# Supabase project URL (e.g. "https://your-project-ref.supabase.co")
+SUPABASE_URL = ""
+# Cloudflare Account ID (32-character hex string in Cloudflare Dashboard -> R2)
+R2_ACCOUNT_ID = ""
+# Cloudflare R2 bucket name used for S3 AWS Signature V4 presigned URLs
+R2_BUCKET_NAME = "lite-user-files"
+
+# Required Secrets (configure via `npx wrangler secret put <SECRET_NAME>`):
+# - SUPABASE_ANON_KEY       : Supabase project anon/public key
+# - R2_ACCESS_KEY_ID        : Cloudflare R2 S3 API Access Key ID
+# - R2_SECRET_ACCESS_KEY    : Cloudflare R2 S3 API Secret Access Key
