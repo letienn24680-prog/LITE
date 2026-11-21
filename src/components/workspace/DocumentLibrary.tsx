@@ -1,9 +1,10 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, DragEvent, KeyboardEvent } from 'react';
 import {
   AlertCircle,
   ArrowUpRight,
   BookOpen,
+  Check,
   CheckCircle2,
   Cloud,
   FileSearch,
@@ -16,6 +17,7 @@ import {
   Search,
   Share2,
   Star,
+  Trash2,
   Upload,
   X,
 } from 'lucide-react';
@@ -41,6 +43,8 @@ export interface DocumentLibraryProps {
   onToggleFavorite: (docId: string) => void;
   onUploadFiles: (files: FileList | File[]) => void;
   onDismissNotice?: () => void;
+  onDeleteDocuments?: (docs: DocumentItem[]) => Promise<void> | void;
+  isDeleting?: boolean;
 }
 
 interface FilterOption {
@@ -143,10 +147,33 @@ export function DocumentLibrary({
   onToggleFavorite,
   onUploadFiles,
   onDismissNotice,
+  onDeleteDocuments,
+  isDeleting = false,
 }: DocumentLibraryProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
   const [isDragging, setIsDragging] = useState(false);
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedDeleteIds, setSelectedDeleteIds] = useState<string[]>([]);
+  const [confirmDeleteDocs, setConfirmDeleteDocs] = useState<DocumentItem[]>([]);
+
+  useEffect(() => {
+    if (documents.length === 0 && isSelectionMode) {
+      setIsSelectionMode(false);
+      setSelectedDeleteIds([]);
+    }
+  }, [documents.length, isSelectionMode]);
+
+  useEffect(() => {
+    if (confirmDeleteDocs.length === 0) return;
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape' && !isDeleting) {
+        setConfirmDeleteDocs([]);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [confirmDeleteDocs.length, isDeleting]);
 
   const hasActiveProgress =
     typeof uploadProgress === 'number' && Number.isFinite(uploadProgress);
@@ -223,11 +250,53 @@ export function DocumentLibrary({
     }
   };
 
+  const toggleSelectForDelete = (docId: string) => {
+    setSelectedDeleteIds((prev) =>
+      prev.includes(docId) ? prev.filter((id) => id !== docId) : [...prev, docId]
+    );
+  };
+
+  const selectedIdSet = new Set(selectedDeleteIds);
+  const selectedVisibleDocs = documents.filter((doc) => selectedIdSet.has(doc.id));
+  const allVisibleSelected =
+    documents.length > 0 && selectedVisibleDocs.length === documents.length;
+
+  const handleToggleSelectAllVisible = () => {
+    if (allVisibleSelected) {
+      setSelectedDeleteIds([]);
+    } else {
+      setSelectedDeleteIds(documents.map((doc) => doc.id));
+    }
+  };
+
+  const handleCancelSelectionMode = () => {
+    setIsSelectionMode(false);
+    setSelectedDeleteIds([]);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (confirmDeleteDocs.length === 0 || isDeleting) return;
+    const targets = confirmDeleteDocs;
+    try {
+      await onDeleteDocuments?.(targets);
+      const deletedIds = new Set(targets.map((item) => item.id));
+      setSelectedDeleteIds((prev) => prev.filter((id) => !deletedIds.has(id)));
+      setConfirmDeleteDocs([]);
+      setIsSelectionMode(false);
+    } catch {
+      setConfirmDeleteDocs([]);
+    }
+  };
+
   const handleCardKeyDown = (event: KeyboardEvent<HTMLElement>, doc: DocumentItem) => {
     if (event.target !== event.currentTarget) return;
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
-      onOpenDocument(doc);
+      if (isSelectionMode) {
+        toggleSelectForDelete(doc.id);
+      } else {
+        onOpenDocument(doc);
+      }
     }
   };
 
@@ -488,9 +557,60 @@ export function DocumentLibrary({
               })}
             </div>
 
-            <span className="hidden shrink-0 text-xs font-medium text-slate-400 md:inline">
-              {documents.length} tài liệu
-            </span>
+            <div className="flex flex-wrap items-center justify-between gap-2 md:justify-end">
+              <span className="text-xs font-medium text-slate-400">
+                {documents.length} tài liệu
+              </span>
+
+              {documents.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {!isSelectionMode ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsSelectionMode(true);
+                        setSelectedDeleteIds([]);
+                      }}
+                      disabled={isDeleting}
+                      className="inline-flex min-h-[38px] items-center gap-1.5 rounded-full border border-[#E6E1D8] bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-rose-200 hover:bg-rose-50/70 hover:text-rose-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/35 disabled:opacity-50"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                      <span>Chọn xóa</span>
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleToggleSelectAllVisible}
+                        disabled={isDeleting}
+                        className="inline-flex min-h-[38px] items-center gap-1.5 rounded-full border border-[#E6E1D8] bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/35 disabled:opacity-50"
+                      >
+                        <span>{allVisibleSelected ? 'Bỏ chọn' : 'Chọn tất cả'}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteDocs(selectedVisibleDocs)}
+                        disabled={selectedVisibleDocs.length === 0 || isDeleting}
+                        className="inline-flex min-h-[38px] items-center gap-1.5 rounded-full bg-rose-600 px-3.5 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-rose-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/40 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>Xóa đã chọn ({selectedVisibleDocs.length})</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleCancelSelectionMode}
+                        disabled={isDeleting}
+                        className="inline-flex min-h-[38px] items-center rounded-full border border-[#E6E1D8] bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/35 disabled:opacity-50"
+                      >
+                        <span>Hủy</span>
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
           {activeNav === 'folders' && (
@@ -536,12 +656,14 @@ export function DocumentLibrary({
               <FileSearch className="h-5 w-5" aria-hidden="true" />
             </div>
             <h2 className="mt-4 text-[15px] font-semibold text-slate-900">
-              Không tìm thấy tài liệu phù hợp
+              {hasActiveFilterOrSearch
+                ? 'Không tìm thấy tài liệu phù hợp'
+                : 'Chưa có tài liệu nào trong thư viện'}
             </h2>
             <p className="mt-1.5 max-w-sm text-sm text-slate-500">
               {hasActiveFilterOrSearch
                 ? 'Thử thay đổi từ khóa tìm kiếm hoặc đặt lại bộ lọc để xem toàn bộ tài liệu.'
-                : 'Tải lên tệp PPTX, DOCX, XLSX, XLS, CSV hoặc PDF từ máy tính để mở ngay không gian làm việc riêng.'}
+                : 'Tải lên tệp PPTX, DOCX, XLSX, XLS, CSV hoặc PDF từ máy tính để bắt đầu làm việc ngay.'}
             </p>
             <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
               {hasActiveFilterOrSearch && (
@@ -586,6 +708,7 @@ export function DocumentLibrary({
           >
             {documents.map((doc) => {
               const isHighlighted = Boolean(activeDocId && doc.id === activeDocId);
+              const isSelectedForDelete = isSelectionMode && selectedIdSet.has(doc.id);
               const badge = TYPE_BADGE_MAP[doc.type];
               const primaryAction = getPrimaryActionMeta(doc.type);
 
@@ -594,25 +717,51 @@ export function DocumentLibrary({
                   key={doc.id}
                   role="button"
                   tabIndex={0}
-                  aria-label={`Mở ${doc.title}`}
-                  onClick={() => onOpenDocument(doc)}
+                  aria-label={
+                    isSelectionMode
+                      ? `${isSelectedForDelete ? 'Bỏ chọn' : 'Chọn'} xóa ${doc.title}`
+                      : `Mở ${doc.title}`
+                  }
+                  onClick={() => {
+                    if (isSelectionMode) {
+                      toggleSelectForDelete(doc.id);
+                    } else {
+                      onOpenDocument(doc);
+                    }
+                  }}
                   onKeyDown={(event) => handleCardKeyDown(event, doc)}
                   className={`group flex cursor-pointer flex-col gap-3 rounded-2xl border bg-[#FFFFFF] p-3.5 transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 ${
-                    isHighlighted
-                      ? 'border-indigo-500 shadow-[0_6px_20px_rgba(79,70,229,0.09)] ring-2 ring-indigo-500/20'
-                      : 'border-[#EAE5DC] shadow-[0_1px_2px_rgba(30,36,48,0.04)] hover:border-[#D9D2C5] hover:shadow-[0_8px_20px_rgba(30,36,48,0.06)]'
+                    isSelectedForDelete
+                      ? 'border-rose-500 bg-rose-50/15 shadow-[0_6px_20px_rgba(225,29,72,0.08)] ring-2 ring-rose-500/20'
+                      : isHighlighted
+                        ? 'border-indigo-500 shadow-[0_6px_20px_rgba(79,70,229,0.09)] ring-2 ring-indigo-500/20'
+                        : 'border-[#EAE5DC] shadow-[0_1px_2px_rgba(30,36,48,0.04)] hover:border-[#D9D2C5] hover:shadow-[0_8px_20px_rgba(30,36,48,0.06)]'
                   }`}
                 >
-                  {/* Card header: Title + Favorite star + Format badge */}
+                  {/* Card header: Title + Favorite star + Trash delete + Format badge */}
                   <div className="flex items-center justify-between gap-2">
-                    <h3
-                      title={doc.title}
-                      className="min-w-0 flex-1 truncate text-[15px] font-semibold tracking-[-0.01em] text-slate-900"
-                    >
-                      {doc.title}
-                    </h3>
+                    <div className="flex min-w-0 flex-1 items-center gap-2">
+                      {isSelectionMode && (
+                        <span
+                          aria-hidden="true"
+                          className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-colors ${
+                            isSelectedForDelete
+                              ? 'border-rose-600 bg-rose-600 text-white'
+                              : 'border-slate-300 bg-white text-transparent'
+                          }`}
+                        >
+                          <Check className="h-3.5 w-3.5" strokeWidth={2.5} />
+                        </span>
+                      )}
+                      <h3
+                        title={doc.title}
+                        className="min-w-0 flex-1 truncate text-[15px] font-semibold tracking-[-0.01em] text-slate-900"
+                      >
+                        {doc.title}
+                      </h3>
+                    </div>
 
-                    <div className="flex shrink-0 items-center gap-1.5">
+                    <div className="flex shrink-0 items-center gap-1">
                       <button
                         type="button"
                         onClick={(event) => {
@@ -634,6 +783,20 @@ export function DocumentLibrary({
                         <Star
                           className={`h-4 w-4 ${doc.isFavorite ? 'fill-amber-400' : ''}`}
                         />
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setConfirmDeleteDocs([doc]);
+                        }}
+                        disabled={isDeleting}
+                        aria-label={`Xóa tài liệu ${doc.title}`}
+                        title="Xóa tài liệu"
+                        className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-300 transition-colors duration-150 hover:bg-rose-50 hover:text-rose-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/40 disabled:opacity-50 md:h-7 md:w-7"
+                      >
+                        <Trash2 className="h-4 w-4" aria-hidden="true" />
                       </button>
 
                       <span
@@ -741,6 +904,105 @@ export function DocumentLibrary({
           </section>
         )}
       </div>
+
+      {/* Delete confirmation modal */}
+      {confirmDeleteDocs.length > 0 && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-confirm-title"
+          onClick={() => {
+            if (!isDeleting) {
+              setConfirmDeleteDocs([]);
+            }
+          }}
+          className="fixed inset-0 z-50 bg-slate-900/45 backdrop-blur-[2px] pb-safe"
+        >
+          <div className="flex h-full w-full items-center justify-center p-4">
+            <div
+              onClick={(event) => event.stopPropagation()}
+              className="w-full max-w-md rounded-2xl border border-[#EAE5DC] bg-white p-5 shadow-2xl"
+            >
+            <div className="flex items-start gap-3.5">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-rose-50 text-rose-600">
+                <Trash2 className="h-5 w-5" aria-hidden="true" />
+              </div>
+
+              <div className="min-w-0 flex-1">
+                <h2
+                  id="delete-confirm-title"
+                  className="text-base font-semibold text-slate-900"
+                >
+                  {confirmDeleteDocs.length === 1
+                    ? 'Xóa tài liệu khỏi thư viện?'
+                    : `Xóa ${confirmDeleteDocs.length} tài liệu đã chọn?`}
+                </h2>
+
+                {confirmDeleteDocs.length === 1 ? (
+                  <p className="mt-1.5 text-sm text-slate-600">
+                    Bạn sắp xóa tệp{' '}
+                    <span className="font-semibold text-slate-900">
+                      "{confirmDeleteDocs[0].title}"
+                    </span>{' '}
+                    ({confirmDeleteDocs[0].type.toUpperCase()}).
+                  </p>
+                ) : (
+                  <div className="mt-2 max-h-32 overflow-y-auto rounded-xl border border-[#EAE5DC] bg-[#FAF8F5] px-3 py-2 text-xs text-slate-700">
+                    <ul className="space-y-1">
+                      {confirmDeleteDocs.map((item) => (
+                        <li key={item.id} className="flex items-center justify-between gap-2">
+                          <span className="truncate font-medium">{item.title}</span>
+                          <span className="shrink-0 text-[10px] font-semibold uppercase text-slate-400">
+                            {item.type}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                <p className="mt-2.5 text-xs leading-relaxed text-slate-500">
+                  Tệp và liên kết chia sẻ liên quan sẽ bị xóa vĩnh viễn khỏi thư viện trên
+                  thiết bị này cũng như tài khoản đám mây. Hành động này không thể hoàn tác.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-5 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteDocs([])}
+                disabled={isDeleting}
+                className="inline-flex min-h-[44px] items-center justify-center rounded-xl border border-[#E2DDD5] bg-white px-4 py-2 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 md:min-h-[38px]"
+              >
+                Hủy
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  void handleConfirmDelete();
+                }}
+                disabled={isDeleting}
+                className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl bg-rose-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-70 md:min-h-[38px]"
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                    <span>Đang xóa...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>Xóa vĩnh viễn</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

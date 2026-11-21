@@ -249,3 +249,39 @@ export async function getR2PresignedDownloadUrl(params: {
     allowDownload: payload?.allowDownload !== false,
   };
 }
+
+/**
+ * Deletes an object from Cloudflare R2 via the Worker API.
+ * Treats HTTP 200/204/404 as success.
+ */
+export async function deleteFileFromR2(params: {
+  objectKey: string;
+  accessToken: string;
+}): Promise<void> {
+  const cleanKey = params.objectKey.trim();
+  const cleanToken = params.accessToken.trim();
+  if (!isR2ApiConfigured || !cleanKey || !cleanToken) {
+    return;
+  }
+
+  const response = await fetch(
+    `${R2_API_URL}/api/r2/object?key=${encodeURIComponent(cleanKey)}`,
+    {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${cleanToken}`,
+      },
+    }
+  );
+
+  if (response.ok || response.status === 404) {
+    return;
+  }
+
+  const payload = await response.json().catch(() => null);
+  const detail = extractApiErrorMessage(
+    payload,
+    `Không thể xóa tệp trên Cloudflare R2 (HTTP ${response.status}).`
+  );
+  throw new Error(detail);
+}

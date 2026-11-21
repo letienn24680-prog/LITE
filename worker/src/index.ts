@@ -262,7 +262,7 @@ function formatAmzTimestamps(date: Date): { amzDate: string; dateStamp: string }
  * using only Web Crypto (`crypto.subtle`).
  */
 export async function createR2PresignedUrl(options: {
-  method: 'GET' | 'PUT';
+  method: 'GET' | 'PUT' | 'DELETE';
   accountId: string;
   bucketName: string;
   accessKeyId: string;
@@ -1441,17 +1441,104 @@ async function readStreamWithLimit(
   return combined;
 }
 
+async function executeAuthenticatedR2Delete(
+  request: Request,
+  env: Env,
+  objectKey: string
+): Promise<Response> {
+  if (!isSafeObjectKey(objectKey)) {
+    return jsonResponse(request, env, 400, {
+      error: 'Khóa đối tượng R2 (key) không hợp lệ.',
+    });
+  }
+
+  const authResult = await authenticateSupabaseUser(request, env);
+  if (!authResult.ok) {
+    return jsonResponse(request, env, authResult.status, {
+      error: authResult.message,
+    });
+  }
+
+  const safeUserId = sanitizePathSegment(authResult.user.id, 'user');
+  if (
+    !objectKey.startsWith(`${authResult.user.id}/`) &&
+    !objectKey.startsWith(`${safeUserId}/`)
+  ) {
+    return jsonResponse(request, env, 403, {
+      error: 'Bạn không có quyền xóa tệp của tài khoản khác.',
+    });
+  }
+
+  const s3Cfg = getS3PresignConfig(env);
+  if (!env.R2_BUCKET && !s3Cfg) {
+    return jsonResponse(request, env, 503, {
+      error: 'Kho lưu trữ Cloudflare R2 chưa được cấu hình.',
+    });
+  }
+
+  let deletedViaBinding = false;
+  if (env.R2_BUCKET) {
+    await env.R2_BUCKET.delete(objectKey);
+    deletedViaBinding = true;
+  }
+
+  if (s3Cfg) {
+    const presignedDeleteUrl = await createR2PresignedUrl({
+      method: 'DELETE',
+      accountId: s3Cfg.accountId,
+      bucketName: s3Cfg.bucketName,
+      accessKeyId: s3Cfg.accessKeyId,
+      secretAccessKey: s3Cfg.secretAccessKey,
+      objectKey,
+      expiresInSeconds: 120,
+    });
+
+    try {
+      const delRes = await fetch(presignedDeleteUrl, { method: 'DELETE' });
+      const acceptedStatus =
+        delRes.status === 200 ||
+        delRes.status === 204 ||
+        delRes.status === 404 ||
+        delRes.ok;
+      if (!acceptedStatus && !deletedViaBinding) {
+        return jsonResponse(request, env, 502, {
+          error: `Không thể xóa đối tượng trên Cloudflare R2 (HTTP ${delRes.status}).`,
+        });
+      }
+    } catch {
+      if (!deletedViaBinding) {
+        return jsonResponse(request, env, 502, {
+          error: 'Không thể kết nối tới Cloudflare R2 để xóa đối tượng.',
+        });
+      }
+    }
+  }
+
+  return jsonResponse(request, env, 200, {
+    ok: true,
+    deleted: true,
+    objectKey,
+  });
+}
+
+async function handleDeleteR2Object(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const url = new URL(request.url);
+  const key = (
+    url.searchParams.get('key') ??
+    url.searchParams.get('objectKey') ??
+    ''
+  ).trim();
+  return executeAuthenticatedR2Delete(request, env, key);
+}
+
 async function handleDirectR2Proxy(
   request: Request,
   env: Env,
   rawEncodedKey: string
 ): Promise<Response> {
-  if (!env.R2_BUCKET) {
-    return jsonResponse(request, env, 503, {
-      error: 'R2_BUCKET binding chưa được khai báo trên Worker.',
-    });
-  }
-
   let objectKey: string;
   try {
     objectKey = rawEncodedKey
@@ -1464,6 +1551,16 @@ async function handleDirectR2Proxy(
 
   if (!isSafeObjectKey(objectKey)) {
     return jsonResponse(request, env, 400, { error: 'Khóa đối tượng không hợp lệ.' });
+  }
+
+  if (request.method === 'DELETE') {
+    return executeAuthenticatedR2Delete(request, env, objectKey);
+  }
+
+  if (!env.R2_BUCKET) {
+    return jsonResponse(request, env, 503, {
+      error: 'R2_BUCKET binding chưa được khai báo trên Worker.',
+    });
   }
 
   const url = new URL(request.url);
@@ -1602,29 +1699,6 @@ async function handleDirectR2Proxy(
     });
   }
 
-  if (request.method === 'DELETE') {
-    const authResult = await authenticateSupabaseUser(request, env);
-    if (!authResult.ok) {
-      return jsonResponse(request, env, authResult.status, { error: authResult.message });
-    }
-    const safeUserId = sanitizePathSegment(authResult.user.id, 'user');
-    if (
-      !objectKey.startsWith(`${authResult.user.id}/`) &&
-      !objectKey.startsWith(`${safeUserId}/`)
-    ) {
-      return jsonResponse(request, env, 403, {
-        error: 'Bạn không có quyền xóa tệp của tài khoản khác.',
-      });
-    }
-
-    await env.R2_BUCKET.delete(objectKey);
-    return jsonResponse(request, env, 200, {
-      ok: true,
-      deleted: true,
-      objectKey,
-    });
-  }
-
   return jsonResponse(request, env, 405, { error: 'Method not allowed' });
 }
 
@@ -1668,6 +1742,13 @@ export default {
           return jsonResponse(request, env, 405, { error: 'Method not allowed' });
         }
         return await handlePresignDownload(request, env);
+      }
+
+      if (pathname === '/api/r2/object') {
+        if (request.method !== 'DELETE') {
+          return jsonResponse(request, env, 405, { error: 'Method not allowed' });
+        }
+        return await handleDeleteR2Object(request, env);
       }
 
       if (pathname.startsWith('/api/r2/direct/')) {

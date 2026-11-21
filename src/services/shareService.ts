@@ -354,6 +354,46 @@ function findLocalShareByToken(shareToken: string): LocalShareRecord | null {
   return all[shareToken] ?? null;
 }
 
+/**
+ * Removes all local share records in lite_local_shares_v1 and memoryShareFallback
+ * matching any of the provided documentIds.
+ */
+export function removeLocalSharesForDocumentIds(
+  documentIds: readonly string[]
+): void {
+  if (!documentIds || documentIds.length === 0) {
+    return;
+  }
+  const targetIdSet = new Set<string>(documentIds);
+  const current = readLocalShareMap();
+  let changed = false;
+
+  for (const [token, entry] of Object.entries(current)) {
+    if (targetIdSet.has(entry.documentId)) {
+      delete current[token];
+      memoryShareFallback.delete(token);
+      changed = true;
+    }
+  }
+
+  memoryShareFallback.forEach((entry, token) => {
+    if (targetIdSet.has(entry.documentId)) {
+      memoryShareFallback.delete(token);
+      changed = true;
+    }
+  });
+
+  if (!changed) {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(LOCAL_SHARES_KEY, JSON.stringify(current));
+  } catch {
+    // Ignore storage write errors
+  }
+}
+
 async function getCurrentAuthContext(): Promise<{
   userId: string;
   accessToken: string;

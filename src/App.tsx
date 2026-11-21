@@ -14,10 +14,11 @@ import { HelpModal } from './components/modals/HelpModal';
 import { CloudActionModal } from './components/modals/CloudActionModal';
 import { MobileRemoteView } from './components/remote/MobileRemoteView';
 import { SharedDocumentView } from './components/share/SharedDocumentView';
-import { mockDocuments } from './data/mockDocuments';
+import { LEGACY_MOCK_DOCUMENT_IDS } from './data/mockDocuments';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
 import {
   buildCloudUserSummary,
+  deleteCloudDocument,
   fetchUserDocuments,
   getCloudFileObjectUrl,
   syncLocalDocumentsToCloud,
@@ -29,6 +30,7 @@ import {
   isR2ApiConfigured,
   uploadFileViaR2PresignedUrl,
 } from './services/r2Storage';
+import { removeLocalSharesForDocumentIds } from './services/shareService';
 import { parseUploadedFile } from './utils/fileParser';
 import type {
   CloudUserSummary,
@@ -45,6 +47,8 @@ import type {
 
 const STORAGE_KEY = 'lite_saved_documents_v1';
 const SETTINGS_STORAGE_KEY = 'lite_user_settings_v1';
+
+const LEGACY_MOCK_ID_SET = new Set<string>(LEGACY_MOCK_DOCUMENT_IDS);
 
 const DEFAULT_USER_SETTINGS: UserSettings = {
   autoSyncOnEdit: true,
@@ -184,58 +188,14 @@ function sanitizeDocumentForStorage(doc: DocumentItem): DocumentItem {
   return nextDoc;
 }
 
-function loadInitialDocuments(): DocumentItem[] {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      return mockDocuments;
-    }
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return mockDocuments;
-    }
-
-    const mockById = new Map<string, DocumentItem>(
-      mockDocuments.map((doc) => [doc.id, doc])
-    );
-    const seenIds = new Set<string>();
-    const merged: DocumentItem[] = [];
-
-    for (const entry of parsed) {
-      if (!isValidStoredDocument(entry) || seenIds.has(entry.id)) {
-        continue;
-      }
-      seenIds.add(entry.id);
-      const cleanEntry = sanitizeDocumentForStorage(entry);
-      const mockMatch = mockById.get(cleanEntry.id);
-      if (mockMatch) {
-        merged.push({
-          ...mockMatch,
-          ...cleanEntry,
-        });
-      } else {
-        merged.push(cleanEntry);
-      }
-    }
-
-    for (const mockDoc of mockDocuments) {
-      if (!seenIds.has(mockDoc.id)) {
-        merged.push(mockDoc);
-      }
-    }
-
-    return merged.length > 0 ? merged : mockDocuments;
-  } catch {
-    return mockDocuments;
-  }
-}
-
 function persistDocumentsToStorage(docs: DocumentItem[]): {
   ok: boolean;
   quotaExceeded: boolean;
 } {
   try {
-    const payload = docs.map(sanitizeDocumentForStorage);
+    const payload = docs
+      .filter((doc) => !LEGACY_MOCK_ID_SET.has(doc.id))
+      .map(sanitizeDocumentForStorage);
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     return { ok: true, quotaExceeded: false };
   } catch (error) {
@@ -245,6 +205,47 @@ function persistDocumentsToStorage(docs: DocumentItem[]): {
         error.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
         error.code === 22);
     return { ok: false, quotaExceeded: isQuota };
+  }
+}
+
+function loadInitialDocuments(): DocumentItem[] {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    const seenIds = new Set<string>();
+    const merged: DocumentItem[] = [];
+    let filteredLegacyMock = false;
+
+    for (const entry of parsed) {
+      if (!isValidStoredDocument(entry)) {
+        continue;
+      }
+      if (LEGACY_MOCK_ID_SET.has(entry.id)) {
+        filteredLegacyMock = true;
+        continue;
+      }
+      if (seenIds.has(entry.id)) {
+        continue;
+      }
+      seenIds.add(entry.id);
+      merged.push(sanitizeDocumentForStorage(entry));
+    }
+
+    if (filteredLegacyMock) {
+      persistDocumentsToStorage(merged);
+      removeLocalSharesForDocumentIds(LEGACY_MOCK_DOCUMENT_IDS);
+    }
+
+    return merged;
+  } catch {
+    return [];
   }
 }
 
@@ -272,6 +273,7 @@ function preserveInMemoryRuntimeFields(
 
 function isUnsyncedLocalCandidate(doc: DocumentItem): boolean {
   return (
+    !LEGACY_MOCK_ID_SET.has(doc.id) &&
     !doc.isSyncedToCloud &&
     (Boolean(doc.isUploaded) || Boolean(doc.lastSavedAt))
   );
@@ -321,6 +323,7 @@ export function App() {
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
 
   // Account, Settings & Cloud Sync States
   const [userSettings, setUserSettings] = useState<UserSettings>(() =>
@@ -432,28 +435,39 @@ export function App() {
         return;
       }
 
+      // Silently purge any legacy mock records that were previously synced to Supabase
+      const legacyCloudDocs = fetchedCloudDocs.filter((cloudDoc) =>
+        LEGACY_MOCK_ID_SET.has(cloudDoc.id)
+      );
+      if (legacyCloudDocs.length > 0) {
+        removeLocalSharesForDocumentIds(legacyCloudDocs.map((d) => d.id));
+        legacyCloudDocs.forEach((legacyDoc) => {
+          void deleteCloudDocument(user.id, legacyDoc).catch(() => undefined);
+        });
+      }
+
       const existingById = new Map<string, DocumentItem>(
         documentsRef.current.map((doc) => [doc.id, doc])
       );
-      const cloudDocs = fetchedCloudDocs.map((cloudDoc) =>
-        preserveInMemoryRuntimeFields(cloudDoc, existingById.get(cloudDoc.id))
-      );
+      const cloudDocs = fetchedCloudDocs
+        .filter((cloudDoc) => !LEGACY_MOCK_ID_SET.has(cloudDoc.id))
+        .map((cloudDoc) =>
+          preserveInMemoryRuntimeFields(
+            cloudDoc,
+            existingById.get(cloudDoc.id)
+          )
+        );
       const cloudIds = new Set<string>(cloudDocs.map((doc) => doc.id));
 
-      // Keep unsynced local candidates untouched in memory while asking user to migrate
+      // Keep unsynced local candidates (excluding legacy mocks) untouched in memory while asking user to migrate
       const localCandidates = documentsRef.current.filter(
-        (doc) => isUnsyncedLocalCandidate(doc) && !cloudIds.has(doc.id)
-      );
-      const localCandidateIds = new Set<string>(
-        localCandidates.map((doc) => doc.id)
-      );
-
-      const remainingMocks = mockDocuments.filter(
-        (mockDoc) =>
-          !cloudIds.has(mockDoc.id) && !localCandidateIds.has(mockDoc.id)
+        (doc) =>
+          !LEGACY_MOCK_ID_SET.has(doc.id) &&
+          isUnsyncedLocalCandidate(doc) &&
+          !cloudIds.has(doc.id)
       );
 
-      const mergedDocs = [...cloudDocs, ...localCandidates, ...remainingMocks];
+      const mergedDocs = [...cloudDocs, ...localCandidates];
       setDocuments(mergedDocs);
       persistDocumentsToStorage(mergedDocs);
 
@@ -467,11 +481,12 @@ export function App() {
         if (hashId && mergedDocs.some((doc) => doc.id === hashId)) {
           setActiveWorkspaceDocId(hashId);
           setLastActiveDocId(hashId);
-        } else if (mergedDocs.length > 0) {
+        } else {
+          setActiveWorkspaceDocId(null);
           setLastActiveDocId((prev) =>
             prev && mergedDocs.some((doc) => doc.id === prev)
               ? prev
-              : mergedDocs[0].id
+              : (mergedDocs[0]?.id ?? null)
           );
         }
       }
@@ -539,7 +554,10 @@ export function App() {
         if (hadUser) {
           autoHydrateAttemptedRef.current.clear();
           const localOnly = documentsRef.current.filter(
-            (doc) => !doc.isSyncedToCloud && !doc.userId
+            (doc) =>
+              !doc.isSyncedToCloud &&
+              !doc.userId &&
+              !LEGACY_MOCK_ID_SET.has(doc.id)
           );
           persistDocumentsToStorage(localOnly);
           const localDocs = loadInitialDocuments();
@@ -842,24 +860,23 @@ export function App() {
 
   const handleToggleFavorite = useCallback(
     (docId: string) => {
-      let toggledDoc: DocumentItem | null = null;
-      const nextDocs = documentsRef.current.map((doc) => {
-        if (doc.id !== docId) {
-          return doc;
-        }
-        toggledDoc = { ...doc, isFavorite: !doc.isFavorite };
-        return toggledDoc;
-      });
+      const existingDoc = documentsRef.current.find((doc) => doc.id === docId);
+      if (!existingDoc) {
+        return;
+      }
+
+      const toggledDoc: DocumentItem = {
+        ...existingDoc,
+        isFavorite: !existingDoc.isFavorite,
+      };
+      const nextDocs = documentsRef.current.map((doc) =>
+        doc.id === docId ? toggledDoc : doc
+      );
       setDocuments(nextDocs);
       persistDocumentsToStorage(nextDocs);
 
       const activeUser = currentUserRef.current;
-      if (
-        activeUser &&
-        isSupabaseConfigured &&
-        toggledDoc !== null &&
-        (toggledDoc as DocumentItem).isSyncedToCloud
-      ) {
+      if (activeUser && isSupabaseConfigured && toggledDoc.isSyncedToCloud) {
         void enqueueCloudUpsert(activeUser.id, toggledDoc, {
           file: null,
           touchUpdatedAt: false,
@@ -1011,6 +1028,136 @@ export function App() {
       }
     },
     [enqueueCloudUpsert]
+  );
+
+  const handleDeleteDocuments = useCallback(
+    async (docsToDelete: DocumentItem[]) => {
+      if (docsToDelete.length === 0) {
+        return;
+      }
+
+      setIsDeleting(true);
+      try {
+        const deletedIds = docsToDelete.map((doc) => doc.id);
+        const deletedIdSet = new Set<string>(deletedIds);
+
+        // Revoke any in-memory blob URLs associated with the deleted documents
+        const revokedUrls = new Set<string>();
+        docsToDelete.forEach((doc) => {
+          if (doc.fileUrl?.startsWith('blob:')) {
+            revokedUrls.add(doc.fileUrl);
+          }
+          if (doc.objectUrl?.startsWith('blob:')) {
+            revokedUrls.add(doc.objectUrl);
+          }
+          doc.slidesPreview.forEach((slide) => {
+            slide.images?.forEach((img) => {
+              if (img.src.startsWith('blob:')) {
+                revokedUrls.add(img.src);
+              }
+            });
+          });
+        });
+        revokedUrls.forEach((url) => {
+          URL.revokeObjectURL(url);
+        });
+        if (revokedUrls.size > 0) {
+          createdObjectUrlsRef.current = createdObjectUrlsRef.current.filter(
+            (url) => !revokedUrls.has(url)
+          );
+        }
+
+        deletedIds.forEach((id) => {
+          saveQueueByDocRef.current.delete(id);
+          saveSeqByDocRef.current.delete(id);
+          autoHydrateAttemptedRef.current.delete(id);
+        });
+
+        const nextDocs = documentsRef.current.filter(
+          (doc) => !deletedIdSet.has(doc.id)
+        );
+        setDocuments(nextDocs);
+        persistDocumentsToStorage(nextDocs);
+        setPendingMigrationDocs((prev) =>
+          prev.filter((doc) => !deletedIdSet.has(doc.id))
+        );
+        removeLocalSharesForDocumentIds(deletedIds);
+
+        setActiveWorkspaceDocId((prevId) => {
+          if (prevId && deletedIdSet.has(prevId)) {
+            if (parseDocIdFromHash(window.location.hash)) {
+              window.history.pushState(
+                null,
+                '',
+                `${window.location.pathname}${window.location.search}`
+              );
+            }
+            return null;
+          }
+          return prevId;
+        });
+
+        setLastActiveDocId((prevId) =>
+          prevId && !deletedIdSet.has(prevId)
+            ? prevId
+            : (nextDocs[0]?.id ?? null)
+        );
+
+        setModalDocOverride((prevOverride) => {
+          if (prevOverride && deletedIdSet.has(prevOverride.id)) {
+            setActiveModal(null);
+            return null;
+          }
+          return prevOverride;
+        });
+
+        if (nextDocs.length === 0) {
+          setActiveModal(null);
+          setModalDocOverride(null);
+        }
+
+        const activeUser = currentUserRef.current;
+        if (activeUser && isSupabaseConfigured) {
+          let accessToken: string | null = null;
+          if (isR2ApiConfigured && supabase) {
+            try {
+              const sessionRes = await supabase.auth.getSession();
+              accessToken = sessionRes.data.session?.access_token ?? null;
+            } catch {
+              accessToken = null;
+            }
+          }
+
+          setSyncStatus('syncing');
+          const results = await Promise.allSettled(
+            docsToDelete.map((doc) =>
+              deleteCloudDocument(activeUser.id, doc, { accessToken })
+            )
+          );
+          if (currentUserRef.current?.id === activeUser.id) {
+            const hadCloudFailure = results.some(
+              (res, idx) =>
+                res.status === 'rejected' && docsToDelete[idx].isSyncedToCloud
+            );
+            setLastSyncedAt(new Date().toISOString());
+            setSyncStatus(hadCloudFailure ? 'error' : 'synced');
+          }
+        }
+
+        if (docsToDelete.length === 1) {
+          setUploadNotice(
+            `Đã xóa tài liệu "${docsToDelete[0].title}" khỏi thư viện.`
+          );
+        } else {
+          setUploadNotice(
+            `Đã xóa ${docsToDelete.length} tài liệu khỏi thư viện.`
+          );
+        }
+      } finally {
+        setIsDeleting(false);
+      }
+    },
+    []
   );
 
   const handleUploadFiles = useCallback(async (files: FileList | File[]) => {
@@ -1212,21 +1359,26 @@ export function App() {
     setSyncStatus('syncing');
 
     try {
+      const validMigrationDocs = pendingMigrationDocs.filter(
+        (doc) => !LEGACY_MOCK_ID_SET.has(doc.id)
+      );
       const { syncedDocs, failedCount } = await syncLocalDocumentsToCloud(
         activeUser.id,
-        pendingMigrationDocs
+        validMigrationDocs
       );
       const syncedById = new Map<string, DocumentItem>(
         syncedDocs.map((doc) => [doc.id, doc])
       );
 
-      const nextDocs = documentsRef.current.map((doc) => {
-        const synced = syncedById.get(doc.id);
-        if (!synced) {
-          return doc;
-        }
-        return preserveInMemoryRuntimeFields(synced, doc);
-      });
+      const nextDocs = documentsRef.current
+        .filter((doc) => !LEGACY_MOCK_ID_SET.has(doc.id))
+        .map((doc) => {
+          const synced = syncedById.get(doc.id);
+          if (!synced) {
+            return doc;
+          }
+          return preserveInMemoryRuntimeFields(synced, doc);
+        });
 
       setDocuments(nextDocs);
       persistDocumentsToStorage(nextDocs);
@@ -1257,16 +1409,14 @@ export function App() {
   const handleSkipMigrateLocal = useCallback(() => {
     const pendingIds = new Set<string>(pendingMigrationDocs.map((d) => d.id));
     const cloudDocs = documentsRef.current.filter(
-      (doc) => doc.isSyncedToCloud && !pendingIds.has(doc.id)
+      (doc) =>
+        doc.isSyncedToCloud &&
+        !pendingIds.has(doc.id) &&
+        !LEGACY_MOCK_ID_SET.has(doc.id)
     );
-    const cloudIds = new Set<string>(cloudDocs.map((doc) => doc.id));
-    const defaultMocks = mockDocuments.filter(
-      (mockDoc) => !cloudIds.has(mockDoc.id)
-    );
-    const nextDocs = [...cloudDocs, ...defaultMocks];
 
-    setDocuments(nextDocs);
-    persistDocumentsToStorage(nextDocs);
+    setDocuments(cloudDocs);
+    persistDocumentsToStorage(cloudDocs);
     setPendingMigrationDocs([]);
     setActiveUtilityModal(null);
     setUploadNotice(
@@ -1299,26 +1449,36 @@ export function App() {
         return;
       }
 
+      const legacyCloudDocs = fetchedCloudDocs.filter((cloudDoc) =>
+        LEGACY_MOCK_ID_SET.has(cloudDoc.id)
+      );
+      if (legacyCloudDocs.length > 0) {
+        removeLocalSharesForDocumentIds(legacyCloudDocs.map((d) => d.id));
+        legacyCloudDocs.forEach((legacyDoc) => {
+          void deleteCloudDocument(activeUser.id, legacyDoc).catch(
+            () => undefined
+          );
+        });
+      }
+
       const existingById = new Map<string, DocumentItem>(
         documentsRef.current.map((doc) => [doc.id, doc])
       );
-      const cloudDocs = fetchedCloudDocs.map((cloudDoc) =>
-        preserveInMemoryRuntimeFields(cloudDoc, existingById.get(cloudDoc.id))
-      );
+      const cloudDocs = fetchedCloudDocs
+        .filter((cloudDoc) => !LEGACY_MOCK_ID_SET.has(cloudDoc.id))
+        .map((cloudDoc) =>
+          preserveInMemoryRuntimeFields(
+            cloudDoc,
+            existingById.get(cloudDoc.id)
+          )
+        );
       const cloudIds = new Set<string>(cloudDocs.map((doc) => doc.id));
       const remainingLocal =
         failedCount > 0
           ? localCandidates.filter((doc) => !cloudIds.has(doc.id))
           : [];
-      const remainingLocalIds = new Set<string>(
-        remainingLocal.map((doc) => doc.id)
-      );
-      const remainingMocks = mockDocuments.filter(
-        (mockDoc) =>
-          !cloudIds.has(mockDoc.id) && !remainingLocalIds.has(mockDoc.id)
-      );
 
-      const mergedDocs = [...cloudDocs, ...remainingLocal, ...remainingMocks];
+      const mergedDocs = [...cloudDocs, ...remainingLocal];
       setDocuments(mergedDocs);
       persistDocumentsToStorage(mergedDocs);
       setPendingMigrationDocs([]);
@@ -1364,7 +1524,10 @@ export function App() {
 
       // Strip cloud-owned documents from localStorage before returning to Guest Local Mode
       const pureLocalDocs = documentsRef.current.filter(
-        (doc) => !doc.isSyncedToCloud && !doc.userId
+        (doc) =>
+          !doc.isSyncedToCloud &&
+          !doc.userId &&
+          !LEGACY_MOCK_ID_SET.has(doc.id)
       );
       persistDocumentsToStorage(pureLocalDocs);
 
@@ -1660,12 +1823,14 @@ export function App() {
               activeNav={activeNav}
               isUploading={isUploading}
               uploadProgress={uploadProgress}
+              isDeleting={isDeleting}
               uploadNotice={uploadNotice}
               onSearchChange={setSearchQuery}
               onFilterChange={handleFilterChange}
               onOpenDocument={handleOpenDocument}
               onToggleFavorite={handleToggleFavorite}
               onUploadFiles={handleUploadFiles}
+              onDeleteDocuments={handleDeleteDocuments}
               onDismissNotice={handleDismissNotice}
             />
           </div>

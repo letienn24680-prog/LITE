@@ -1,5 +1,6 @@
 import { createThumbnailDataUri } from '../data/mockDocuments';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
+import { deleteFileFromR2, isR2ApiConfigured } from './r2Storage';
 import type {
   CloudUserSummary,
   DocumentItem,
@@ -723,4 +724,62 @@ export async function syncLocalDocumentsToCloud(
     syncedDocs,
     failedCount,
   };
+}
+
+/**
+ * Deletes a document record from Supabase documents, along with best-effort cleanup
+ * of its share links, Supabase Storage object, and Cloudflare R2 object.
+ */
+export async function deleteCloudDocument(
+  userId: string,
+  doc: Pick<DocumentItem, 'id' | 'storagePath' | 'r2ObjectKey'>,
+  options?: { accessToken?: string | null }
+): Promise<void> {
+  const client = getConfiguredSupabaseClient();
+
+  try {
+    await client
+      .from('document_shares')
+      .delete()
+      .eq('user_id', userId)
+      .eq('document_id', doc.id);
+  } catch {
+    // Ignore if document_shares table is not yet created
+  }
+
+  const { error } = await client
+    .from(DOCUMENTS_TABLE)
+    .delete()
+    .eq('user_id', userId)
+    .eq('id', doc.id);
+
+  if (error) {
+    throw new Error(`Không thể xóa tài liệu trên đám mây: ${error.message}`);
+  }
+
+  if (doc.storagePath && doc.storagePath.trim()) {
+    try {
+      await client.storage
+        .from(STORAGE_BUCKET)
+        .remove([doc.storagePath.trim()]);
+    } catch {
+      // Best-effort Supabase Storage cleanup
+    }
+  }
+
+  if (
+    doc.r2ObjectKey &&
+    doc.r2ObjectKey.trim() &&
+    isR2ApiConfigured &&
+    options?.accessToken
+  ) {
+    try {
+      await deleteFileFromR2({
+        objectKey: doc.r2ObjectKey,
+        accessToken: options.accessToken,
+      });
+    } catch {
+      // Best-effort Cloudflare R2 cleanup
+    }
+  }
 }
