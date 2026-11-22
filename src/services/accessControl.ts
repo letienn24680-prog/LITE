@@ -49,58 +49,9 @@ export function isAppOwner(email?: string | null): boolean {
 }
 
 export async function checkEmailAccess(
-  email: string
+  _email: string
 ): Promise<{ allowed: boolean; status: AccessStatus; reason?: string }> {
-  const norm = normalizeEmail(email);
-  if (!norm) {
-    return { allowed: false, status: "denied", reason: "Email không hợp lệ." };
-  }
-
-  if (isAppOwner(norm)) {
-    return { allowed: true, status: "approved" };
-  }
-
-  if (!isSupabaseConfigured || !supabase) {
-    return { allowed: true, status: "unconfigured" };
-  }
-
-  try {
-    const { data, error } = await supabase
-      .from(ALLOWED_EMAILS_TABLE)
-      .select("email, status")
-      .eq("email", norm)
-      .maybeSingle();
-
-    if (error) {
-      // Nếu chưa tạo bảng app_allowed_emails trên Supabase thì không khóa nhầm
-      const msg = (error.message || "").toLowerCase();
-      if (msg.includes("does not exist") || msg.includes("relation") || error.code === "42P01") {
-        return { allowed: true, status: "unconfigured" };
-      }
-      return { allowed: true, status: "unconfigured" };
-    }
-
-    if (!data) {
-      return {
-        allowed: false,
-        status: "denied",
-        reason: `Email ${norm} chưa có trong danh sách được cấp quyền sử dụng ứng dụng.`,
-      };
-    }
-
-    const row = data as { email: string; status?: string };
-    if (row.status === "approved") {
-      return { allowed: true, status: "approved" };
-    }
-
-    return {
-      allowed: false,
-      status: "pending",
-      reason: `Email ${norm} đang chờ chủ sở hữu phê duyệt. Bạn không cần cài lại app, chỉ cần đợi duyệt là đăng nhập được ngay.`,
-    };
-  } catch {
-    return { allowed: true, status: "unconfigured" };
-  }
+  return { allowed: true, status: "approved" };
 }
 
 export async function requestEmailAccess(

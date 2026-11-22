@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import JSZip from 'jszip';
 import { SidebarRail } from './components/layout/SidebarRail';
 import { MobileTopHeader } from './components/layout/MobileTopHeader';
 import { MobileBottomNav } from './components/layout/MobileBottomNav';
@@ -12,25 +13,36 @@ import { WordWorkspace } from './components/workspaces/WordWorkspace';
 import { ExcelWorkspace } from './components/workspaces/ExcelWorkspace';
 import { PdfWorkspace } from './components/workspaces/PdfWorkspace';
 import { StageActionModal } from './components/modals/StageActionModal';
+import { App as CapacitorApp } from '@capacitor/app';
+import { Browser } from '@capacitor/browser';
+import { Filesystem } from '@capacitor/filesystem';
 import { AuthModal } from './components/modals/AuthModal';
-import {
-  checkEmailAccess,
-  rememberOwnerEmail,
-  requestEmailAccess,
-} from './services/accessControl';
 import { SettingsModal } from './components/modals/SettingsModal';
 import { HelpModal } from './components/modals/HelpModal';
 import { CloudActionModal } from './components/modals/CloudActionModal';
 import { GoogleDriveBrowserModal } from './components/modals/GoogleDriveBrowserModal';
 import { ShareCollabModal } from './components/modals/ShareCollabModal';
+import { VersionHistoryModal } from './components/modals/VersionHistoryModal';
+import { QuickConverterModal } from './components/modals/QuickConverterModal';
+import { LegalPagesView, type LegalPageKind } from './components/legal/LegalPagesView';
 import { MobileRemoteView } from './components/remote/MobileRemoteView';
 import { SharedDocumentView } from './components/share/SharedDocumentView';
+import {
+  WorkspaceSyncProvider,
+  type DriveSyncBadgeStatus,
+  type WorkspaceSyncContextValue,
+} from './contexts/WorkspaceSyncContext';
 import {
   createNewEditableDocument,
   LEGACY_MOCK_DOCUMENT_IDS,
   type CreateEditableDocumentParams,
 } from './data/mockDocuments';
-import { isSupabaseConfigured, supabase } from './lib/supabase';
+import {
+  completeNativeOAuthCallback,
+  isSupabaseConfigured,
+  startGoogleOAuthFlow,
+  supabase,
+} from './lib/supabase';
 import {
   buildCloudUserSummary,
   deleteCloudDocument,
@@ -60,9 +72,21 @@ import {
 import {
   clearStoredGoogleDriveToken,
   getStoredGoogleDriveToken,
+  setActiveGoogleDriveUser,
   setStoredGoogleDriveToken,
+  upsertDocumentToLiteDrive,
   type GoogleDriveFileItem,
 } from './services/googleDrive';
+import {
+  enqueuePendingUpload,
+  flushPendingUploads,
+  getPendingUploads,
+  saveDocumentVersion,
+  saveLocalDraft,
+  type DocumentVersionRecord,
+  type PendingUploadTarget,
+} from './services/offlineSyncQueue';
+import { buildDocumentUploadPayload } from './utils/fileExporter';
 import { parsePptxArrayBuffer, parseUploadedFile } from './utils/fileParser';
 import type {
   CloudUserSummary,
@@ -82,6 +106,151 @@ const STORAGE_KEY = 'lite_saved_documents_v1';
 const SETTINGS_STORAGE_KEY = 'lite_user_settings_v1';
 
 const LEGACY_MOCK_ID_SET = new Set<string>(LEGACY_MOCK_DOCUMENT_IDS);
+
+const MIME_BY_EXTENSION: Record<string, string> = {
+  pdf: 'application/pdf',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  doc: 'application/msword',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  xls: 'application/vnd.ms-excel',
+  csv: 'text/csv',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  ppt: 'application/vnd.ms-powerpoint',
+};
+
+const SUPPORTED_ANDROID_EXTENSIONS = new Set<string>([
+  'pdf',
+  'docx',
+  'xlsx',
+  'xls',
+  'csv',
+  'pptx',
+  'doc',
+]);
+
+function extractCandidateFileNameFromUri(uri: string): string {
+  let decoded = uri;
+  try {
+    decoded = decodeURIComponent(uri);
+  } catch {
+    decoded = uri;
+  }
+
+  const queryIdx = decoded.indexOf('?');
+  if (queryIdx >= 0) {
+    const queryStr = decoded.slice(queryIdx + 1).split('#')[0];
+    const params = new URLSearchParams(queryStr);
+    const paramCandidate =
+      params.get('displayName') ||
+      params.get('filename') ||
+      params.get('fileName') ||
+      params.get('name');
+    if (paramCandidate && paramCandidate.trim()) {
+      return paramCandidate.trim().replace(/[/\\:*?"<>|]/g, '_');
+    }
+  }
+
+  const withoutQuery = decoded.split('?')[0].split('#')[0];
+  const segments = withoutQuery.split('/').filter(Boolean);
+  const lastSegment = segments[segments.length - 1] ?? '';
+  const cleaned = lastSegment.trim().replace(/[/\\:*?"<>|]/g, '_');
+  return cleaned || 'tai-lieu-android';
+}
+
+function getExtensionFromFileName(fileName: string): string {
+  const dotIdx = fileName.lastIndexOf('.');
+  if (dotIdx <= 0 || dotIdx === fileName.length - 1) {
+    return '';
+  }
+  return fileName.slice(dotIdx + 1).toLowerCase();
+}
+
+async function detectExtensionFromBytes(bytes: Uint8Array): Promise<string | null> {
+  if (
+    bytes.length >= 5 &&
+    bytes[0] === 0x25 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x44 &&
+    bytes[3] === 0x46 &&
+    bytes[4] === 0x2d
+  ) {
+    return 'pdf';
+  }
+
+  // ZIP-based Office Open XML formats (PK...)
+  if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b) {
+    try {
+      const zip = await JSZip.loadAsync(bytes);
+      if (zip.file('word/document.xml')) {
+        return 'docx';
+      }
+      if (zip.file('xl/workbook.xml')) {
+        return 'xlsx';
+      }
+      if (zip.file('ppt/presentation.xml')) {
+        return 'pptx';
+      }
+    } catch {
+      // Not a valid Office Open XML zip archive
+    }
+  }
+
+  return null;
+}
+
+async function decodeFilesystemDataToBytes(
+  data: string | Blob
+): Promise<Uint8Array> {
+  if (typeof data === 'string') {
+    const base64Body = data.includes(',')
+      ? data.slice(data.indexOf(',') + 1)
+      : data;
+    const cleaned = base64Body.replace(/\s+/g, '');
+    const binaryString = window.atob(cleaned);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i += 1) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes;
+  }
+  const buffer = await data.arrayBuffer();
+  return new Uint8Array(buffer);
+}
+
+async function readAndroidUriAsFile(uri: string): Promise<File> {
+  const readResult = await Filesystem.readFile({ path: uri });
+  const bytes = await decodeFilesystemDataToBytes(readResult.data);
+
+  const candidateName = extractCandidateFileNameFromUri(uri);
+  const candidateExt = getExtensionFromFileName(candidateName);
+  let resolvedExt = SUPPORTED_ANDROID_EXTENSIONS.has(candidateExt)
+    ? candidateExt
+    : '';
+
+  if (!resolvedExt) {
+    const sniffedExt = await detectExtensionFromBytes(bytes);
+    if (sniffedExt) {
+      resolvedExt = sniffedExt;
+    }
+  }
+
+  const baseName =
+    candidateExt && candidateName.lastIndexOf('.') > 0
+      ? candidateName.slice(0, candidateName.lastIndexOf('.'))
+      : candidateName;
+  const resolvedFileName = resolvedExt
+    ? candidateExt === resolvedExt
+      ? candidateName
+      : `${baseName || 'tai-lieu-android'}.${resolvedExt}`
+    : candidateName;
+  const resolvedMimeType =
+    (resolvedExt && MIME_BY_EXTENSION[resolvedExt]) ||
+    'application/octet-stream';
+
+  return new File([bytes.slice()], resolvedFileName, {
+    type: resolvedMimeType,
+  });
+}
 
 const DEFAULT_USER_SETTINGS: UserSettings = {
   autoSyncOnEdit: true,
@@ -133,13 +302,53 @@ function parseDocIdFromHash(hash: string): string | null {
   return decoded.length > 0 ? decoded : null;
 }
 
-function parseCollabShareTokenFromSearch(search: string): string | null {
-  const raw = new URLSearchParams(search).get('share');
-  if (!raw) {
+interface ParsedCollabShareQuery {
+  token: string;
+  mode?: 'view' | 'edit';
+}
+
+function parseCollabShareFromSearch(search: string): ParsedCollabShareQuery | null {
+  const params = new URLSearchParams(search);
+  const raw = params.get('share');
+  if (!raw || !raw.trim()) {
     return null;
   }
-  const trimmed = raw.trim();
-  return trimmed.length > 0 ? trimmed : null;
+  const rawMode = params.get('mode')?.trim().toLowerCase();
+  const mode: 'view' | 'edit' | undefined =
+    rawMode === 'view' || rawMode === 'edit' ? rawMode : undefined;
+  return {
+    token: raw.trim(),
+    mode,
+  };
+}
+
+function parseCollabShareFromDeepLink(rawUrl: string): ParsedCollabShareQuery | null {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol.toLowerCase() !== 'liteapp:') {
+      return null;
+    }
+    const hostOrPath = `${parsed.hostname}${parsed.pathname}`
+      .replace(/^\/+/, '')
+      .toLowerCase();
+    if (hostOrPath !== 'open' && !parsed.searchParams.has('share')) {
+      return null;
+    }
+    return parseCollabShareFromSearch(parsed.search);
+  } catch {
+    return null;
+  }
+}
+
+function parseLegalPageFromPathname(pathname: string): LegalPageKind | null {
+  const normalized = pathname.replace(/\/+$/, '').toLowerCase();
+  if (normalized === '/privacy') {
+    return 'privacy';
+  }
+  if (normalized === '/terms') {
+    return 'terms';
+  }
+  return null;
 }
 
 function isValidWordTheme(value: unknown): value is WordPaperTheme {
@@ -432,14 +641,18 @@ export function App() {
     }
     return parseShareTokenFromHash(window.location.hash);
   });
-  const [collabShareQueryToken, setCollabShareQueryToken] = useState<
-    string | null
-  >(() => parseCollabShareTokenFromSearch(window.location.search));
+  const [collabShareQuery, setCollabShareQuery] =
+    useState<ParsedCollabShareQuery | null>(() =>
+      parseCollabShareFromSearch(window.location.search)
+    );
   const [collabSharedDoc, setCollabSharedDoc] = useState<DocumentItem | null>(
     null
   );
   const [isResolvingCollabShare, setIsResolvingCollabShare] = useState<boolean>(
-    () => Boolean(parseCollabShareTokenFromSearch(window.location.search))
+    () => Boolean(parseCollabShareFromSearch(window.location.search))
+  );
+  const [legalPage, setLegalPage] = useState<LegalPageKind | null>(() =>
+    parseLegalPageFromPathname(window.location.pathname)
   );
   const [collabShareError, setCollabShareError] = useState<string | null>(null);
   const [collabCollaborators, setCollabCollaborators] = useState<
@@ -506,6 +719,26 @@ export function App() {
   const [hydratingPdfDocId, setHydratingPdfDocId] = useState<string | null>(
     null
   );
+  const [driveSyncBadge, setDriveSyncBadge] = useState<DriveSyncBadgeStatus>(
+    () =>
+      typeof navigator !== 'undefined' && navigator.onLine === false
+        ? 'offline'
+        : 'idle'
+  );
+  const [driveSyncLabel, setDriveSyncLabel] = useState<string>(() =>
+    typeof navigator !== 'undefined' && navigator.onLine === false
+      ? 'Chờ đồng bộ (Ngoại tuyến)'
+      : ''
+  );
+  const [pendingOfflineCount, setPendingOfflineCount] = useState<number>(0);
+  const [isVersionHistoryOpen, setIsVersionHistoryOpen] =
+    useState<boolean>(false);
+  const [versionHistoryDocOverride, setVersionHistoryDocOverride] =
+    useState<DocumentItem | null>(null);
+  const [isQuickConverterOpen, setIsQuickConverterOpen] =
+    useState<boolean>(false);
+  const [quickConverterDocOverride, setQuickConverterDocOverride] =
+    useState<DocumentItem | null>(null);
 
   const createdObjectUrlsRef = useRef<string[]>([]);
   const deviceFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -528,23 +761,42 @@ export function App() {
   const collabSharedDocRef = useRef<DocumentItem | null>(collabSharedDoc);
   collabSharedDocRef.current = collabSharedDoc;
   const activeCollabPermissionRef = useRef<'owner' | 'edit' | 'view'>('owner');
+  const handledAndroidUriMapRef = useRef<Map<string, number>>(new Map());
+  const inFlightAndroidUriRef = useRef<Set<string>>(new Set());
+  const hasGoogleTokenRef = useRef<boolean>(hasGoogleToken);
+  hasGoogleTokenRef.current = hasGoogleToken;
+  const driveDebounceTimersRef = useRef<Map<string, number>>(new Map());
+  const latestDriveDocByIdRef = useRef<Map<string, DocumentItem>>(new Map());
+  const handleUploadFilesRef = useRef<
+    (
+      files: FileList | File[],
+      options?: { openImmediately?: boolean }
+    ) => Promise<void>
+  >(async () => undefined);
 
   useEffect(() => {
+    const timersMap = driveDebounceTimersRef.current;
     return () => {
       createdObjectUrlsRef.current.forEach((url) => {
         URL.revokeObjectURL(url);
       });
       createdObjectUrlsRef.current = [];
+      timersMap.forEach((timerId) => {
+        window.clearTimeout(timerId);
+      });
+      timersMap.clear();
     };
   }, []);
 
-  // Priority Hash & Query Routing: ?share=<token> -> #remote/<roomCode> -> #share/<shareToken> -> #doc/<id>
+  // Priority Path, Hash & Query Routing: /privacy | /terms | ?share=<token>&mode=... -> #remote/<roomCode> -> #share/<shareToken> -> #doc/<id>
   useEffect(() => {
     const syncFromLocation = () => {
-      const nextQueryShare = parseCollabShareTokenFromSearch(
+      setLegalPage(parseLegalPageFromPathname(window.location.pathname));
+
+      const nextQueryShare = parseCollabShareFromSearch(
         window.location.search
       );
-      setCollabShareQueryToken(nextQueryShare);
+      setCollabShareQuery(nextQueryShare);
       if (!nextQueryShare) {
         setCollabSharedDoc(null);
         setCollabShareError(null);
@@ -602,9 +854,9 @@ export function App() {
     };
   }, []);
 
-  // Resolve ?share=<token> collaboration invite link (works for both guests and signed-in users)
+  // Resolve ?share=<token|docId>&mode=view|edit collaboration invite link (works for both guests and signed-in users)
   useEffect(() => {
-    if (!collabShareQueryToken) {
+    if (!collabShareQuery) {
       setIsResolvingCollabShare(false);
       setCollabShareError(null);
       return;
@@ -615,8 +867,9 @@ export function App() {
     setCollabShareError(null);
 
     void resolveSharedDocument(
-      collabShareQueryToken,
-      currentUserRef.current?.id
+      collabShareQuery.token,
+      currentUserRef.current?.id,
+      collabShareQuery.mode
     )
       .then((resolved) => {
         if (cancelled) {
@@ -624,9 +877,11 @@ export function App() {
         }
 
         if (resolved.status === 'ready' && resolved.document) {
+          const effectivePermission: 'view' | 'edit' =
+            collabShareQuery.mode === 'view' ? 'view' : resolved.permission;
           const sharedDoc: DocumentItem = {
             ...resolved.document,
-            collabPermission: resolved.permission,
+            collabPermission: effectivePermission,
             sharedOwnerId: resolved.ownerId,
             shareToken: resolved.shareToken,
             isShared: true,
@@ -689,7 +944,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [collabShareQueryToken]);
+  }, [collabShareQuery]);
 
   const syncSessionForUser = useCallback(async (user: CloudUserSummary) => {
     if (
@@ -782,7 +1037,7 @@ export function App() {
       const isSpecialRoute =
         Boolean(parseRemoteRoomFromHash(currentHash)) ||
         Boolean(parseShareTokenFromHash(currentHash)) ||
-        Boolean(parseCollabShareTokenFromSearch(window.location.search));
+        Boolean(parseCollabShareFromSearch(window.location.search));
 
       if (!isSpecialRoute) {
         const hashId = parseDocIdFromHash(currentHash);
@@ -844,28 +1099,12 @@ export function App() {
       }
 
       if (sessionUser) {
-        const userMail = (sessionUser.email || "").trim().toLowerCase();
-        void checkEmailAccess(userMail).then(async (access) => {
-          if (!isMounted) return;
-          if (!access.allowed && userMail) {
-            await requestEmailAccess(userMail, "Đăng nhập qua Google - Chờ duyệt");
-            await supabase?.auth.signOut();
-            setAuthExternalNotice(
-              access.reason ||
-                `Gmail ${userMail} chưa được chủ sở hữu cấp quyền dùng ứng dụng. Yêu cầu của bạn đã được gửi tự động!`
-            );
-            setActiveUtilityModal("auth");
-            return;
-          }
-          if (userMail) {
-            rememberOwnerEmail(userMail);
-          }
-          setAuthExternalNotice(null);
-          const summary = buildCloudUserSummary(sessionUser);
-          currentUserRef.current = summary;
-          setCurrentUser(summary);
-          void syncSessionForUser(summary);
-        });
+        setAuthExternalNotice(null);
+        setActiveUtilityModal((prev) => (prev === 'auth' ? null : prev));
+        const summary = buildCloudUserSummary(sessionUser);
+        currentUserRef.current = summary;
+        setCurrentUser(summary);
+        void syncSessionForUser(summary);
       } else {
         const hadUser =
           currentUserRef.current !== null ||
@@ -878,7 +1117,16 @@ export function App() {
         setLastSyncedAt(null);
         setSyncStatus('idle');
         if (hadUser) {
+          driveDebounceTimersRef.current.forEach((timerId) => {
+            window.clearTimeout(timerId);
+          });
+          driveDebounceTimersRef.current.clear();
+          latestDriveDocByIdRef.current.clear();
+          setDriveSyncBadge('idle');
+          setDriveSyncLabel('');
+          setPendingOfflineCount(0);
           clearStoredGoogleDriveToken();
+          setActiveGoogleDriveUser(null);
           setHasGoogleToken(false);
           autoHydrateAttemptedRef.current.clear();
           const localOnly = documentsRef.current.filter(
@@ -912,11 +1160,20 @@ export function App() {
     void supabase.auth
       .getSession()
       .then(({ data }) => {
-        if (data.session?.provider_token) {
-          setStoredGoogleDriveToken(data.session.provider_token);
-          setHasGoogleToken(true);
+        const session = data.session;
+        if (session?.user?.id) {
+          setActiveGoogleDriveUser(session.user.id);
+          if (session.provider_token) {
+            setStoredGoogleDriveToken(session.provider_token, session.user.id);
+            setHasGoogleToken(true);
+          } else {
+            setHasGoogleToken(Boolean(getStoredGoogleDriveToken(session.user.id)));
+          }
+        } else {
+          clearStoredGoogleDriveToken();
+          setHasGoogleToken(false);
         }
-        handleSessionUser(data.session?.user ?? null);
+        handleSessionUser(session?.user ?? null);
       })
       .catch(() => {
         if (isMounted) {
@@ -926,12 +1183,21 @@ export function App() {
 
     const { data: authSubscription } = supabase.auth.onAuthStateChange(
       (event, session) => {
-        if (session?.provider_token) {
-          setStoredGoogleDriveToken(session.provider_token);
-          setHasGoogleToken(true);
-        } else if (event === 'SIGNED_OUT' || !session) {
+        if (event === 'SIGNED_OUT' || !session?.user?.id) {
           clearStoredGoogleDriveToken();
           setHasGoogleToken(false);
+        } else {
+          const prevUserId = currentUserRef.current?.id;
+          if (prevUserId && prevUserId !== session.user.id) {
+            clearStoredGoogleDriveToken();
+          }
+          setActiveGoogleDriveUser(session.user.id);
+          if (session.provider_token) {
+            setStoredGoogleDriveToken(session.provider_token, session.user.id);
+            setHasGoogleToken(true);
+          } else {
+            setHasGoogleToken(Boolean(getStoredGoogleDriveToken(session.user.id)));
+          }
         }
         handleSessionUser(session?.user ?? null);
       }
@@ -950,32 +1216,138 @@ export function App() {
         onAuthCallback?: (cb: (url: string) => void) => () => void;
       };
     }).liteDesktop;
-    if (!desktopApi?.onAuthCallback || !supabase) return;
+    if (!desktopApi?.onAuthCallback) return;
 
     const unsubscribe = desktopApi.onAuthCallback((callbackUrl: string) => {
-      try {
-        const parsed = new URL(callbackUrl);
-        const hashParams = new URLSearchParams(
-          parsed.hash.startsWith("#") ? parsed.hash.slice(1) : parsed.hash
-        );
-        const accessToken = hashParams.get("access_token");
-        const refreshToken = hashParams.get("refresh_token");
-        const authCode = parsed.searchParams.get("code");
+      const deepLinkShare = parseCollabShareFromDeepLink(callbackUrl);
+      if (deepLinkShare) {
+        setLegalPage(null);
+        setRemoteRoomCode(null);
+        setSharedToken(null);
+        setCollabShareQuery(deepLinkShare);
+        return;
+      }
 
-        if (accessToken && refreshToken) {
-          void supabase?.auth.setSession({
-            access_token: accessToken,
-            refresh_token: refreshToken,
-          });
-        } else if (authCode) {
-          void supabase?.auth.exchangeCodeForSession(authCode);
+      if (!supabase) return;
+      void completeNativeOAuthCallback(callbackUrl)
+        .then(({ providerToken, userId }) => {
+          if (userId) {
+            setActiveGoogleDriveUser(userId);
+          }
+          if (providerToken) {
+            setStoredGoogleDriveToken(providerToken, userId);
+            setHasGoogleToken(true);
+          }
+        })
+        .catch(() => {
+          // Ignore malformed callback URLs
+        });
+    });
+
+    return unsubscribe;
+  }, []);
+
+
+  useEffect(() => {
+    let isDisposed = false;
+    let listenerHandle: { remove: () => Promise<void> } | null = null;
+
+    const processIncomingAppUrl = async (rawUrl: string) => {
+      const url = rawUrl.trim();
+      if (!url || isDisposed) {
+        return;
+      }
+
+      if (url.startsWith('content://') || url.startsWith('file://')) {
+        if (inFlightAndroidUriRef.current.has(url)) {
+          return;
+        }
+        const prevHandledAt = handledAndroidUriMapRef.current.get(url);
+        if (prevHandledAt && Date.now() - prevHandledAt < 3000) {
+          return;
+        }
+
+        inFlightAndroidUriRef.current.add(url);
+        handledAndroidUriMapRef.current.set(url, Date.now());
+        try {
+          const fileObj = await readAndroidUriAsFile(url);
+          if (!isDisposed) {
+            await handleUploadFilesRef.current([fileObj], {
+              openImmediately: true,
+            });
+          }
+        } catch (error) {
+          if (!isDisposed) {
+            const detail =
+              error instanceof Error && error.message
+                ? ` (${error.message})`
+                : '';
+            setUploadNotice(
+              `Không thể đọc tệp được mở từ thiết bị Android${detail}. Vui lòng thử chọn tệp trực tiếp trong thư viện.`
+            );
+          }
+        } finally {
+          inFlightAndroidUriRef.current.delete(url);
+        }
+        return;
+      }
+
+      const deepLinkShare = parseCollabShareFromDeepLink(url);
+      if (deepLinkShare) {
+        setLegalPage(null);
+        setRemoteRoomCode(null);
+        setSharedToken(null);
+        setCollabShareQuery(deepLinkShare);
+        return;
+      }
+
+      if (!supabase) {
+        return;
+      }
+
+      try {
+        await Browser.close().catch(() => {});
+        const { providerToken, userId } = await completeNativeOAuthCallback(url);
+        if (userId) {
+          setActiveGoogleDriveUser(userId);
+        }
+        if (providerToken) {
+          setStoredGoogleDriveToken(providerToken, userId);
+          setHasGoogleToken(true);
         }
       } catch {
         // Ignore malformed callback URLs
       }
-    });
+    };
 
-    return unsubscribe;
+    void CapacitorApp.getLaunchUrl()
+      .then((launch) => {
+        if (launch?.url) {
+          void processIncomingAppUrl(launch.url);
+        }
+      })
+      .catch(() => {
+        // Not running in Capacitor native shell
+      });
+
+    void CapacitorApp.addListener('appUrlOpen', ({ url }) => {
+      void processIncomingAppUrl(url);
+    })
+      .then((h) => {
+        if (isDisposed) {
+          void h.remove();
+        } else {
+          listenerHandle = h;
+        }
+      })
+      .catch(() => {
+        // Ignore when running outside Capacitor native shell
+      });
+
+    return () => {
+      isDisposed = true;
+      void listenerHandle?.remove();
+    };
   }, []);
 
   const hydrateCloudPdfDocument = useCallback(async (doc: DocumentItem) => {
@@ -1270,9 +1642,10 @@ export function App() {
   );
 
   const handleBackHome = useCallback(() => {
+    setLegalPage(null);
     setRemoteRoomCode(null);
     setSharedToken(null);
-    setCollabShareQueryToken(null);
+    setCollabShareQuery(null);
     setCollabSharedDoc(null);
     setCollabShareError(null);
     setIsResolvingCollabShare(false);
@@ -1281,10 +1654,14 @@ export function App() {
     setModalDocOverride(null);
 
     const url = new URL(window.location.href);
-    const hasShareParam = url.searchParams.has('share');
-    if (hasShareParam || window.location.hash) {
+    const hasShareParam =
+      url.searchParams.has('share') || url.searchParams.has('mode');
+    const isLegalPath = parseLegalPageFromPathname(url.pathname) !== null;
+    if (hasShareParam || window.location.hash || isLegalPath) {
       url.searchParams.delete('share');
-      window.history.pushState(null, '', `${url.pathname}${url.search}`);
+      url.searchParams.delete('mode');
+      const targetPath = isLegalPath ? '/' : url.pathname;
+      window.history.pushState(null, '', `${targetPath}${url.search}`);
     }
   }, []);
 
@@ -1390,8 +1767,167 @@ export function App() {
     [enqueueCloudUpsert]
   );
 
+  const syncDocumentToGoogleDrive = useCallback(
+    async (doc: DocumentItem, userId: string | null | undefined): Promise<boolean> => {
+      if (
+        !hasGoogleTokenRef.current ||
+        (doc.type !== 'docx' && doc.type !== 'xlsx' && doc.type !== 'pptx')
+      ) {
+        return false;
+      }
+
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        await enqueuePendingUpload(userId, doc, 'drive', 'Ngoại tuyến').catch(
+          () => undefined
+        );
+        const list = await getPendingUploads(userId).catch(() => []);
+        setPendingOfflineCount(list.length);
+        setDriveSyncBadge('offline');
+        setDriveSyncLabel('Chờ đồng bộ (Ngoại tuyến)');
+        return false;
+      }
+
+      setDriveSyncBadge('saving');
+      setDriveSyncLabel('Đang lưu lên Drive...');
+
+      try {
+        const { blob, fileName, mimeType } = await buildDocumentUploadPayload(doc);
+        await upsertDocumentToLiteDrive(
+          doc.id,
+          blob,
+          fileName,
+          mimeType,
+          userId ?? undefined
+        );
+        setDriveSyncBadge('saved');
+        setDriveSyncLabel('Đã lưu lên Drive');
+        return true;
+      } catch (error) {
+        const errMsg =
+          error instanceof Error ? error.message : 'Lỗi đồng bộ Google Drive.';
+        const target: PendingUploadTarget =
+          currentUserRef.current && isSupabaseConfigured ? 'both' : 'drive';
+        await enqueuePendingUpload(userId, doc, target, errMsg).catch(
+          () => undefined
+        );
+        const list = await getPendingUploads(userId).catch(() => []);
+        setPendingOfflineCount(list.length);
+
+        if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+          setDriveSyncBadge('offline');
+          setDriveSyncLabel('Chờ đồng bộ (Ngoại tuyến)');
+        } else {
+          setDriveSyncBadge('error');
+          setDriveSyncLabel('Lỗi đồng bộ Drive');
+        }
+        return false;
+      }
+    },
+    []
+  );
+
+  const flushOfflineQueueForUser = useCallback(
+    async (userId: string | null | undefined) => {
+      const existing = await getPendingUploads(userId).catch(() => []);
+      setPendingOfflineCount(existing.length);
+
+      if (
+        existing.length === 0 ||
+        (typeof navigator !== 'undefined' && navigator.onLine === false)
+      ) {
+        if (
+          existing.length > 0 &&
+          typeof navigator !== 'undefined' &&
+          navigator.onLine === false
+        ) {
+          setDriveSyncBadge('offline');
+          setDriveSyncLabel('Chờ đồng bộ (Ngoại tuyến)');
+        }
+        return;
+      }
+
+      setDriveSyncBadge('saving');
+      setDriveSyncLabel('Đang đồng bộ ngoại tuyến...');
+
+      const result = await flushPendingUploads(userId, async (task) => {
+        if (task.target === 'supabase' || task.target === 'both') {
+          const activeUser = currentUserRef.current;
+          if (activeUser && isSupabaseConfigured) {
+            await upsertCloudDocument(activeUser.id, task.documentSnapshot, {
+              file: null,
+              touchUpdatedAt: true,
+            });
+          }
+        }
+
+        if (task.target === 'drive' || task.target === 'both') {
+          const docSnap = task.documentSnapshot;
+          if (
+            hasGoogleTokenRef.current &&
+            (docSnap.type === 'docx' ||
+              docSnap.type === 'xlsx' ||
+              docSnap.type === 'pptx')
+          ) {
+            const payload = await buildDocumentUploadPayload(docSnap);
+            await upsertDocumentToLiteDrive(
+              docSnap.id,
+              payload.blob,
+              payload.fileName,
+              payload.mimeType,
+              currentUserRef.current?.id
+            );
+          }
+        }
+      });
+
+      setPendingOfflineCount(result.remaining);
+      if (result.remaining === 0 && result.processed > 0) {
+        setDriveSyncBadge('saved');
+        setDriveSyncLabel(
+          hasGoogleTokenRef.current
+            ? 'Đã lưu lên Drive'
+            : 'Đã đồng bộ lên đám mây'
+        );
+      } else if (result.failed > 0) {
+        setDriveSyncBadge(
+          typeof navigator !== 'undefined' && navigator.onLine === false
+            ? 'offline'
+            : 'error'
+        );
+        setDriveSyncLabel(
+          typeof navigator !== 'undefined' && navigator.onLine === false
+            ? 'Chờ đồng bộ (Ngoại tuyến)'
+            : 'Lỗi đồng bộ hàng đợi'
+        );
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    const activeUserId = currentUser?.id ?? null;
+    void flushOfflineQueueForUser(activeUserId);
+
+    const handleOnline = () => {
+      void flushOfflineQueueForUser(currentUserRef.current?.id ?? null);
+    };
+    const handleOffline = () => {
+      if (currentUserRef.current || hasGoogleTokenRef.current) {
+        setDriveSyncBadge('offline');
+        setDriveSyncLabel('Chờ đồng bộ (Ngoại tuyến)');
+      }
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [currentUser?.id, hasGoogleToken, flushOfflineQueueForUser]);
+
   const handleSaveDocument = useCallback(
-    (updatedDoc: DocumentItem) => {
+    (updatedDoc: DocumentItem, options?: { isManualSave?: boolean }) => {
       if (activeCollabPermissionRef.current === 'view') {
         return;
       }
@@ -1436,9 +1972,49 @@ export function App() {
         setCollabSharedDoc(savedDoc);
       }
 
+      const activeUser = currentUserRef.current;
+      const activeUserId = activeUser?.id ?? null;
+
+      // Save instant IndexedDB draft scoped to userId
+      void saveLocalDraft(activeUserId, savedDoc).catch(() => undefined);
+
+      // Save manual version checkpoint (max 10 per userId + docId)
+      if (options?.isManualSave) {
+        const saverName =
+          activeUser?.displayName || activeUser?.email || undefined;
+        void saveDocumentVersion(activeUserId, savedDoc, saverName).catch(
+          () => undefined
+        );
+      }
+
+      const isOffline =
+        typeof navigator !== 'undefined' && navigator.onLine === false;
+      const supportsDriveSync =
+        hasGoogleTokenRef.current &&
+        (savedDoc.type === 'docx' ||
+          savedDoc.type === 'xlsx' ||
+          savedDoc.type === 'pptx');
+
+      if (isOffline) {
+        if (activeUser || hasGoogleTokenRef.current) {
+          const target: PendingUploadTarget =
+            activeUser && supportsDriveSync
+              ? 'both'
+              : activeUser
+                ? 'supabase'
+                : 'drive';
+          setDriveSyncBadge('offline');
+          setDriveSyncLabel('Chờ đồng bộ (Ngoại tuyến)');
+          void enqueuePendingUpload(activeUserId, savedDoc, target, 'Ngoại tuyến')
+            .then(() => getPendingUploads(activeUserId))
+            .then((list) => setPendingOfflineCount(list.length))
+            .catch(() => undefined);
+        }
+        return;
+      }
+
       realtimeRoomRef.current?.schedulePersist(savedDoc);
 
-      const activeUser = currentUserRef.current;
       if (
         activeUser &&
         isSupabaseConfigured &&
@@ -1449,8 +2025,105 @@ export function App() {
           touchUpdatedAt: true,
         });
       }
+
+      if (supportsDriveSync) {
+        const existingTimer = driveDebounceTimersRef.current.get(savedDoc.id);
+        if (existingTimer !== undefined) {
+          window.clearTimeout(existingTimer);
+          driveDebounceTimersRef.current.delete(savedDoc.id);
+        }
+        latestDriveDocByIdRef.current.set(savedDoc.id, savedDoc);
+
+        if (options?.isManualSave) {
+          void syncDocumentToGoogleDrive(savedDoc, activeUserId);
+        } else {
+          const timerId = window.setTimeout(() => {
+            driveDebounceTimersRef.current.delete(savedDoc.id);
+            const latestDoc =
+              latestDriveDocByIdRef.current.get(savedDoc.id) ?? savedDoc;
+            void syncDocumentToGoogleDrive(
+              latestDoc,
+              currentUserRef.current?.id ?? null
+            );
+          }, 10_000);
+          driveDebounceTimersRef.current.set(savedDoc.id, timerId);
+        }
+      }
     },
-    [enqueueCloudUpsert]
+    [enqueueCloudUpsert, syncDocumentToGoogleDrive]
+  );
+
+  const handleRestoreVersion = useCallback(
+    async (restoredDoc: DocumentItem, version: DocumentVersionRecord) => {
+      const existingDoc =
+        documentsRef.current.find((d) => d.id === restoredDoc.id) ??
+        (collabSharedDocRef.current?.id === restoredDoc.id
+          ? collabSharedDocRef.current
+          : undefined);
+
+      const mergedRestored: DocumentItem = {
+        ...restoredDoc,
+        sourceFile: existingDoc?.sourceFile ?? restoredDoc.sourceFile,
+        fileUrl: existingDoc?.fileUrl ?? restoredDoc.fileUrl,
+        objectUrl: existingDoc?.objectUrl ?? restoredDoc.objectUrl,
+        r2ObjectKey: existingDoc?.r2ObjectKey ?? restoredDoc.r2ObjectKey,
+        storagePath: existingDoc?.storagePath ?? restoredDoc.storagePath,
+        collabPermission:
+          existingDoc?.collabPermission ?? restoredDoc.collabPermission,
+        sharedOwnerId:
+          existingDoc?.sharedOwnerId ?? restoredDoc.sharedOwnerId,
+        shareToken: existingDoc?.shareToken ?? restoredDoc.shareToken,
+        isShared: existingDoc?.isShared ?? restoredDoc.isShared,
+        updatedAt: 'Vừa khôi phục',
+        lastSavedAt: new Date().toISOString(),
+      };
+
+      const existsInDocs = documentsRef.current.some(
+        (d) => d.id === mergedRestored.id
+      );
+      if (existsInDocs) {
+        const nextDocs = documentsRef.current.map((d) =>
+          d.id === mergedRestored.id ? mergedRestored : d
+        );
+        documentsRef.current = nextDocs;
+        setDocuments(nextDocs);
+        persistDocumentsToStorage(nextDocs);
+      }
+
+      if (collabSharedDocRef.current?.id === mergedRestored.id) {
+        setCollabSharedDoc(mergedRestored);
+      }
+
+      const activeUserId = currentUserRef.current?.id ?? null;
+      await saveLocalDraft(activeUserId, mergedRestored).catch(() => undefined);
+
+      if (
+        currentUserRef.current &&
+        isSupabaseConfigured &&
+        activeCollabPermissionRef.current === 'owner'
+      ) {
+        void enqueueCloudUpsert(currentUserRef.current.id, mergedRestored, {
+          file: null,
+          touchUpdatedAt: true,
+        });
+      }
+
+      if (
+        hasGoogleTokenRef.current &&
+        (mergedRestored.type === 'docx' ||
+          mergedRestored.type === 'xlsx' ||
+          mergedRestored.type === 'pptx')
+      ) {
+        void syncDocumentToGoogleDrive(mergedRestored, activeUserId);
+      }
+
+      setIsVersionHistoryOpen(false);
+      setVersionHistoryDocOverride(null);
+      setUploadNotice(
+        `Đã khôi phục phiên bản "${version.title}" lưu lúc ${new Date(version.savedAt).toLocaleString('vi-VN')}.`
+      );
+    },
+    [enqueueCloudUpsert, syncDocumentToGoogleDrive]
   );
 
   const handleShareStateChanged = useCallback(
@@ -1767,76 +2440,85 @@ export function App() {
     [enqueueCloudUpsert]
   );
 
-  const handleUploadFiles = useCallback(async (files: FileList | File[]) => {
-    const fileArray = Array.from(files);
-    if (fileArray.length === 0) {
-      return;
-    }
+  const handleUploadFiles = useCallback(
+    async (
+      files: FileList | File[],
+      options?: { openImmediately?: boolean }
+    ) => {
+      const fileArray = Array.from(files);
+      if (fileArray.length === 0) {
+        return;
+      }
 
-    setIsUploading(true);
-    setUploadProgress(null);
-    const acceptedDocs: DocumentItem[] = [];
-    const errorMessages: string[] = [];
+      setIsUploading(true);
+      setUploadProgress(null);
+      const acceptedDocs: DocumentItem[] = [];
+      const errorMessages: string[] = [];
 
-    try {
-      for (const file of fileArray) {
-        const result = await parseUploadedFile(file);
-        if (result.createdObjectUrls.length > 0) {
-          createdObjectUrlsRef.current.push(...result.createdObjectUrls);
+      try {
+        for (const file of fileArray) {
+          const result = await parseUploadedFile(file);
+          if (result.createdObjectUrls.length > 0) {
+            createdObjectUrlsRef.current.push(...result.createdObjectUrls);
+          }
+          if (result.document) {
+            acceptedDocs.push({
+              ...result.document,
+              originalFileName: result.document.originalFileName ?? file.name,
+            });
+          } else if (result.error) {
+            errorMessages.push(result.error);
+          }
         }
-        if (result.document) {
-          acceptedDocs.push({
-            ...result.document,
-            originalFileName: result.document.originalFileName ?? file.name,
+
+        let quotaNote = '';
+        if (acceptedDocs.length > 0) {
+          const primaryDoc = acceptedDocs[0];
+          const nextDocs = [...acceptedDocs, ...documentsRef.current];
+          documentsRef.current = nextDocs;
+          setDocuments(nextDocs);
+          setLastActiveDocId(primaryDoc.id);
+
+          const storageResult = persistDocumentsToStorage(nextDocs);
+          if (storageResult.quotaExceeded) {
+            quotaNote =
+              ' (Bộ nhớ trình duyệt đã đầy — tệp vẫn sẵn sàng dùng trong phiên hiện tại.)';
+          }
+
+          // Keep user on Home Hub and ensure the newly uploaded card is immediately visible
+          setSearchQuery('');
+          setActiveNav((prevNav) => {
+            if (prevNav === 'folders') {
+              return prevNav;
+            }
+            if (prevNav === 'slide' && primaryDoc.type === 'pptx') {
+              return prevNav;
+            }
+            if (prevNav === 'word' && primaryDoc.type === 'docx') {
+              return prevNav;
+            }
+            if (prevNav === 'excel' && primaryDoc.type === 'xlsx') {
+              return prevNav;
+            }
+            if (prevNav === 'pdf' && primaryDoc.type === 'pdf') {
+              return prevNav;
+            }
+            return 'home';
           });
-        } else if (result.error) {
-          errorMessages.push(result.error);
+          setActiveFilter((prevFilter) => {
+            if (prevFilter === 'all' || prevFilter === primaryDoc.type) {
+              return prevFilter;
+            }
+            return 'all';
+          });
+          setActiveLocation((prevLoc) =>
+            prevLoc === 'shared' || prevLoc === 'cloud' ? 'all' : prevLoc
+          );
+
+          if (options?.openImmediately) {
+            handleOpenDocument(primaryDoc);
+          }
         }
-      }
-
-      let quotaNote = '';
-      if (acceptedDocs.length > 0) {
-        const primaryDoc = acceptedDocs[0];
-        const nextDocs = [...acceptedDocs, ...documentsRef.current];
-        setDocuments(nextDocs);
-        setLastActiveDocId(primaryDoc.id);
-
-        const storageResult = persistDocumentsToStorage(nextDocs);
-        if (storageResult.quotaExceeded) {
-          quotaNote =
-            ' (Bộ nhớ trình duyệt đã đầy — tệp vẫn sẵn sàng dùng trong phiên hiện tại.)';
-        }
-
-        // Keep user on Home Hub and ensure the newly uploaded card is immediately visible
-        setSearchQuery('');
-        setActiveNav((prevNav) => {
-          if (prevNav === 'folders') {
-            return prevNav;
-          }
-          if (prevNav === 'slide' && primaryDoc.type === 'pptx') {
-            return prevNav;
-          }
-          if (prevNav === 'word' && primaryDoc.type === 'docx') {
-            return prevNav;
-          }
-          if (prevNav === 'excel' && primaryDoc.type === 'xlsx') {
-            return prevNav;
-          }
-          if (prevNav === 'pdf' && primaryDoc.type === 'pdf') {
-            return prevNav;
-          }
-          return 'home';
-        });
-        setActiveFilter((prevFilter) => {
-          if (prevFilter === 'all' || prevFilter === primaryDoc.type) {
-            return prevFilter;
-          }
-          return 'all';
-        });
-        setActiveLocation((prevLoc) =>
-          prevLoc === 'shared' || prevLoc === 'cloud' ? 'all' : prevLoc
-        );
-      }
 
       // Cloud sync immediately after local parsing when signed in (R2 Presigned URL -> Supabase fallback)
       const activeUser = currentUserRef.current;
@@ -1948,11 +2630,15 @@ export function App() {
       } else if (errorMessages.length > 0) {
         setUploadNotice(errorMessages.join(' '));
       }
-    } finally {
-      setIsUploading(false);
-      setUploadProgress(null);
-    }
-  }, []);
+      } finally {
+        setIsUploading(false);
+        setUploadProgress(null);
+      }
+    },
+    [handleOpenDocument]
+  );
+
+  handleUploadFilesRef.current = handleUploadFiles;
 
   const handleConfirmMigrateLocal = useCallback(async () => {
     const activeUser = currentUserRef.current;
@@ -2148,7 +2834,16 @@ export function App() {
     } catch {
       // Proceed to clear local session state even if network signOut fails
     } finally {
+      driveDebounceTimersRef.current.forEach((timerId) => {
+        window.clearTimeout(timerId);
+      });
+      driveDebounceTimersRef.current.clear();
+      latestDriveDocByIdRef.current.clear();
+      setDriveSyncBadge('idle');
+      setDriveSyncLabel('');
+      setPendingOfflineCount(0);
       clearStoredGoogleDriveToken();
+      setActiveGoogleDriveUser(null);
       setHasGoogleToken(false);
       currentUserRef.current = null;
       lastLoadedUserIdRef.current = null;
@@ -2262,40 +2957,42 @@ export function App() {
     handleSelectNav('home');
   }, [handleSelectNav]);
 
+  const handleNavigateLegal = useCallback((page: LegalPageKind) => {
+    setActiveUtilityModal(null);
+    setLegalPage(page);
+    try {
+      window.history.pushState({}, '', `/${page}`);
+    } catch {
+      // Ignore history push errors under file:// protocol
+    }
+  }, []);
+
+  const handleBackFromLegal = useCallback(() => {
+    setLegalPage(null);
+    try {
+      window.history.pushState({}, '', '/');
+    } catch {
+      // Ignore history push errors under file:// protocol
+    }
+  }, []);
+
   const handleConnectGoogleDrive = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
       setActiveUtilityModal('auth');
       return;
     }
 
-    const oauthOptions = {
-      redirectTo: window.location.origin,
-      scopes:
-        'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly',
-      queryParams: {
-        access_type: 'offline',
-        prompt: 'consent',
-      },
-    };
-
     try {
-      if (currentUserRef.current) {
-        const { error: linkError } = await supabase.auth.linkIdentity({
-          provider: 'google',
-          options: oauthOptions,
-        });
-        if (!linkError) {
-          return;
-        }
-      }
-
-      const { error: signInError } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: oauthOptions,
-      });
-      if (signInError) {
+      const result = await startGoogleOAuthFlow();
+      if (result.error) {
         setUploadNotice(
-          `Không thể kết nối Google Drive: ${signInError.message}`
+          `Không thể kết nối Google Drive: ${result.error.message}`
+        );
+        return;
+      }
+      if (result.openedExternally) {
+        setUploadNotice(
+          'Đã mở trình duyệt để kết nối Google Drive. Sau khi xác thực, hệ thống sẽ tự quay lại LITE.'
         );
       }
     } catch (error) {
@@ -2602,7 +3299,40 @@ export function App() {
   );
 
   const isAnyModalOpen =
-    activeModal !== null || activeUtilityModal !== null || isDriveModalOpen;
+    activeModal !== null ||
+    activeUtilityModal !== null ||
+    isDriveModalOpen ||
+    isVersionHistoryOpen ||
+    isQuickConverterOpen;
+
+  const workspaceSyncContextValue = useMemo<WorkspaceSyncContextValue>(
+    () => ({
+      driveSyncBadge,
+      driveSyncLabel,
+      pendingOfflineCount,
+      onOpenVersionHistory: () => {
+        setVersionHistoryDocOverride(null);
+        setIsVersionHistoryOpen(true);
+      },
+      onOpenQuickConverter: () => {
+        setQuickConverterDocOverride(null);
+        setIsQuickConverterOpen(true);
+      },
+      onSaveVersionCheckpoint: () => {
+        if (!activeWorkspaceDoc) {
+          return;
+        }
+        handleSaveDocument(activeWorkspaceDoc, { isManualSave: true });
+      },
+    }),
+    [
+      driveSyncBadge,
+      driveSyncLabel,
+      pendingOfflineCount,
+      activeWorkspaceDoc,
+      handleSaveDocument,
+    ]
+  );
 
   const cloudActionModalMode: 'logoutConfirm' | 'migrateLocal' | null =
     activeUtilityModal === 'logoutConfirm' ||
@@ -2630,8 +3360,19 @@ export function App() {
     );
   }
 
+  // Priority Route 2.5: Legal Pages (/privacy | /terms)
+  if (legalPage) {
+    return (
+      <LegalPagesView
+        page={legalPage}
+        onNavigatePage={handleNavigateLegal}
+        onBackToApp={handleBackFromLegal}
+      />
+    );
+  }
+
   // Priority Route 3: ?share=<token> Realtime Collaboration Link Loading / Error View
-  if (collabShareQueryToken && !activeWorkspaceDoc) {
+  if (collabShareQuery && !activeWorkspaceDoc) {
     if (isResolvingCollabShare) {
       return (
         <div className="min-h-[100dvh] w-full flex items-center justify-center bg-[#FAF8F5] px-4">
@@ -2675,73 +3416,75 @@ export function App() {
   return (
     <>
       {activeWorkspaceDoc ? (
-        activeWorkspaceDoc.type === 'pptx' ? (
-          <SlideWorkspace
-            document={activeWorkspaceDoc}
-            isModalOpen={isAnyModalOpen}
-            autoSaveEnabled={userSettings.autoSyncOnEdit}
-            isHydratingCloudFile={hydratingPdfDocId === activeWorkspaceDoc.id}
-            collaborators={collabCollaborators}
-            selfSessionId={selfSessionId}
-            collabPermission={activeCollabPermission}
-            onPresenceUpdate={handleCollabPresenceUpdate}
-            onBroadcastPatch={handleCollabBroadcastPatch}
-            incomingRemotePatch={latestRemotePatch}
-            onRetryCloudDownload={() => {
-              void hydrateCloudPdfDocument(activeWorkspaceDoc);
-            }}
-            onBackHome={handleBackHome}
-            onSaveDocument={handleSaveDocument}
-            onOpenModal={handleOpenModal}
-          />
-        ) : activeWorkspaceDoc.type === 'docx' ? (
-          <WordWorkspace
-            document={activeWorkspaceDoc}
-            isModalOpen={isAnyModalOpen}
-            defaultPaperTheme={userSettings.defaultWordTheme}
-            autoSaveEnabled={userSettings.autoSyncOnEdit}
-            isHydratingCloudFile={hydratingPdfDocId === activeWorkspaceDoc.id}
-            collaborators={collabCollaborators}
-            selfSessionId={selfSessionId}
-            collabPermission={activeCollabPermission}
-            onPresenceUpdate={handleCollabPresenceUpdate}
-            onBroadcastPatch={handleCollabBroadcastPatch}
-            incomingRemotePatch={latestRemotePatch}
-            onRetryCloudDownload={() => {
-              void hydrateCloudPdfDocument(activeWorkspaceDoc);
-            }}
-            onBackHome={handleBackHome}
-            onSaveDocument={handleSaveDocument}
-            onOpenModal={handleOpenModal}
-          />
-        ) : activeWorkspaceDoc.type === 'xlsx' ? (
-          <ExcelWorkspace
-            document={activeWorkspaceDoc}
-            isModalOpen={isAnyModalOpen}
-            autoSaveEnabled={userSettings.autoSyncOnEdit}
-            collaborators={collabCollaborators}
-            selfSessionId={selfSessionId}
-            collabPermission={activeCollabPermission}
-            onPresenceUpdate={handleCollabPresenceUpdate}
-            onBroadcastPatch={handleCollabBroadcastPatch}
-            incomingRemotePatch={latestRemotePatch}
-            onBackHome={handleBackHome}
-            onSaveDocument={handleSaveDocument}
-            onOpenModal={handleOpenModal}
-          />
-        ) : (
-          <PdfWorkspace
-            document={activeWorkspaceDoc}
-            isModalOpen={isAnyModalOpen}
-            isHydratingCloudFile={hydratingPdfDocId === activeWorkspaceDoc.id}
-            onRetryCloudDownload={() => {
-              void hydrateCloudPdfDocument(activeWorkspaceDoc);
-            }}
-            onBackHome={handleBackHome}
-            onOpenModal={handleOpenModal}
-            onReplacePdfFile={handleReplacePdfFile}
-          />
-        )
+        <WorkspaceSyncProvider value={workspaceSyncContextValue}>
+          {activeWorkspaceDoc.type === 'pptx' ? (
+            <SlideWorkspace
+              document={activeWorkspaceDoc}
+              isModalOpen={isAnyModalOpen}
+              autoSaveEnabled={userSettings.autoSyncOnEdit}
+              isHydratingCloudFile={hydratingPdfDocId === activeWorkspaceDoc.id}
+              collaborators={collabCollaborators}
+              selfSessionId={selfSessionId}
+              collabPermission={activeCollabPermission}
+              onPresenceUpdate={handleCollabPresenceUpdate}
+              onBroadcastPatch={handleCollabBroadcastPatch}
+              incomingRemotePatch={latestRemotePatch}
+              onRetryCloudDownload={() => {
+                void hydrateCloudPdfDocument(activeWorkspaceDoc);
+              }}
+              onBackHome={handleBackHome}
+              onSaveDocument={handleSaveDocument}
+              onOpenModal={handleOpenModal}
+            />
+          ) : activeWorkspaceDoc.type === 'docx' ? (
+            <WordWorkspace
+              document={activeWorkspaceDoc}
+              isModalOpen={isAnyModalOpen}
+              defaultPaperTheme={userSettings.defaultWordTheme}
+              autoSaveEnabled={userSettings.autoSyncOnEdit}
+              isHydratingCloudFile={hydratingPdfDocId === activeWorkspaceDoc.id}
+              collaborators={collabCollaborators}
+              selfSessionId={selfSessionId}
+              collabPermission={activeCollabPermission}
+              onPresenceUpdate={handleCollabPresenceUpdate}
+              onBroadcastPatch={handleCollabBroadcastPatch}
+              incomingRemotePatch={latestRemotePatch}
+              onRetryCloudDownload={() => {
+                void hydrateCloudPdfDocument(activeWorkspaceDoc);
+              }}
+              onBackHome={handleBackHome}
+              onSaveDocument={handleSaveDocument}
+              onOpenModal={handleOpenModal}
+            />
+          ) : activeWorkspaceDoc.type === 'xlsx' ? (
+            <ExcelWorkspace
+              document={activeWorkspaceDoc}
+              isModalOpen={isAnyModalOpen}
+              autoSaveEnabled={userSettings.autoSyncOnEdit}
+              collaborators={collabCollaborators}
+              selfSessionId={selfSessionId}
+              collabPermission={activeCollabPermission}
+              onPresenceUpdate={handleCollabPresenceUpdate}
+              onBroadcastPatch={handleCollabBroadcastPatch}
+              incomingRemotePatch={latestRemotePatch}
+              onBackHome={handleBackHome}
+              onSaveDocument={handleSaveDocument}
+              onOpenModal={handleOpenModal}
+            />
+          ) : (
+            <PdfWorkspace
+              document={activeWorkspaceDoc}
+              isModalOpen={isAnyModalOpen}
+              isHydratingCloudFile={hydratingPdfDocId === activeWorkspaceDoc.id}
+              onRetryCloudDownload={() => {
+                void hydrateCloudPdfDocument(activeWorkspaceDoc);
+              }}
+              onBackHome={handleBackHome}
+              onOpenModal={handleOpenModal}
+              onReplacePdfFile={handleReplacePdfFile}
+            />
+          )}
+        </WorkspaceSyncProvider>
       ) : (
         <div className="h-[100dvh] w-full overflow-hidden flex bg-[#FAF8F5] text-slate-900">
           <SidebarRail
@@ -2802,6 +3545,15 @@ export function App() {
               onOpenDocument={handleOpenDocument}
               onCreateDocument={handleCreateDocument}
               onShareDocument={handleShareDocument}
+              onConvertDocument={(doc) => {
+                setQuickConverterDocOverride(doc ?? null);
+                setIsQuickConverterOpen(true);
+              }}
+              onOpenVersionHistoryDoc={(doc) => {
+                setVersionHistoryDocOverride(doc);
+                setIsVersionHistoryOpen(true);
+              }}
+              onNavigateLegal={handleNavigateLegal}
               onToggleFavorite={handleToggleFavorite}
               onUploadFiles={handleUploadFiles}
               onDeleteDocuments={handleDeleteDocuments}
@@ -2845,6 +3597,7 @@ export function App() {
           setAuthExternalNotice(null);
           handleAuthSuccess();
         }}
+        onNavigateLegal={handleNavigateLegal}
       />
 
       <SettingsModal
@@ -2892,6 +3645,31 @@ export function App() {
           void handleConnectGoogleDrive();
         }}
         onOpenDriveFile={handleOpenDriveFile}
+      />
+
+      <VersionHistoryModal
+        isOpen={isVersionHistoryOpen}
+        document={versionHistoryDocOverride ?? activeWorkspaceDoc ?? modalDocument}
+        userId={currentUser?.id ?? null}
+        savedByName={currentUser?.displayName || currentUser?.email || null}
+        onClose={() => {
+          setIsVersionHistoryOpen(false);
+          setVersionHistoryDocOverride(null);
+        }}
+        onRestoreVersion={handleRestoreVersion}
+        onSaveCheckpoint={(doc) => {
+          handleSaveDocument(doc, { isManualSave: true });
+        }}
+      />
+
+      <QuickConverterModal
+        isOpen={isQuickConverterOpen}
+        onClose={() => {
+          setIsQuickConverterOpen(false);
+          setQuickConverterDocOverride(null);
+        }}
+        documents={documents}
+        initialDocument={quickConverterDocOverride ?? activeWorkspaceDoc}
       />
 
       <input

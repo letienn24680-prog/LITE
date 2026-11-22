@@ -20,12 +20,13 @@ import {
   type GoogleDriveTargetExt,
 } from '../../services/googleDrive';
 import { formatRelativeVietnameseTime } from '../../services/cloudSync';
+import { startGoogleOAuthFlow } from '../../lib/supabase';
 
 export interface GoogleDriveBrowserModalProps {
   isOpen: boolean;
   hasGoogleToken: boolean;
   onClose: () => void;
-  onConnectGoogle: () => void;
+  onConnectGoogle?: () => void;
   onOpenDriveFile: (
     file: File,
     driveItem: GoogleDriveFileItem
@@ -332,7 +333,13 @@ export function GoogleDriveBrowserModal({
 
               <button
                 type="button"
-                onClick={onConnectGoogle}
+                onClick={() => {
+                  if (onConnectGoogle) {
+                    onConnectGoogle();
+                  } else {
+                    void startGoogleOAuthFlow();
+                  }
+                }}
                 className="min-h-[44px] px-5 rounded-xl bg-[#4F46E5] hover:bg-indigo-700 text-white text-xs sm:text-sm font-semibold shadow-sm shadow-indigo-600/20 inline-flex items-center justify-center gap-2 transition-colors"
               >
                 <GoogleDriveTricolorIcon className="h-4 w-4" />

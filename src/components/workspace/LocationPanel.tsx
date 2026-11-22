@@ -13,6 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import type { CloudUserSummary } from '../../types/document';
+import { startGoogleOAuthFlow } from '../../lib/supabase';
 
 export type LocationSourceKey =
   | 'all'
@@ -35,7 +36,7 @@ export interface LocationPanelProps {
   onSelectLocation: (loc: LocationSourceKey) => void;
   onPickDeviceFiles: () => void;
   onBrowseGoogleDrive: () => void;
-  onAddGoogleAccount: () => void;
+  onAddGoogleAccount?: () => void;
   onCloseMobile: () => void;
 }
 
@@ -384,7 +385,11 @@ export function LocationPanel({
         <button
           type="button"
           onClick={() => {
-            onAddGoogleAccount();
+            if (onAddGoogleAccount) {
+              onAddGoogleAccount();
+            } else {
+              void startGoogleOAuthFlow();
+            }
             if (isMobile) {
               onCloseMobile();
             }

@@ -7,11 +7,13 @@ import {
   Link2,
   Loader2,
   Lock,
+  Smartphone,
   Users,
   X,
 } from "lucide-react";
 import type { CloudUserSummary, DocumentItem } from "../../types/document";
 import {
+  buildAppDeepLinkShareUrl,
   buildCollabShareUrl,
   createOrUpdateShareLink,
   getShareLinkInfo,
@@ -46,9 +48,11 @@ export function ShareCollabModal({
 }: ShareCollabModalProps) {
   const [permission, setPermission] = useState<CollabPermission>("private");
   const [shareUrl, setShareUrl] = useState<string>("");
+  const [shareToken, setShareToken] = useState<string>("");
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [copied, setCopied] = useState<boolean>(false);
+  const [copiedDeepLink, setCopiedDeepLink] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const ownerId =
@@ -61,14 +65,17 @@ export function ShareCollabModal({
     let cancelled = false;
     setErrorMsg(null);
     setCopied(false);
+    setCopiedDeepLink(false);
 
     if (document.shareToken && document.shareAccess === "link") {
-      const initialPerm: CollabPermission =
+      const initialPerm: "view" | "edit" =
         document.collabPermission === "view" ? "view" : "edit";
       setPermission(initialPerm);
-      setShareUrl(buildCollabShareUrl(document.shareToken));
+      setShareToken(document.shareToken);
+      setShareUrl(buildCollabShareUrl(document.shareToken, initialPerm));
     } else {
       setPermission("private");
+      setShareToken("");
       setShareUrl("");
     }
 
@@ -77,7 +84,13 @@ export function ShareCollabModal({
       .then((info) => {
         if (cancelled) return;
         setPermission(info.permission);
-        setShareUrl(info.shareUrl || "");
+        setShareToken(info.shareToken || "");
+        setShareUrl(
+          info.shareUrl ||
+            (info.shareToken && info.permission !== "private"
+              ? buildCollabShareUrl(info.shareToken, info.permission)
+              : "")
+        );
       })
       .catch(() => {
         // Giữ trạng thái hiện tại nếu lỗi mạng
@@ -114,6 +127,7 @@ export function ShareCollabModal({
       if (nextPerm === "private") {
         await revokeShareLink(ownerId, document.id);
         setPermission("private");
+        setShareToken("");
         setShareUrl("");
         onShareStateChanged?.({
           documentId: document.id,
@@ -128,6 +142,7 @@ export function ShareCollabModal({
           document
         );
         setPermission(res.permission);
+        setShareToken(res.shareToken);
         setShareUrl(res.shareUrl);
         onShareStateChanged?.({
           documentId: document.id,
@@ -147,20 +162,36 @@ export function ShareCollabModal({
     }
   };
 
-  const handleCopyLink = async () => {
-    if (!shareUrl) return;
+  const copyTextToClipboard = async (value: string) => {
     try {
-      await navigator.clipboard.writeText(shareUrl);
+      await navigator.clipboard.writeText(value);
     } catch {
       const input = window.document.createElement("input");
-      input.value = shareUrl;
+      input.value = value;
       window.document.body.appendChild(input);
       input.select();
       window.document.execCommand("copy");
       window.document.body.removeChild(input);
     }
+  };
+
+  const handleCopyLink = async () => {
+    if (!shareUrl) return;
+    await copyTextToClipboard(shareUrl);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 2200);
+  };
+
+  const appDeepLinkUrl =
+    permission !== "private"
+      ? buildAppDeepLinkShareUrl(shareToken || document.id, permission)
+      : "";
+
+  const handleCopyDeepLink = async () => {
+    if (!appDeepLinkUrl) return;
+    await copyTextToClipboard(appDeepLinkUrl);
+    setCopiedDeepLink(true);
+    window.setTimeout(() => setCopiedDeepLink(false), 2200);
   };
 
   return (
@@ -341,7 +372,7 @@ export function ShareCollabModal({
           </div>
 
           {permission !== "private" && shareUrl && (
-            <div className="pt-1 space-y-2">
+            <div className="pt-1 space-y-2.5">
               <div className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-700">
                 <Globe className="w-3.5 h-3.5" />
                 <span>Liên kết cộng tác đang hoạt động</span>
@@ -372,6 +403,34 @@ export function ShareCollabModal({
                   )}
                 </button>
               </div>
+
+              {appDeepLinkUrl && (
+                <div className="flex items-center gap-2 rounded-xl bg-slate-50 border border-slate-200/80 px-2.5 py-1.5">
+                  <Smartphone className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                  <input
+                    type="text"
+                    readOnly
+                    value={appDeepLinkUrl}
+                    aria-label="Liên kết mở nhanh trong App"
+                    onFocus={(e) => e.currentTarget.select()}
+                    className="flex-1 min-w-0 bg-transparent text-[11px] font-mono text-slate-600 outline-none truncate"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyDeepLink()}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-indigo-50 border border-slate-200 hover:border-indigo-300 text-[11px] font-semibold text-slate-700 hover:text-indigo-700 shrink-0 transition"
+                  >
+                    {copiedDeepLink ? (
+                      <>
+                        <Check className="w-3 h-3 text-emerald-600" />
+                        <span className="text-emerald-700">Đã chép App</span>
+                      </>
+                    ) : (
+                      <span>Mở trong App</span>
+                    )}
+                  </button>
+                </div>
+              )}
             </div>
           )}
 

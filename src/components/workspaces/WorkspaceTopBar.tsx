@@ -1,36 +1,42 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 import {
+  AlertCircle,
   ArrowLeft,
   BookOpen,
   Check,
   ChevronDown,
+  CloudOff,
   CloudUpload,
   Download,
   ExternalLink,
+  FileOutput,
   FileSpreadsheet,
   FileText,
   HardDrive,
+  History,
   Loader2,
   Pencil,
   Presentation,
   Share2,
   X,
 } from 'lucide-react';
-import { CollaboratorPresenceBar } from "./CollaboratorPresenceBar";
+import { CollaboratorPresenceBar } from './CollaboratorPresenceBar';
+import type { CollaboratorPresence } from '../../services/realtimeCollab';
 import type { DocumentItem, DocumentType } from '../../types/document';
-import { isSupabaseConfigured, supabase } from '../../lib/supabase';
+import { startGoogleOAuthFlow } from '../../lib/supabase';
+import { useWorkspaceSync } from '../../contexts/WorkspaceSyncContext';
 import { buildDocumentUploadPayload } from '../../utils/fileExporter';
 import {
   GoogleDriveAuthError,
   getStoredGoogleDriveToken,
-  uploadFileToGoogleDrive,
+  upsertDocumentToLiteDrive,
 } from '../../services/googleDrive';
 
 export interface WorkspaceTopBarProps {
-  collaborators?: any[];
+  collaborators?: CollaboratorPresence[];
   selfSessionId?: string;
-  collabPermission?: any;
+  collabPermission?: 'owner' | 'edit' | 'view';
   document: DocumentItem;
   theme?: 'light' | 'dark';
   onBackHome: () => void;
@@ -106,6 +112,15 @@ export function WorkspaceTopBar({
   const isDark = theme === 'dark';
   const visual = FORMAT_VISUALS[document.type];
   const FormatIcon = visual.Icon;
+  const isReadOnlyCollab = collabPermission === 'view';
+
+  const {
+    driveSyncBadge,
+    driveSyncLabel,
+    pendingOfflineCount,
+    onOpenVersionHistory,
+    onOpenQuickConverter,
+  } = useWorkspaceSync();
 
   const [isEditingTitle, setIsEditingTitle] = useState<boolean>(false);
   const [titleDraft, setTitleDraft] = useState<string>(document.title);
@@ -164,7 +179,7 @@ export function WorkspaceTopBar({
   }, [isStorageMenuOpen]);
 
   const startEditingTitle = () => {
-    if (!onRenameTitle) {
+    if (!onRenameTitle || isReadOnlyCollab) {
       return;
     }
     cancelBlurRef.current = false;
@@ -209,29 +224,18 @@ export function WorkspaceTopBar({
   };
 
   const handleConnectGoogleDrive = async () => {
-    if (!isSupabaseConfigured || !supabase) {
-      setDriveStatus('error');
-      setDriveMessage(
-        'Chế độ Local Mode chưa cấu hình Supabase (.env). Vui lòng thiết lập VITE_SUPABASE_URL & VITE_SUPABASE_ANON_KEY để kết nối Google Drive.'
-      );
-      return;
-    }
     setIsConnectingGoogle(true);
     setDriveMessage(null);
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: window.location.origin,
-          scopes:
-            'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly',
-          queryParams: { access_type: 'offline', prompt: 'consent' },
-        },
-      });
-      if (error) {
+      const result = await startGoogleOAuthFlow();
+      if (result.error) {
         setDriveStatus('error');
         setDriveMessage(
-          error.message || 'Không thể khởi tạo đăng nhập Google Drive.'
+          result.error.message || 'Không thể khởi tạo đăng nhập Google Drive.'
+        );
+      } else if (result.openedExternally) {
+        setDriveMessage(
+          'Đã mở trình duyệt để kết nối Google Drive. Sau khi xác thực, hệ thống sẽ tự quay lại LITE.'
         );
       }
     } catch (err: unknown) {
@@ -247,7 +251,7 @@ export function WorkspaceTopBar({
   };
 
   const handleSaveToGoogleDrive = async () => {
-    const token = getStoredGoogleDriveToken();
+    const token = getStoredGoogleDriveToken(document.userId);
     if (!token) {
       setDriveStatus('auth_required');
       setDriveMessage(
@@ -264,9 +268,19 @@ export function WorkspaceTopBar({
     try {
       const { blob, fileName, mimeType } =
         await buildDocumentUploadPayload(document);
-      const uploaded = await uploadFileToGoogleDrive(blob, fileName, mimeType);
+      const uploaded = await upsertDocumentToLiteDrive(
+        document.id,
+        blob,
+        fileName,
+        mimeType,
+        document.userId
+      );
       setDriveStatus('success');
-      setDriveMessage(`Đã lưu lên Drive: ${uploaded.name || fileName}`);
+      setDriveMessage(
+        uploaded.updatedExisting
+          ? `Đã cập nhật trên Drive (LITE Workspace): ${uploaded.name || fileName}`
+          : `Đã lưu vào LITE Workspace: ${uploaded.name || fileName}`
+      );
       setDriveViewLink(uploaded.webViewLink ?? null);
     } catch (err: unknown) {
       if (err instanceof GoogleDriveAuthError) {
@@ -361,7 +375,7 @@ export function WorkspaceTopBar({
             <FormatIcon className="h-4 w-4" />
           </span>
 
-          {onRenameTitle && isEditingTitle ? (
+          {onRenameTitle && !isReadOnlyCollab && isEditingTitle ? (
             <input
               ref={titleInputRef}
               type="text"
@@ -378,7 +392,7 @@ export function WorkspaceTopBar({
                   : 'bg-white border-indigo-500 text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500/20'
               }`}
             />
-          ) : onRenameTitle ? (
+          ) : onRenameTitle && !isReadOnlyCollab ? (
             <button
               type="button"
               onClick={startEditingTitle}
@@ -422,13 +436,67 @@ export function WorkspaceTopBar({
         </div>
       </div>
 
-      {/* Right Cluster: Format-Specific Toolbar + Storage/Google Drive Menu + Share Button */}
+      {/* Right Cluster: Format-Specific Toolbar + Drive Sync Badge + Storage Menu + Share Button */}
       <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 max-w-[64%] sm:max-w-[72%]">
         {toolbar && (
           <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 min-w-0">
             {toolbar}
           </div>
         )}
+
+        {(driveSyncBadge !== 'idle' || pendingOfflineCount > 0) && (() => {
+          const badgeKind =
+            driveSyncBadge !== 'idle'
+              ? driveSyncBadge
+              : pendingOfflineCount > 0
+                ? 'offline'
+                : 'idle';
+          const badgeText =
+            driveSyncLabel.trim() ||
+            (badgeKind === 'saving'
+              ? 'Đang lưu lên Drive...'
+              : badgeKind === 'saved'
+                ? 'Đã lưu lên Drive'
+                : badgeKind === 'offline'
+                  ? pendingOfflineCount > 0
+                    ? `Chờ đồng bộ (${pendingOfflineCount})`
+                    : 'Chờ đồng bộ (Ngoại tuyến)'
+                  : 'Lỗi đồng bộ');
+          const badgeStyle =
+            badgeKind === 'saving'
+              ? isDark
+                ? 'bg-indigo-500/20 border-indigo-400/30 text-indigo-200'
+                : 'bg-indigo-50 border-indigo-200 text-indigo-700'
+              : badgeKind === 'saved'
+                ? isDark
+                  ? 'bg-emerald-500/20 border-emerald-400/30 text-emerald-200'
+                  : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                : badgeKind === 'offline'
+                  ? isDark
+                    ? 'bg-amber-500/20 border-amber-400/30 text-amber-200'
+                    : 'bg-amber-50 border-amber-200 text-amber-800'
+                  : isDark
+                    ? 'bg-rose-500/20 border-rose-400/30 text-rose-200'
+                    : 'bg-rose-50 border-rose-200 text-rose-700';
+
+          return (
+            <span
+              title={badgeText}
+              className={`hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-medium max-w-[200px] shrink-0 ${badgeStyle}`}
+            >
+              {badgeKind === 'saving' ? (
+                <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+              ) : badgeKind === 'saved' ? (
+                <Check className="h-3 w-3 shrink-0" />
+              ) : badgeKind === 'offline' ? (
+                <CloudOff className="h-3 w-3 shrink-0" />
+              ) : (
+                <AlertCircle className="h-3 w-3 shrink-0" />
+              )}
+              <span className="truncate">{badgeText}</span>
+            </span>
+          );
+        })()}
 
         {/* Menu Lưu trữ / Google Drive */}
         <div ref={storageMenuRef} className="relative shrink-0">
@@ -573,6 +641,86 @@ export function WorkspaceTopBar({
                       }`}
                     >
                       Lưu bản sao ngoại tuyến trên thiết bị
+                    </p>
+                  </div>
+                </button>
+
+                <div
+                  className={`my-1 border-t ${
+                    isDark ? 'border-white/10' : 'border-slate-100'
+                  }`}
+                />
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!onOpenVersionHistory}
+                  onClick={() => {
+                    setIsStorageMenuOpen(false);
+                    onOpenVersionHistory?.();
+                  }}
+                  className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl text-left transition-colors disabled:opacity-45 disabled:cursor-not-allowed ${
+                    isDark
+                      ? 'hover:bg-white/[0.08] text-slate-200'
+                      : 'hover:bg-[#F7F5F0] text-slate-700'
+                  }`}
+                >
+                  <span
+                    className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border ${
+                      isDark
+                        ? 'bg-indigo-500/15 border-indigo-400/25 text-indigo-300'
+                        : 'bg-indigo-50 border-indigo-200/80 text-indigo-600'
+                    }`}
+                  >
+                    <History className="h-4 w-4" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold truncate">
+                      Lịch sử phiên bản
+                    </p>
+                    <p
+                      className={`text-[11px] truncate ${
+                        isDark ? 'text-slate-400' : 'text-slate-500'
+                      }`}
+                    >
+                      Xem &amp; khôi phục các mốc đã lưu
+                    </p>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!onOpenQuickConverter}
+                  onClick={() => {
+                    setIsStorageMenuOpen(false);
+                    onOpenQuickConverter?.();
+                  }}
+                  className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl text-left transition-colors disabled:opacity-45 disabled:cursor-not-allowed ${
+                    isDark
+                      ? 'hover:bg-white/[0.08] text-slate-200'
+                      : 'hover:bg-[#F7F5F0] text-slate-700'
+                  }`}
+                >
+                  <span
+                    className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border ${
+                      isDark
+                        ? 'bg-purple-500/15 border-purple-400/25 text-purple-300'
+                        : 'bg-purple-50 border-purple-200/80 text-purple-600'
+                    }`}
+                  >
+                    <FileOutput className="h-4 w-4" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold truncate">
+                      Chuyển đổi &amp; Xuất tệp
+                    </p>
+                    <p
+                      className={`text-[11px] truncate ${
+                        isDark ? 'text-slate-400' : 'text-slate-500'
+                      }`}
+                    >
+                      Xuất PDF, gộp hoặc tách tệp PDF
                     </p>
                   </div>
                 </button>

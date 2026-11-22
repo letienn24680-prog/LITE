@@ -50,6 +50,7 @@ function createWindow() {
     minWidth: 960,
     minHeight: 640,
     title: "LITE — Không gian làm việc tài liệu",
+    icon: path.join(__dirname, "icon.png"),
     backgroundColor: "#141923",
     autoHideMenuBar: true,
     webPreferences: {

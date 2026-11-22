@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ChangeEvent, DragEvent, KeyboardEvent } from 'react';
+import type {
+  ChangeEvent,
+  DragEvent,
+  KeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+} from 'react';
 import type { LucideIcon } from 'lucide-react';
 import {
   AlertCircle,
@@ -9,10 +14,12 @@ import {
   CheckCircle2,
   ChevronDown,
   Cloud,
+  FileOutput,
   FileSearch,
   FileSpreadsheet,
   FileText,
   Folder,
+  History,
   LayoutGrid,
   List,
   Loader2,
@@ -59,6 +66,9 @@ export interface DocumentLibraryProps {
     folder?: string;
   }) => void;
   onShareDocument?: (doc: DocumentItem) => void;
+  onConvertDocument?: (doc?: DocumentItem) => void;
+  onOpenVersionHistoryDoc?: (doc: DocumentItem) => void;
+  onNavigateLegal?: (page: 'privacy' | 'terms') => void;
 }
 
 type LibraryViewMode = 'grid' | 'list' | 'compact';
@@ -282,6 +292,9 @@ export function DocumentLibrary({
   isDeleting = false,
   onCreateDocument,
   onShareDocument,
+  onConvertDocument,
+  onOpenVersionHistoryDoc,
+  onNavigateLegal,
 }: DocumentLibraryProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const libraryScrollRef = useRef<HTMLElement | null>(null);
@@ -299,6 +312,65 @@ export function DocumentLibrary({
   const [createTitle, setCreateTitle] = useState<string>('Tài liệu Word mới');
   const [createTemplateMode, setCreateTemplateMode] =
     useState<CreateTemplateMode>('starter');
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    doc: DocumentItem;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  const handleCardContextMenu = (
+    event: ReactMouseEvent<HTMLElement>,
+    doc: DocumentItem,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const menuWidth = 236;
+    const menuHeight = 256;
+    const x = Math.max(
+      12,
+      Math.min(event.clientX, window.innerWidth - menuWidth - 12),
+    );
+    const y = Math.max(
+      12,
+      Math.min(event.clientY, window.innerHeight - menuHeight - 12),
+    );
+    setContextMenu({ doc, x, y });
+  };
+
+  useEffect(() => {
+    if (!contextMenu) return;
+
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node | null;
+      if (target && contextMenuRef.current?.contains(target)) {
+        return;
+      }
+      setContextMenu(null);
+    };
+
+    const handleScroll = () => {
+      setContextMenu(null);
+    };
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setContextMenu(null);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    window.addEventListener('scroll', handleScroll, true);
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+      window.removeEventListener('scroll', handleScroll, true);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [contextMenu]);
 
   const handleViewModeChange = (nextMode: LibraryViewMode) => {
     setViewMode(nextMode);
@@ -609,7 +681,18 @@ export function DocumentLibrary({
             )}
           </div>
 
-          <div className="grid grid-cols-2 gap-2 sm:flex sm:shrink-0 sm:items-center sm:gap-2.5">
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:shrink-0 sm:items-center sm:justify-end sm:gap-2.5">
+            <button
+              type="button"
+              onClick={() => onConvertDocument?.()}
+              disabled={isUploadBusy}
+              title="Chuyển đổi sang PDF, gộp hoặc tách PDF"
+              className="col-span-2 inline-flex h-11 w-full shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl border border-[#DFD9CE] bg-white px-3 text-sm font-medium text-slate-700 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-all duration-150 hover:border-indigo-300 hover:bg-indigo-50/60 hover:text-indigo-700 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 disabled:cursor-not-allowed disabled:opacity-60 sm:col-span-1 sm:w-auto md:gap-2 md:px-3.5"
+            >
+              <FileOutput className="h-4 w-4 shrink-0 text-indigo-600" aria-hidden="true" />
+              <span>Chuyển đổi & Xuất tệp</span>
+            </button>
+
             <div ref={createMenuRef} className="relative">
               <button
                 type="button"
@@ -1122,6 +1205,7 @@ export function DocumentLibrary({
                     }
                   }}
                   onKeyDown={(event) => handleCardKeyDown(event, doc)}
+                  onContextMenu={(event) => handleCardContextMenu(event, doc)}
                   className={`group flex cursor-pointer items-center justify-between gap-2.5 px-3.5 py-3 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500/40 md:grid md:grid-cols-12 md:gap-3 md:px-4 ${
                     isSelectedForDelete
                       ? 'bg-rose-50/50 hover:bg-rose-50/80'
@@ -1272,6 +1356,19 @@ export function DocumentLibrary({
                       type="button"
                       onClick={(event) => {
                         event.stopPropagation();
+                        onConvertDocument?.(doc);
+                      }}
+                      aria-label={`Chuyển đổi & Xuất tệp ${doc.title}`}
+                      title="Chuyển đổi & Xuất tệp"
+                      className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-all duration-150 hover:bg-indigo-50 hover:text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 md:h-7 md:w-7 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
+                    >
+                      <FileOutput className="h-4 w-4" aria-hidden="true" />
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
                         if (onShareDocument) {
                           onShareDocument(doc);
                         } else {
@@ -1335,6 +1432,7 @@ export function DocumentLibrary({
                     }
                   }}
                   onKeyDown={(event) => handleCardKeyDown(event, doc)}
+                  onContextMenu={(event) => handleCardContextMenu(event, doc)}
                   className={`group flex min-h-[72px] cursor-pointer items-center justify-between gap-3 rounded-xl border bg-white px-3.5 py-2.5 transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 ${
                     isSelectedForDelete
                       ? 'border-rose-500 bg-rose-50/15 ring-2 ring-rose-500/20'
@@ -1430,6 +1528,19 @@ export function DocumentLibrary({
                       type="button"
                       onClick={(event) => {
                         event.stopPropagation();
+                        onConvertDocument?.(doc);
+                      }}
+                      aria-label={`Chuyển đổi & Xuất tệp ${doc.title}`}
+                      title="Chuyển đổi & Xuất tệp"
+                      className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-colors duration-150 hover:bg-indigo-50 hover:text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 md:h-7 md:w-7"
+                    >
+                      <FileOutput className="h-4 w-4" aria-hidden="true" />
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
                         onOpenDocument(doc);
                       }}
                       aria-label={`Mở ${doc.title}`}
@@ -1486,6 +1597,7 @@ export function DocumentLibrary({
                     }
                   }}
                   onKeyDown={(event) => handleCardKeyDown(event, doc)}
+                  onContextMenu={(event) => handleCardContextMenu(event, doc)}
                   className={`group flex cursor-pointer flex-col gap-3 rounded-2xl border bg-[#FFFFFF] p-3.5 transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 ${
                     isSelectedForDelete
                       ? 'border-rose-500 bg-rose-50/15 shadow-[0_6px_20px_rgba(225,29,72,0.08)] ring-2 ring-rose-500/20'
@@ -1653,12 +1765,67 @@ export function DocumentLibrary({
                       <span>Mở</span>
                       <ArrowUpRight className="h-3.5 w-3.5 text-slate-500" aria-hidden="true" />
                     </button>
+
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onConvertDocument?.(doc);
+                      }}
+                      aria-label={`Chuyển đổi & Xuất tệp ${doc.title}`}
+                      title="Chuyển đổi & Xuất tệp"
+                      className="inline-flex h-[44px] w-[44px] shrink-0 items-center justify-center rounded-xl border border-[#E2DDD5] bg-white text-slate-600 transition-colors duration-150 hover:border-indigo-300 hover:bg-indigo-50/70 hover:text-indigo-700 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/35"
+                    >
+                      <FileOutput className="h-4 w-4" aria-hidden="true" />
+                    </button>
                   </div>
                 </article>
               );
             })}
           </section>
         )}
+
+        <footer className="mt-4 flex flex-col items-center justify-between gap-2 border-t border-[#EAE5DC] pt-4 text-xs text-slate-500 sm:flex-row">
+          <span>LITE Workspace — Trình soạn thảo &amp; trình chiếu đa định dạng</span>
+          <nav
+            aria-label="Thông tin pháp lý"
+            className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1"
+          >
+            <a
+              href="/privacy"
+              onClick={(event) => {
+                event.preventDefault();
+                if (onNavigateLegal) {
+                  onNavigateLegal('privacy');
+                } else {
+                  window.history.pushState({}, '', '/privacy');
+                  window.dispatchEvent(new PopStateEvent('popstate'));
+                }
+              }}
+              className="font-medium text-slate-600 transition-colors hover:text-indigo-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40"
+            >
+              Chính sách bảo mật
+            </a>
+            <span aria-hidden="true" className="text-slate-300">
+              •
+            </span>
+            <a
+              href="/terms"
+              onClick={(event) => {
+                event.preventDefault();
+                if (onNavigateLegal) {
+                  onNavigateLegal('terms');
+                } else {
+                  window.history.pushState({}, '', '/terms');
+                  window.dispatchEvent(new PopStateEvent('popstate'));
+                }
+              }}
+              className="font-medium text-slate-600 transition-colors hover:text-indigo-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40"
+            >
+              Điều khoản sử dụng
+            </a>
+          </nav>
+        </footer>
       </div>
 
       {/* Create new document modal */}
@@ -1936,6 +2103,100 @@ export function DocumentLibrary({
               </button>
             </div>
           </div>
+          </div>
+        </div>
+      )}
+
+      {contextMenu && (
+        <div
+          ref={contextMenuRef}
+          role="menu"
+          aria-label={`Tùy chọn cho ${contextMenu.doc.title}`}
+          style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }}
+          className="fixed z-50 w-[236px] rounded-2xl border border-[#E5DFD3] bg-white p-1.5 shadow-xl ring-1 ring-slate-900/5"
+        >
+          <div className="border-b border-slate-100 px-2.5 py-1.5">
+            <p className="truncate text-xs font-semibold text-slate-800">
+              {contextMenu.doc.title}
+            </p>
+          </div>
+          <div className="mt-1 flex flex-col gap-0.5">
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                const targetDoc = contextMenu.doc;
+                setContextMenu(null);
+                onOpenDocument(targetDoc);
+              }}
+              className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:bg-slate-100 focus-visible:outline-none"
+            >
+              <ArrowUpRight className="h-4 w-4 text-slate-500" aria-hidden="true" />
+              <span>Mở</span>
+            </button>
+
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                const targetDoc = contextMenu.doc;
+                setContextMenu(null);
+                if (onShareDocument) {
+                  onShareDocument(targetDoc);
+                } else {
+                  onOpenDocument(targetDoc);
+                }
+              }}
+              className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-700 focus-visible:bg-indigo-50 focus-visible:outline-none"
+            >
+              <Share2 className="h-4 w-4 text-indigo-500" aria-hidden="true" />
+              <span>Chia sẻ</span>
+            </button>
+
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                const targetDoc = contextMenu.doc;
+                setContextMenu(null);
+                onConvertDocument?.(targetDoc);
+              }}
+              className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-700 focus-visible:bg-indigo-50 focus-visible:outline-none"
+            >
+              <FileOutput className="h-4 w-4 text-indigo-600" aria-hidden="true" />
+              <span>Chuyển đổi &amp; Xuất tệp</span>
+            </button>
+
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                const targetDoc = contextMenu.doc;
+                setContextMenu(null);
+                onOpenVersionHistoryDoc?.(targetDoc);
+              }}
+              className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:bg-slate-100 focus-visible:outline-none"
+            >
+              <History className="h-4 w-4 text-slate-500" aria-hidden="true" />
+              <span>Lịch sử phiên bản</span>
+            </button>
+
+            <div className="my-0.5 border-t border-slate-100" />
+
+            <button
+              type="button"
+              role="menuitem"
+              disabled={isDeleting}
+              onClick={() => {
+                const targetDoc = contextMenu.doc;
+                setContextMenu(null);
+                setConfirmDeleteDocs([targetDoc]);
+              }}
+              className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-rose-600 transition-colors hover:bg-rose-50 focus-visible:bg-rose-50 focus-visible:outline-none disabled:opacity-50"
+            >
+              <Trash2 className="h-4 w-4" aria-hidden="true" />
+              <span>Xóa</span>
+            </button>
           </div>
         </div>
       )}

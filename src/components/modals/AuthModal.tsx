@@ -7,22 +7,20 @@ import {
   Eye,
   EyeOff,
   Info,
-  KeyRound,
   Loader2,
   Lock,
   LogIn,
   Mail,
-  Send,
   Terminal,
   UserPlus,
   X,
 } from "lucide-react";
-import { isSupabaseConfigured, supabase } from "../../lib/supabase";
-import { mapAuthErrorToVietnamese } from "../../services/cloudSync";
 import {
-  checkEmailAccess,
-  requestEmailAccess,
-} from "../../services/accessControl";
+  isSupabaseConfigured,
+  startGoogleOAuthFlow,
+  supabase,
+} from "../../lib/supabase";
+import { mapAuthErrorToVietnamese } from "../../services/cloudSync";
 
 declare global {
   interface Window {
@@ -40,6 +38,7 @@ export interface AuthModalProps {
   externalNotice?: string | null;
   onClose: () => void;
   onAuthSuccess?: () => void;
+  onNavigateLegal?: (page: "privacy" | "terms") => void;
 }
 
 type AuthMode = "login" | "register";
@@ -52,6 +51,7 @@ export function AuthModal({
   externalNotice = null,
   onClose,
   onAuthSuccess,
+  onNavigateLegal,
 }: AuthModalProps) {
   const [mode, setMode] = useState<AuthMode>(initialMode);
   const [email, setEmail] = useState<string>("");
@@ -62,13 +62,7 @@ export function AuthModal({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  // Xin cấp quyền truy cập cho email mới
-  const [showRequestBox, setShowRequestBox] = useState<boolean>(false);
-  const [requestEmailInput, setRequestEmailInput] = useState<string>("");
-  const [requestNoteInput, setRequestNoteInput] = useState<string>("");
-  const [isRequestingAccess, setIsRequestingAccess] = useState<boolean>(false);
-
-  const isBusy = isSubmitting || isGoogleLoading || isRequestingAccess;
+  const isBusy = isSubmitting || isGoogleLoading;
 
   useEffect(() => {
     if (!isOpen) return;
@@ -80,7 +74,6 @@ export function AuthModal({
     setIsGoogleLoading(false);
     setErrorMessage(externalNotice || null);
     setSuccessMessage(null);
-    setShowRequestBox(Boolean(externalNotice));
   }, [isOpen, initialMode, externalNotice]);
 
   useEffect(() => {
@@ -95,7 +88,16 @@ export function AuthModal({
   if (!isOpen) return null;
 
   const isCloudReady = isSupabaseConfigured && supabase !== null;
-  const isDesktopApp = Boolean(window.liteDesktop?.isDesktop);
+
+  const handleOpenLegalPage = (page: "privacy" | "terms") => {
+    if (onNavigateLegal) {
+      onNavigateLegal(page);
+    } else if (typeof window !== "undefined") {
+      window.history.pushState({}, "", `/${page}`);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }
+    onClose();
+  };
 
   const handleSwitchMode = (nextMode: AuthMode) => {
     if (isBusy || nextMode === mode) return;
@@ -107,39 +109,21 @@ export function AuthModal({
 
   const handleGoogleAuth = async () => {
     if (isBusy) return;
-    if (!isSupabaseConfigured || !supabase) {
-      setErrorMessage("Ứng dụng đang ở Chế độ cục bộ, chưa cấu hình Supabase.");
-      return;
-    }
 
     setIsGoogleLoading(true);
     setErrorMessage(null);
     setSuccessMessage(null);
 
     try {
-      const redirectTarget = isDesktopApp
-        ? "liteapp://auth/callback"
-        : window.location.origin;
+      const result = await startGoogleOAuthFlow();
 
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          redirectTo: redirectTarget,
-          skipBrowserRedirect: isDesktopApp,
-          scopes:
-            "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly",
-          queryParams: { access_type: "offline", prompt: "consent" },
-        },
-      });
-
-      if (error) {
-        setErrorMessage(mapAuthErrorToVietnamese(error.message));
+      if (result.error) {
+        setErrorMessage(mapAuthErrorToVietnamese(result.error.message));
         setIsGoogleLoading(false);
         return;
       }
 
-      if (isDesktopApp && data?.url && window.liteDesktop?.openExternal) {
-        await window.liteDesktop.openExternal(data.url);
+      if (result.openedExternally) {
         setSuccessMessage(
           "Đã mở trình duyệt để đăng nhập Google. Sau khi chọn tài khoản Gmail, trình duyệt sẽ tự động chuyển bạn quay lại ứng dụng LITE."
         );
@@ -150,27 +134,6 @@ export function AuthModal({
         error instanceof Error ? error.message : "Network request failed";
       setErrorMessage(mapAuthErrorToVietnamese(rawMessage));
       setIsGoogleLoading(false);
-    }
-  };
-
-  const handleRequestAccessSubmit = async () => {
-    if (isBusy) return;
-    const targetMail = (requestEmailInput || email).trim();
-    if (!targetMail || !EMAIL_PATTERN.test(targetMail)) {
-      setErrorMessage("Vui lòng nhập địa chỉ Gmail/Email hợp lệ để gửi yêu cầu.");
-      return;
-    }
-    setIsRequestingAccess(true);
-    setErrorMessage(null);
-    setSuccessMessage(null);
-    const res = await requestEmailAccess(targetMail, requestNoteInput);
-    setIsRequestingAccess(false);
-    if (res.ok) {
-      setSuccessMessage(res.message);
-      setRequestEmailInput("");
-      setRequestNoteInput("");
-    } else {
-      setErrorMessage(res.message);
     }
   };
 
@@ -201,20 +164,6 @@ export function AuthModal({
     setSuccessMessage(null);
 
     try {
-      // Kiểm tra email có trong danh sách cho phép hay chưa
-      const access = await checkEmailAccess(trimmedEmail);
-      if (!access.allowed) {
-        await requestEmailAccess(trimmedEmail, "Tự động ghi nhận khi thử đăng ký/đăng nhập");
-        setRequestEmailInput(trimmedEmail);
-        setShowRequestBox(true);
-        setErrorMessage(
-          access.reason ||
-            `Email ${trimmedEmail} chưa được cấp quyền truy cập. Yêu cầu đã được gửi tới chủ sở hữu để duyệt từ xa.`
-        );
-        setIsSubmitting(false);
-        return;
-      }
-
       if (mode === "login") {
         const { data, error } = await supabase.auth.signInWithPassword({
           email: trimmedEmail,
@@ -428,60 +377,6 @@ export function AuthModal({
                   )}
                 </button>
 
-                {/* Khu vực xin cấp quyền truy cập từ xa cho người dùng mới */}
-                <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-2.5">
-                  <button
-                    type="button"
-                    onClick={() => setShowRequestBox((v) => !v)}
-                    className="w-full flex items-center justify-between text-xs font-semibold text-indigo-700 hover:text-indigo-900"
-                  >
-                    <span className="inline-flex items-center gap-1.5">
-                      <KeyRound className="h-3.5 w-3.5" />
-                      <span>Tài khoản mới? Gửi Gmail xin cấp quyền dùng App</span>
-                    </span>
-                    <span className="text-[11px] underline">
-                      {showRequestBox ? "Thu gọn" : "Mở"}
-                    </span>
-                  </button>
-
-                  {showRequestBox && (
-                    <div className="mt-2.5 pt-2.5 border-t border-indigo-100 space-y-2">
-                      <p className="text-[11px] text-slate-600 leading-relaxed">
-                        Nhập địa chỉ Gmail của bạn để gửi yêu cầu. Chủ sở hữu sẽ duyệt trực tiếp từ xa — bạn <strong>không cần cài lại app</strong>.
-                      </p>
-                      <input
-                        type="email"
-                        value={requestEmailInput}
-                        onChange={(e) => setRequestEmailInput(e.target.value)}
-                        placeholder="nhap-gmail-cua-ban@gmail.com"
-                        className="w-full h-9 rounded-lg border border-indigo-200 bg-white px-3 text-xs text-slate-900 outline-none focus:border-indigo-500"
-                      />
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={requestNoteInput}
-                          onChange={(e) => setRequestNoteInput(e.target.value)}
-                          placeholder="Tên của bạn (không bắt buộc)..."
-                          className="flex-1 h-9 rounded-lg border border-indigo-200 bg-white px-3 text-xs text-slate-900 outline-none focus:border-indigo-500"
-                        />
-                        <button
-                          type="button"
-                          disabled={isBusy}
-                          onClick={() => void handleRequestAccessSubmit()}
-                          className="inline-flex items-center gap-1 px-3 h-9 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shrink-0 disabled:opacity-60"
-                        >
-                          {isRequestingAccess ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            <Send className="h-3.5 w-3.5" />
-                          )}
-                          <span>Gửi duyệt</span>
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
                 <div className="relative flex items-center justify-center">
                   <div aria-hidden="true" className="absolute inset-x-0 top-1/2 border-t border-[#EAE5DC]" />
                   <span className="relative bg-white px-3 text-[11px] font-medium uppercase tracking-wider text-slate-400">
@@ -568,6 +463,31 @@ export function AuthModal({
                 </form>
               </div>
             )}
+          </div>
+
+          <div className="shrink-0 px-4 sm:px-6 py-2.5 bg-[#FAF8F5] border-t border-[#EAE5DC] flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
+            <span>Tiếp tục đồng nghĩa bạn đồng ý với</span>
+            <a
+              href="/privacy"
+              onClick={(event) => {
+                event.preventDefault();
+                handleOpenLegalPage("privacy");
+              }}
+              className="font-semibold text-indigo-600 hover:text-indigo-700 underline underline-offset-2"
+            >
+              Chính sách bảo mật
+            </a>
+            <span aria-hidden="true">·</span>
+            <a
+              href="/terms"
+              onClick={(event) => {
+                event.preventDefault();
+                handleOpenLegalPage("terms");
+              }}
+              className="font-semibold text-indigo-600 hover:text-indigo-700 underline underline-offset-2"
+            >
+              Điều khoản sử dụng
+            </a>
           </div>
         </div>
       </div>

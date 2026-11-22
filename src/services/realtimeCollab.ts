@@ -91,6 +91,7 @@ export const COLLAB_COLORS = [
 
 const SESSION_STORAGE_KEY = 'lite_collab_session_id_v1';
 const LOCAL_COLLAB_SHARES_KEY = 'lite_collab_shares_v1';
+const LOCAL_SAVED_DOCS_KEY = 'lite_saved_documents_v1';
 const SHARES_TABLE = 'document_shares';
 const DOCUMENTS_TABLE = 'documents';
 const COLLABORATORS_TABLE = 'document_collaborators';
@@ -208,11 +209,23 @@ export function pickCollaboratorColor(seed: string): string {
   return COLLAB_COLORS[index];
 }
 
-export function buildCollabShareUrl(shareToken: string): string {
+export function buildCollabShareUrl(
+  shareToken: string,
+  mode?: 'view' | 'edit'
+): string {
+  const modeSuffix = mode === 'view' || mode === 'edit' ? `&mode=${mode}` : '';
   if (typeof window === 'undefined') {
-    return `/?share=${encodeURIComponent(shareToken)}`;
+    return `/?share=${encodeURIComponent(shareToken)}${modeSuffix}`;
   }
-  return `${window.location.origin}/?share=${encodeURIComponent(shareToken)}`;
+  return `${window.location.origin}/?share=${encodeURIComponent(shareToken)}${modeSuffix}`;
+}
+
+export function buildAppDeepLinkShareUrl(
+  docIdOrToken: string,
+  mode: 'view' | 'edit' = 'view'
+): string {
+  const safeMode = mode === 'edit' ? 'edit' : 'view';
+  return `liteapp://open?share=${encodeURIComponent(docIdOrToken)}&mode=${safeMode}`;
 }
 
 function sanitizeSlidesForPersist(slides: SlidePreviewItem[]): SlidePreviewItem[] {
@@ -569,7 +582,7 @@ export async function getShareLinkInfo(
           return {
             permission: perm,
             shareToken: row.share_token,
-            shareUrl: buildCollabShareUrl(row.share_token),
+            shareUrl: buildCollabShareUrl(row.share_token, perm),
           };
         }
         return { permission: 'private' };
@@ -584,7 +597,7 @@ export async function getShareLinkInfo(
     return {
       permission: local.permission,
       shareToken: local.shareToken,
-      shareUrl: buildCollabShareUrl(local.shareToken),
+      shareUrl: buildCollabShareUrl(local.shareToken, local.permission),
     };
   }
 
@@ -679,7 +692,7 @@ export async function createOrUpdateShareLink(
 
   return {
     shareToken,
-    shareUrl: buildCollabShareUrl(shareToken),
+    shareUrl: buildCollabShareUrl(shareToken, permission),
     permission,
     ownerId,
     documentId,
@@ -711,11 +724,43 @@ export async function revokeShareLink(
   }
 }
 
+function readLocalSavedDocuments(): DocumentItem[] {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_SAVED_DOCS_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter(
+      (entry): entry is DocumentItem =>
+        isPlainRecord(entry) && typeof entry.id === 'string'
+    );
+  } catch {
+    return [];
+  }
+}
+
 export async function resolveSharedDocument(
   shareToken: string,
-  currentUserId?: string
+  currentUserId?: string,
+  modeOrOptions?: 'view' | 'edit' | { mode?: 'view' | 'edit' }
 ): Promise<ResolvedCollabDocument> {
   const cleanToken = shareToken.trim();
+  const requestedMode: 'view' | 'edit' | undefined =
+    typeof modeOrOptions === 'string'
+      ? modeOrOptions === 'edit' || modeOrOptions === 'view'
+        ? modeOrOptions
+        : undefined
+      : modeOrOptions?.mode === 'edit' || modeOrOptions?.mode === 'view'
+        ? modeOrOptions.mode
+        : undefined;
+
+  const applyRequestedMode = (serverPerm: 'view' | 'edit'): 'view' | 'edit' =>
+    requestedMode === 'view' ? 'view' : serverPerm;
+
   if (!cleanToken) {
     return {
       status: 'not_found',
@@ -729,9 +774,40 @@ export async function resolveSharedDocument(
 
   if (isSupabaseConfigured && supabase) {
     try {
-      const { data, error } = await supabase.rpc('resolve_collab_share', {
-        p_share_token: cleanToken,
-      });
+      const resolveViaToken = async (tokenToResolve: string) =>
+        await supabase!.rpc('resolve_collab_share', {
+          p_share_token: tokenToResolve,
+        });
+
+      let activeToken = cleanToken;
+      let { data, error } = await resolveViaToken(activeToken);
+
+      if (
+        !error &&
+        isPlainRecord(data) &&
+        data.status === 'not_found'
+      ) {
+        // Fallback: caller may have passed ?share=<docId> instead of <shareToken>
+        const { data: byDocShare } = await supabase
+          .from(SHARES_TABLE)
+          .select('share_token')
+          .eq('document_id', cleanToken)
+          .is('revoked_at', null)
+          .neq('access_level', 'private')
+          .limit(1)
+          .maybeSingle();
+
+        if (
+          byDocShare &&
+          typeof (byDocShare as { share_token?: unknown }).share_token ===
+            'string'
+        ) {
+          activeToken = (byDocShare as { share_token: string }).share_token;
+          const retry = await resolveViaToken(activeToken);
+          data = retry.data;
+          error = retry.error;
+        }
+      }
 
       if (!error && isPlainRecord(data)) {
         const status = typeof data.status === 'string' ? data.status : 'error';
@@ -739,14 +815,15 @@ export async function resolveSharedDocument(
           typeof data.owner_id === 'string' ? data.owner_id : 'cloud-owner';
         const documentId =
           typeof data.document_id === 'string' ? data.document_id : '';
-        const permission: 'view' | 'edit' =
+        const serverPermission: 'view' | 'edit' =
           data.permission === 'edit' ? 'edit' : 'view';
+        const effectivePermission = applyRequestedMode(serverPermission);
 
         if (status === 'revoked') {
           return {
             status: 'revoked',
-            shareToken: cleanToken,
-            permission,
+            shareToken: activeToken,
+            permission: effectivePermission,
             ownerId,
             documentId,
             errorMessage: 'Liên kết chia sẻ này đã bị chủ sở hữu thu hồi.',
@@ -756,8 +833,8 @@ export async function resolveSharedDocument(
         if (status === 'private') {
           return {
             status: 'private',
-            shareToken: cleanToken,
-            permission,
+            shareToken: activeToken,
+            permission: effectivePermission,
             ownerId,
             documentId,
             errorMessage: 'Tài liệu hiện đang ở chế độ Hạn chế (Riêng tư).',
@@ -768,8 +845,8 @@ export async function resolveSharedDocument(
           const doc = buildDocumentFromPayload({
             documentId,
             ownerId,
-            shareToken: cleanToken,
-            permission,
+            shareToken: activeToken,
+            permission: effectivePermission,
             title: typeof data.title === 'string' ? data.title : null,
             fileType: data.file_type,
             fileName:
@@ -816,8 +893,8 @@ export async function resolveSharedDocument(
                   owner_id: ownerId,
                   document_id: documentId,
                   collaborator_user_id: currentUserId,
-                  share_token: cleanToken,
-                  permission,
+                  share_token: activeToken,
+                  permission: serverPermission,
                   last_opened_at: new Date().toISOString(),
                 },
                 { onConflict: 'collaborator_user_id,owner_id,document_id' }
@@ -829,12 +906,84 @@ export async function resolveSharedDocument(
 
           return {
             status: 'ready',
-            shareToken: cleanToken,
-            permission,
+            shareToken: activeToken,
+            permission: effectivePermission,
             ownerId,
             documentId,
             document: doc,
           };
+        }
+
+        if (status === 'not_found') {
+          // Direct public.documents fallback when shared by docId
+          const { data: sharedDocRow } = await supabase
+            .from(DOCUMENTS_TABLE)
+            .select('*')
+            .eq('id', cleanToken)
+            .eq('is_shared', true)
+            .limit(1)
+            .maybeSingle();
+
+          if (sharedDocRow && isPlainRecord(sharedDocRow)) {
+            const ownerIdFromRow =
+              typeof sharedDocRow.user_id === 'string'
+                ? sharedDocRow.user_id
+                : 'cloud-owner';
+            const fallbackPerm: 'view' | 'edit' =
+              requestedMode === 'edit' ? 'edit' : 'view';
+            const doc = buildDocumentFromPayload({
+              documentId: cleanToken,
+              ownerId: ownerIdFromRow,
+              shareToken: cleanToken,
+              permission: fallbackPerm,
+              title:
+                typeof sharedDocRow.title === 'string'
+                  ? sharedDocRow.title
+                  : null,
+              fileType: sharedDocRow.file_type,
+              fileName:
+                typeof sharedDocRow.file_name === 'string'
+                  ? sharedDocRow.file_name
+                  : null,
+              fileSize:
+                typeof sharedDocRow.file_size === 'string'
+                  ? sharedDocRow.file_size
+                  : null,
+              folder:
+                typeof sharedDocRow.folder === 'string'
+                  ? sharedDocRow.folder
+                  : null,
+              pageCount:
+                typeof sharedDocRow.page_count === 'number'
+                  ? sharedDocRow.page_count
+                  : null,
+              contentPreview:
+                typeof sharedDocRow.content_preview === 'string'
+                  ? sharedDocRow.content_preview
+                  : null,
+              storagePath:
+                typeof sharedDocRow.storage_path === 'string'
+                  ? sharedDocRow.storage_path
+                  : null,
+              r2ObjectKey:
+                typeof sharedDocRow.r2_object_key === 'string'
+                  ? sharedDocRow.r2_object_key
+                  : null,
+              updatedAt:
+                typeof sharedDocRow.updated_at === 'string'
+                  ? sharedDocRow.updated_at
+                  : null,
+              parsedContent: sharedDocRow.parsed_content,
+            });
+            return {
+              status: 'ready',
+              shareToken: cleanToken,
+              permission: fallbackPerm,
+              ownerId: ownerIdFromRow,
+              documentId: cleanToken,
+              document: doc,
+            };
+          }
         }
       } else if (error) {
         // Fallback to get_shared_document_meta RPC if resolve_collab_share hasn't been deployed
@@ -866,11 +1015,12 @@ export async function resolveSharedDocument(
               typeof legacyData.document_id === 'string'
                 ? legacyData.document_id
                 : cleanToken;
+            const effectivePerm = applyRequestedMode('view');
             const doc = buildDocumentFromPayload({
               documentId: docId,
               ownerId: 'cloud-owner',
               shareToken: cleanToken,
-              permission: 'view',
+              permission: effectivePerm,
               title:
                 typeof legacyData.title === 'string' ? legacyData.title : null,
               fileType: legacyData.file_type,
@@ -895,7 +1045,7 @@ export async function resolveSharedDocument(
             return {
               status: 'ready',
               shareToken: cleanToken,
-              permission: 'view',
+              permission: effectivePerm,
               ownerId: 'cloud-owner',
               documentId: docId,
               document: doc,
@@ -909,22 +1059,59 @@ export async function resolveSharedDocument(
   }
 
   const localMap = readLocalCollabShareMap();
-  const localRecord = localMap[cleanToken];
+  const localRecord =
+    localMap[cleanToken] ??
+    Object.values(localMap).find((entry) => entry.documentId === cleanToken);
+
   if (localRecord?.documentSnapshot) {
+    const effectivePermission = applyRequestedMode(localRecord.permission);
     const hydratedLocalDoc: DocumentItem = {
       ...localRecord.documentSnapshot,
       isShared: true,
-      shareToken: cleanToken,
-      collabPermission: localRecord.permission,
+      shareToken: localRecord.shareToken,
+      collabPermission: effectivePermission,
       sharedOwnerId: localRecord.ownerId,
     };
     return {
       status: 'ready',
-      shareToken: cleanToken,
-      permission: localRecord.permission,
+      shareToken: localRecord.shareToken,
+      permission: effectivePermission,
       ownerId: localRecord.ownerId,
       documentId: localRecord.documentId,
       document: hydratedLocalDoc,
+    };
+  }
+
+  // Fallback by documentId in local saved documents when shareAccess='link' or isShared=true
+  const localSaved = readLocalSavedDocuments().find(
+    (doc) =>
+      doc.id === cleanToken && (doc.shareAccess === 'link' || Boolean(doc.isShared))
+  );
+  if (localSaved) {
+    const fallbackPermission: 'view' | 'edit' =
+      requestedMode === 'view'
+        ? 'view'
+        : requestedMode === 'edit'
+          ? 'edit'
+          : localSaved.collabPermission === 'edit'
+            ? 'edit'
+            : 'view';
+    const ownerId =
+      localSaved.sharedOwnerId || localSaved.userId || 'local-owner';
+    const tokenForDoc = localSaved.shareToken || localSaved.id;
+    return {
+      status: 'ready',
+      shareToken: tokenForDoc,
+      permission: fallbackPermission,
+      ownerId,
+      documentId: localSaved.id,
+      document: {
+        ...localSaved,
+        isShared: true,
+        shareToken: tokenForDoc,
+        collabPermission: fallbackPermission,
+        sharedOwnerId: ownerId,
+      },
     };
   }
 

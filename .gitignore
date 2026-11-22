@@ -1,1 +1,11 @@
 .env
+node_modules/
+release/
+*.apk
+*.aab
+*.AppImage
+*.deb
+*.exe
+android/.gradle/
+android/app/build/
+android/local.properties
