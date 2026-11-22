@@ -968,7 +968,7 @@ export function SlideWorkspace({
   autoSaveEnabled = false,
   isHydratingCloudFile = false,
   onRetryCloudDownload,
-  collaborators = [],
+  collaborators: _collaborators = [],
   selfSessionId,
   collabPermission = 'owner',
   onPresenceUpdate,

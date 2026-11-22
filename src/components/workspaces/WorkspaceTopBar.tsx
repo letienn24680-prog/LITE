@@ -27,6 +27,9 @@ import {
 } from '../../services/googleDrive';
 
 export interface WorkspaceTopBarProps {
+  collaborators?: any[];
+  selfSessionId?: string;
+  collabPermission?: any;
   document: DocumentItem;
   theme?: 'light' | 'dark';
   onBackHome: () => void;

@@ -29,37 +29,7 @@ export interface CollaboratorPresence {
   updatedAt: number;
 }
 
-export type DocRealtimePatch =
-  | {
-      kind: 'excel_cell_patch';
-      senderSessionId: string;
-      sentAt: number;
-      sheetId: string;
-      rowIndex: number;
-      colIndex: number;
-      value: string | number;
-      sheets?: SpreadsheetSheet[];
-    }
-  | {
-      kind: 'word_html_patch';
-      senderSessionId: string;
-      sentAt: number;
-      wordHtml: string;
-      contentPreview?: string;
-    }
-  | {
-      kind: 'slide_patch';
-      senderSessionId: string;
-      sentAt: number;
-      slidesPreview: SlidePreviewItem[];
-      slideAspectRatio?: number;
-    }
-  | {
-      kind: 'title_patch';
-      senderSessionId: string;
-      sentAt: number;
-      title: string;
-    };
+export type DocRealtimePatch = Record<string, any>;
 
 export interface ShareLinkResult {
   shareToken: string;
