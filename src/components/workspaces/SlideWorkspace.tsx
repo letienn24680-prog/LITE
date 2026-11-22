@@ -534,10 +534,10 @@ function AutoGrowTextarea({
         fontWeight: bold ? 700 : 400,
         fontStyle: italic ? 'italic' : 'normal',
         textDecoration: underline ? 'underline' : 'none',
-        fontFamily: fontFamily || undefined,
+        fontFamily: fontFamily || "'Inter', 'Segoe UI', system-ui, sans-serif",
         maxHeight: maxHeightFull ? '100%' : undefined,
       }}
-      className={`w-full bg-transparent border-0 outline-none resize-none leading-[1.32] tracking-tight placeholder:opacity-45 disabled:pointer-events-none ${
+      className={`w-full bg-transparent border-0 outline-none resize-none leading-[1.16] tracking-tight placeholder:opacity-45 disabled:pointer-events-none ${
         maxHeightFull ? 'overflow-y-auto no-scrollbar' : 'overflow-hidden'
       }`}
     />
@@ -610,7 +610,7 @@ function ReadOnlySlideStage({
                   width: `${width}%`,
                   height: height !== undefined ? `${height}%` : 'auto',
                   borderColor: block.borderColor,
-                  fontFamily: block.fontFamily || undefined,
+                  fontFamily: block.fontFamily || "'Inter', 'Segoe UI', system-ui, sans-serif",
                 }}
                 className={`overflow-hidden ${block.borderColor ? 'border' : ''}`}
               >
@@ -644,7 +644,7 @@ function ReadOnlySlideStage({
                                 : 'none',
                               color: textColor,
                               textAlign: block.align ?? 'left',
-                              fontFamily: block.fontFamily || undefined,
+                              fontFamily: block.fontFamily || "'Inter', 'Segoe UI', system-ui, sans-serif",
                             }}
                           >
                             {cell}
@@ -675,7 +675,7 @@ function ReadOnlySlideStage({
               }`}
             >
               <p
-                className="whitespace-pre-wrap break-words leading-[1.32] tracking-tight"
+                className="whitespace-pre-wrap break-words leading-[1.16] tracking-tight"
                 style={{
                   fontSize: `${scaledFontPx.toFixed(2)}px`,
                   fontWeight: block.bold || block.role === 'title' ? 700 : 400,
@@ -685,7 +685,7 @@ function ReadOnlySlideStage({
                     : 'none',
                   color: textColor,
                   textAlign: block.align ?? 'left',
-                  fontFamily: block.fontFamily || undefined,
+                  fontFamily: block.fontFamily || "'Inter', 'Segoe UI', system-ui, sans-serif",
                 }}
               >
                 {block.text}
@@ -779,7 +779,7 @@ function ReadOnlySlideStage({
             {blocks.map((block) => (
               <p
                 key={block.id}
-                className="whitespace-pre-wrap break-words leading-[1.32]"
+                className="whitespace-pre-wrap break-words leading-[1.16]"
                 style={{
                   fontSize: `${Math.max(5, (block.fontSize || 18) * fontScale)}px`,
                   fontWeight: block.bold || block.role === 'title' ? 700 : 400,
@@ -789,7 +789,7 @@ function ReadOnlySlideStage({
                     : 'none',
                   color: block.color ?? (hasLightBg ? '#0F172A' : '#FFFFFF'),
                   textAlign: block.align ?? 'left',
-                  fontFamily: block.fontFamily || undefined,
+                  fontFamily: block.fontFamily || "'Inter', 'Segoe UI', system-ui, sans-serif",
                 }}
               >
                 {block.text}
@@ -3206,7 +3206,7 @@ export function SlideWorkspace({
                               block.hPct !== undefined ? `${hPct}%` : 'auto',
                             backgroundColor: block.fillColor,
                             borderColor: block.borderColor,
-                            fontFamily: block.fontFamily || undefined,
+                            fontFamily: block.fontFamily || "'Inter', 'Segoe UI', system-ui, sans-serif",
                           }}
                           className={`group flex flex-col ${justifyClass} rounded-lg px-1.5 py-1 transition-shadow ${
                             block.borderColor ? 'border' : ''

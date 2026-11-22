@@ -905,21 +905,29 @@ async function parsePptxThemePalette(
   return { colors, majorFont, minorFont };
 }
 
+function withSansFallback(fontName: string | undefined): string {
+  const base = (fontName ?? "").trim();
+  const fallback = "'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif";
+  if (!base) return fallback;
+  if (/serif|mono|times|georgia|cambria|consolas|courier/i.test(base)) return base;
+  return `"${base.replace(/"/g, "")}", ${fallback}`;
+}
+
 function resolveThemeFontName(
   rawTypeface: string | null | undefined,
   theme: PptxThemePalette
 ): string | undefined {
   const tf = (rawTypeface ?? '').trim();
   if (!tf) {
-    return undefined;
+    return withSansFallback(theme.minorFont);
   }
   if (tf.startsWith('+mj-')) {
-    return theme.majorFont;
+    return withSansFallback(theme.majorFont);
   }
   if (tf.startsWith('+mn-')) {
-    return theme.minorFont;
+    return withSansFallback(theme.minorFont);
   }
-  return tf;
+  return withSansFallback(tf);
 }
 
 function getRelationshipAttr(el: Element, attrLocalName: string): string {
@@ -1751,21 +1759,64 @@ export async function parsePptxArrayBuffer(
         }
       }
 
-      // 1. Parse slide background (<p:bg>: solidFill / gradFill / blipFill)
-      const bgInfo = extractSlideBackgroundInfo(xmlDoc, theme.colors);
-      let backgroundColor = bgInfo.backgroundColor;
-      const backgroundGradient = bgInfo.backgroundGradient;
+      // 1. Parse slide background (<p:bg>) with inheritance from slideLayout & slideMaster
+      let layoutDoc: Document | null = null;
+      let layoutRels = new Map<string, PptxRelRecord>();
+      let masterDoc: Document | null = null;
+      let masterRels = new Map<string, PptxRelRecord>();
+
+      if (layoutPath) {
+        const lFile = findZipFileInsensitive(zip, layoutPath);
+        if (lFile) {
+          layoutDoc = xmlParser.parseFromString(await lFile.async("string"), "application/xml");
+          const lSlash = layoutPath.lastIndexOf("/");
+          const lDir = lSlash >= 0 ? layoutPath.slice(0, lSlash) : "";
+          const lBase = lSlash >= 0 ? layoutPath.slice(lSlash + 1) : layoutPath;
+          layoutRels = await parseRelationshipsFile(zip, xmlParser, lDir ? `${lDir}/_rels/${lBase}.rels` : `_rels/${lBase}.rels`, lDir || "ppt/slideLayouts");
+          for (const rel of layoutRels.values()) {
+            if (rel.type.includes("/slideMaster")) {
+              const mFile = findZipFileInsensitive(zip, rel.resolvedPath);
+              if (mFile) {
+                masterDoc = xmlParser.parseFromString(await mFile.async("string"), "application/xml");
+                const mSlash = rel.resolvedPath.lastIndexOf("/");
+                const mDir = mSlash >= 0 ? rel.resolvedPath.slice(0, mSlash) : "";
+                const mBase = mSlash >= 0 ? rel.resolvedPath.slice(mSlash + 1) : rel.resolvedPath;
+                masterRels = await parseRelationshipsFile(zip, xmlParser, mDir ? `${mDir}/_rels/${mBase}.rels` : `_rels/${mBase}.rels`, mDir || "ppt/slideMasters");
+              }
+              break;
+            }
+          }
+        }
+      }
+
+      const bgSources: Array<{ doc: Document; rels: Map<string, PptxRelRecord> }> = [
+        { doc: xmlDoc, rels: slideRels },
+        ...(layoutDoc ? [{ doc: layoutDoc, rels: layoutRels }] : []),
+        ...(masterDoc ? [{ doc: masterDoc, rels: masterRels }] : []),
+      ];
+
+      let backgroundColor: string | undefined;
+      let backgroundGradient: string | undefined;
       let backgroundImageSrc: string | undefined;
       const backgroundImagePaths = new Set<string>();
 
-      if (bgInfo.backgroundBlipEmbedId) {
-        const bgRel = slideRels.get(bgInfo.backgroundBlipEmbedId);
-        if (bgRel) {
-          const bgBlob = await getMediaBlobUrl(bgRel.resolvedPath);
-          if (bgBlob) {
-            backgroundImageSrc = bgBlob;
-            backgroundImagePaths.add(bgRel.resolvedPath.toLowerCase());
+      for (const srcEntry of bgSources) {
+        const info = extractSlideBackgroundInfo(srcEntry.doc, theme.colors);
+        if (info.backgroundBlipEmbedId) {
+          const bgRel = srcEntry.rels.get(info.backgroundBlipEmbedId);
+          if (bgRel) {
+            const bgBlob = await getMediaBlobUrl(bgRel.resolvedPath);
+            if (bgBlob) {
+              backgroundImageSrc = bgBlob;
+              backgroundImagePaths.add(bgRel.resolvedPath.toLowerCase());
+              break;
+            }
           }
+        }
+        if (info.backgroundGradient || info.backgroundColor) {
+          backgroundColor = info.backgroundColor;
+          backgroundGradient = info.backgroundGradient;
+          break;
         }
       }
 
@@ -1860,6 +1911,22 @@ export async function parsePptxArrayBuffer(
 
             const combinedText = paragraphsText.join('\n').trim();
             if (!combinedText) {
+              if (!phType && !phMeta.idx && (fillColor || borderColor) && coords.wPct < 99.5 && coords.hPct < 99.5) {
+                blockCounter++;
+                blocks.push({
+                  id: `${idPrefix}slide-${slideNum}-shape-${blockCounter}`,
+                  kind: "text",
+                  text: "",
+                  fontSize: 12,
+                  fillColor,
+                  borderColor,
+                  role: "body",
+                  xPct: coords.xPct,
+                  yPct: coords.yPct,
+                  wPct: coords.wPct,
+                  hPct: coords.hPct,
+                });
+              }
               continue;
             }
 
@@ -1997,6 +2064,61 @@ export async function parsePptxArrayBuffer(
           }
         }
       };
+
+      const walkDecorOnly = async (docToWalk: Document | null, relsMap: Map<string, PptxRelRecord>) => {
+        if (!docToWalk) return;
+        const tree = getElementsByLocalName(docToWalk, "spTree")[0];
+        if (!tree) return;
+        for (let cIdx = 0; cIdx < tree.childNodes.length; cIdx++) {
+          const child = tree.childNodes[cIdx];
+          if (child.nodeType !== Node.ELEMENT_NODE) continue;
+          const el = child as Element;
+          const local = el.localName.toLowerCase();
+          if (local === "sp") {
+            const ph = getPlaceholderMeta(el);
+            if (ph.type || ph.idx) continue;
+            const spPr = getDirectChildrenByLocalName(el, "spPr")[0];
+            const xfrm = spPr ? getDirectChildrenByLocalName(spPr, "xfrm")[0] : undefined;
+            const box = extractEmuBoxFromXfrm(xfrm);
+            if (!box) continue;
+            const coords = mapBoxToPct(box, IDENTITY_GROUP_TRANSFORM, slideCx, slideCy);
+            const { fillColor, borderColor, fillBlipEmbedId } = extractShapeFillAndBorder(spPr, theme.colors);
+            if (fillBlipEmbedId) {
+              const rel = relsMap.get(fillBlipEmbedId);
+              if (rel) {
+                const blobUrl = await getMediaBlobUrl(rel.resolvedPath);
+                if (blobUrl) {
+                  images.push({ id: `${idPrefix}slide-${slideNum}-mimg-${images.length + 1}`, src: blobUrl, alt: "Layout", xPct: coords.xPct, yPct: coords.yPct, wPct: coords.wPct, hPct: coords.hPct });
+                }
+              }
+            } else if (fillColor || borderColor) {
+              blockCounter++;
+              blocks.push({ id: `${idPrefix}slide-${slideNum}-mshape-${blockCounter}`, kind: "text", text: "", fontSize: 12, fillColor, borderColor, role: "body", xPct: coords.xPct, yPct: coords.yPct, wPct: coords.wPct, hPct: coords.hPct });
+            }
+          } else if (local === "pic") {
+            const blipFill = getDirectChildrenByLocalName(el, "blipFill")[0];
+            const blip = blipFill ? getElementsByLocalName(blipFill, "blip")[0] : undefined;
+            const embedId = blip ? getRelationshipAttr(blip, "embed") : "";
+            const rel = embedId ? relsMap.get(embedId) : undefined;
+            if (!rel) continue;
+            const blobUrl = await getMediaBlobUrl(rel.resolvedPath);
+            if (!blobUrl) continue;
+            const spPr = getDirectChildrenByLocalName(el, "spPr")[0];
+            const xfrm = spPr ? getDirectChildrenByLocalName(spPr, "xfrm")[0] : undefined;
+            const box = extractEmuBoxFromXfrm(xfrm);
+            if (!box) continue;
+            const coords = mapBoxToPct(box, IDENTITY_GROUP_TRANSFORM, slideCx, slideCy);
+            images.push({ id: `${idPrefix}slide-${slideNum}-mpic-${images.length + 1}`, src: blobUrl, alt: "Master", xPct: coords.xPct, yPct: coords.yPct, wPct: coords.wPct, hPct: coords.hPct });
+          }
+        }
+      };
+
+      if (xmlDoc.documentElement.getAttribute("showMasterSp") !== "0") {
+        if (!layoutDoc || layoutDoc.documentElement.getAttribute("showMasterSp") !== "0") {
+          await walkDecorOnly(masterDoc, masterRels);
+        }
+        await walkDecorOnly(layoutDoc, layoutRels);
+      }
 
       const spTree = getElementsByLocalName(xmlDoc, 'spTree')[0];
       if (spTree) {
