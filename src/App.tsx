@@ -13,6 +13,11 @@ import { ExcelWorkspace } from './components/workspaces/ExcelWorkspace';
 import { PdfWorkspace } from './components/workspaces/PdfWorkspace';
 import { StageActionModal } from './components/modals/StageActionModal';
 import { AuthModal } from './components/modals/AuthModal';
+import {
+  checkEmailAccess,
+  rememberOwnerEmail,
+  requestEmailAccess,
+} from './services/accessControl';
 import { SettingsModal } from './components/modals/SettingsModal';
 import { HelpModal } from './components/modals/HelpModal';
 import { CloudActionModal } from './components/modals/CloudActionModal';
@@ -490,6 +495,7 @@ export function App() {
     isSupabaseConfigured ? 'idle' : 'local'
   );
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+  const [authExternalNotice, setAuthExternalNotice] = useState<string | null>(null);
   const [activeUtilityModal, setActiveUtilityModal] =
     useState<UtilityModalType>(null);
   const [pendingMigrationDocs, setPendingMigrationDocs] = useState<
@@ -838,10 +844,28 @@ export function App() {
       }
 
       if (sessionUser) {
-        const summary = buildCloudUserSummary(sessionUser);
-        currentUserRef.current = summary;
-        setCurrentUser(summary);
-        void syncSessionForUser(summary);
+        const userMail = (sessionUser.email || "").trim().toLowerCase();
+        void checkEmailAccess(userMail).then(async (access) => {
+          if (!isMounted) return;
+          if (!access.allowed && userMail) {
+            await requestEmailAccess(userMail, "Đăng nhập qua Google - Chờ duyệt");
+            await supabase?.auth.signOut();
+            setAuthExternalNotice(
+              access.reason ||
+                `Gmail ${userMail} chưa được chủ sở hữu cấp quyền dùng ứng dụng. Yêu cầu của bạn đã được gửi tự động!`
+            );
+            setActiveUtilityModal("auth");
+            return;
+          }
+          if (userMail) {
+            rememberOwnerEmail(userMail);
+          }
+          setAuthExternalNotice(null);
+          const summary = buildCloudUserSummary(sessionUser);
+          currentUserRef.current = summary;
+          setCurrentUser(summary);
+          void syncSessionForUser(summary);
+        });
       } else {
         const hadUser =
           currentUserRef.current !== null ||
@@ -918,6 +942,41 @@ export function App() {
       authSubscription.subscription.unsubscribe();
     };
   }, [syncSessionForUser]);
+
+
+  useEffect(() => {
+    const desktopApi = (window as unknown as {
+      liteDesktop?: {
+        onAuthCallback?: (cb: (url: string) => void) => () => void;
+      };
+    }).liteDesktop;
+    if (!desktopApi?.onAuthCallback || !supabase) return;
+
+    const unsubscribe = desktopApi.onAuthCallback((callbackUrl: string) => {
+      try {
+        const parsed = new URL(callbackUrl);
+        const hashParams = new URLSearchParams(
+          parsed.hash.startsWith("#") ? parsed.hash.slice(1) : parsed.hash
+        );
+        const accessToken = hashParams.get("access_token");
+        const refreshToken = hashParams.get("refresh_token");
+        const authCode = parsed.searchParams.get("code");
+
+        if (accessToken && refreshToken) {
+          void supabase?.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken,
+          });
+        } else if (authCode) {
+          void supabase?.auth.exchangeCodeForSession(authCode);
+        }
+      } catch {
+        // Ignore malformed callback URLs
+      }
+    });
+
+    return unsubscribe;
+  }, []);
 
   const hydrateCloudPdfDocument = useCallback(async (doc: DocumentItem) => {
     const hasR2Source = Boolean(doc.r2ObjectKey) && isR2ApiConfigured;
@@ -2777,8 +2836,15 @@ export function App() {
 
       <AuthModal
         isOpen={activeUtilityModal === 'auth'}
-        onClose={handleAuthSuccess}
-        onAuthSuccess={handleAuthSuccess}
+        externalNotice={authExternalNotice}
+        onClose={() => {
+          setAuthExternalNotice(null);
+          handleAuthSuccess();
+        }}
+        onAuthSuccess={() => {
+          setAuthExternalNotice(null);
+          handleAuthSuccess();
+        }}
       />
 
       <SettingsModal

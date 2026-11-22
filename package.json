@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "app:dev": "electron .",
+    "app:build": "npm run build && electron-builder"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.119.2",
@@ -31,5 +33,38 @@
     "tailwindcss": "^3.4.17",
     "typescript": "^5.6.3",
     "vite": "^5.4.11"
+  },
+  "main": "electron/main.cjs",
+  "build": {
+    "appId": "vn.lite.workspace",
+    "productName": "LITE Workspace",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "protocols": [
+      {
+        "name": "LITE Auth Callback",
+        "schemes": [
+          "liteapp"
+        ]
+      }
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Office"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    }
   }
 }

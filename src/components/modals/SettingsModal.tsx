@@ -13,7 +13,12 @@ import {
   RefreshCw,
   Settings,
   Sun,
+  CheckCheck,
+  Copy,
+  ShieldCheck,
+  Trash2,
   User,
+  UserPlus,
   Wifi,
   WifiOff,
   X,
@@ -25,6 +30,12 @@ import type {
   WordPaperTheme,
 } from '../../types/document';
 import { formatRelativeVietnameseTime } from '../../services/cloudSync';
+import {
+  addOrApproveEmail,
+  listAllowedEmails,
+  removeAllowedEmail,
+  type AllowedEmailRecord,
+} from '../../services/accessControl';
 
 export interface SettingsModalProps {
   isOpen: boolean;
@@ -138,6 +149,67 @@ export function SettingsModal({
   onOpenAuth,
   onRequestLogout,
 }: SettingsModalProps) {
+
+  const [allowedList, setAllowedList] = useState<AllowedEmailRecord[]>([]);
+  const [newAllowedEmail, setNewAllowedEmail] = useState<string>("");
+  const [newAllowedNote, setNewAllowedNote] = useState<string>("");
+  const [isLoadingAllowed, setIsLoadingAllowed] = useState<boolean>(false);
+  const [isSavingAllowed, setIsSavingAllowed] = useState<boolean>(false);
+  const [allowedTableMissing, setAllowedTableMissing] = useState<boolean>(false);
+  const [allowedFeedback, setAllowedFeedback] = useState<string | null>(null);
+  const [copiedSql, setCopiedSql] = useState<boolean>(false);
+
+  const refreshAllowedEmails = async () => {
+    if (!isSupabaseConfigured || !user) return;
+    setIsLoadingAllowed(true);
+    const res = await listAllowedEmails();
+    setIsLoadingAllowed(false);
+    setAllowedTableMissing(Boolean(res.tableMissing));
+    if (!res.error) setAllowedList(res.records);
+  };
+
+  useEffect(() => {
+    if (isOpen && user && isSupabaseConfigured) {
+      void refreshAllowedEmails();
+    }
+  }, [isOpen, user?.email]);
+
+  const handleAddAllowedEmail = async () => {
+    if (!newAllowedEmail.trim() || isSavingAllowed) return;
+    setIsSavingAllowed(true);
+    setAllowedFeedback(null);
+    const res = await addOrApproveEmail(newAllowedEmail, newAllowedNote, user?.email);
+    setIsSavingAllowed(false);
+    if (res.ok) {
+      setNewAllowedEmail("");
+      setNewAllowedNote("");
+      setAllowedFeedback("Đã ép email vào danh sách! Người này có thể đăng nhập Google ngay mà không cần đóng gói lại app.");
+      await refreshAllowedEmails();
+    } else {
+      setAllowedFeedback("Lỗi: " + (res.error || "Không thể thêm email."));
+    }
+  };
+
+  const handleApprovePending = async (targetEmail: string, note?: string) => {
+    setIsSavingAllowed(true);
+    const res = await addOrApproveEmail(targetEmail, note, user?.email);
+    setIsSavingAllowed(false);
+    if (res.ok) {
+      setAllowedFeedback(`Đã duyệt quyền truy cập cho ${targetEmail}!`);
+      await refreshAllowedEmails();
+    }
+  };
+
+  const handleDeleteAllowed = async (targetEmail: string) => {
+    setIsSavingAllowed(true);
+    const res = await removeAllowedEmail(targetEmail);
+    setIsSavingAllowed(false);
+    if (res.ok) {
+      setAllowedFeedback(`Đã thu hồi quyền của ${targetEmail}.`);
+      await refreshAllowedEmails();
+    }
+  };
+
   const [isManualSyncRunning, setIsManualSyncRunning] =
     useState<boolean>(false);
 
@@ -525,6 +597,144 @@ export function SettingsModal({
                   )}
                 </div>
               </section>
+
+              {/* Quản lý Email được phép dùng App (Ép mail từ xa không cần build lại) */}
+              {user && isSupabaseConfigured && (
+                <section className="rounded-2xl border border-indigo-200/80 bg-indigo-50/40 p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck className="h-4 w-4 text-indigo-600 shrink-0" />
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-950">
+                        Ép Email &amp; Duyệt quyền dùng App từ xa
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void refreshAllowedEmails()}
+                      disabled={isLoadingAllowed}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-indigo-200 text-[11px] font-medium text-indigo-700 hover:bg-indigo-50"
+                    >
+                      <RefreshCw className={`h-3 w-3 ${isLoadingAllowed ? "animate-spin" : ""}`} />
+                      <span>Làm mới</span>
+                    </button>
+                  </div>
+
+                  <p className="text-[11.5px] text-slate-600 leading-relaxed">
+                    Nhập Gmail của người muốn dùng app bên dưới rồi bấm <strong>Ép Email</strong>. Họ có thể đăng nhập bằng Google ngay lập tức mà <strong>không cần đóng gói lại app</strong>.
+                  </p>
+
+                  {allowedTableMissing ? (
+                    <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 space-y-2 text-xs text-amber-900">
+                      <p className="font-semibold">
+                        Cần chạy 1 đoạn SQL ngắn trong Supabase SQL Editor để kích hoạt bảng danh sách email:
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(
+                            `create table if not exists public.app_allowed_emails (email text primary key, status text not null default 'approved', note text, added_by text, created_at timestamptz default now()); alter table public.app_allowed_emails enable row level security; create policy "read_all" on public.app_allowed_emails for select using (true); create policy "insert_req" on public.app_allowed_emails for insert with check (true); create policy "manage_auth" on public.app_allowed_emails for all using (auth.role() = 'authenticated');`
+                          );
+                          setCopiedSql(true);
+                          window.setTimeout(() => setCopiedSql(false), 2500);
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600 text-white font-semibold"
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                        <span>{copiedSql ? "Đã sao chép lệnh SQL!" : "Sao chép lệnh SQL tạo bảng"}</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <input
+                          type="email"
+                          value={newAllowedEmail}
+                          onChange={(e) => setNewAllowedEmail(e.target.value)}
+                          placeholder="nguoi-dung@gmail.com"
+                          className="flex-1 h-9 rounded-xl border border-indigo-200 bg-white px-3 text-xs text-slate-900 outline-none focus:border-indigo-500"
+                        />
+                        <input
+                          type="text"
+                          value={newAllowedNote}
+                          onChange={(e) => setNewAllowedNote(e.target.value)}
+                          placeholder="Ghi chú (tên)..."
+                          className="sm:w-32 h-9 rounded-xl border border-indigo-200 bg-white px-3 text-xs text-slate-900 outline-none focus:border-indigo-500"
+                        />
+                        <button
+                          type="button"
+                          disabled={isSavingAllowed || !newAllowedEmail.trim()}
+                          onClick={() => void handleAddAllowedEmail()}
+                          className="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shrink-0 disabled:opacity-50"
+                        >
+                          <UserPlus className="h-3.5 w-3.5" />
+                          <span>Ép Email</span>
+                        </button>
+                      </div>
+
+                      {allowedFeedback && (
+                        <p className="text-[11.5px] font-medium text-indigo-800 bg-white border border-indigo-200 rounded-xl px-3 py-2">
+                          {allowedFeedback}
+                        </p>
+                      )}
+
+                      {allowedList.length > 0 && (
+                        <div className="max-h-44 overflow-y-auto space-y-1.5 pr-1">
+                          {allowedList.map((item) => (
+                            <div
+                              key={item.email}
+                              className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-white border border-slate-200/90 text-xs"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="font-semibold text-slate-900 truncate">
+                                    {item.email}
+                                  </span>
+                                  <span
+                                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                      item.status === "approved"
+                                        ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                                        : "bg-amber-50 text-amber-700 border border-amber-200"
+                                    }`}
+                                  >
+                                    {item.status === "approved" ? "Đã cấp quyền" : "Chờ duyệt"}
+                                  </span>
+                                </div>
+                                {item.note && (
+                                  <p className="text-[11px] text-slate-500 truncate">{item.note}</p>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1 shrink-0">
+                                {item.status !== "approved" && (
+                                  <button
+                                    type="button"
+                                    disabled={isSavingAllowed}
+                                    onClick={() => void handleApprovePending(item.email, item.note)}
+                                    title="Duyệt cho phép dùng app"
+                                    className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold"
+                                  >
+                                    <CheckCheck className="h-3 w-3" />
+                                    <span>Duyệt</span>
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  disabled={isSavingAllowed}
+                                  onClick={() => void handleDeleteAllowed(item.email)}
+                                  title="Xóa / Thu hồi quyền"
+                                  className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </section>
+              )}
+
             </div>
           </div>
         </div>
