@@ -40,6 +40,30 @@ export interface UserSettings {
   defaultWordTheme: WordPaperTheme;
 }
 
+export interface SlideTextRun {
+  text: string;
+  fontSize?: number;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  color?: string;
+  fontFamily?: string;
+}
+
+export interface SlideRichParagraph {
+  align?: "left" | "center" | "right";
+  bullet?: string;
+  level?: number;
+  runs: SlideTextRun[];
+}
+
+export interface SlideTableCellStyle {
+  fillColor?: string;
+  textColor?: string;
+  bold?: boolean;
+  align?: "left" | "center" | "right";
+}
+
 export interface SlideTextBlock {
   id: string;
   text: string;
@@ -59,6 +83,15 @@ export interface SlideTextBlock {
   valign?: 'top' | 'middle' | 'bottom';
   kind?: 'text' | 'table';
   tableRows?: string[][];
+  tableCellStyles?: SlideTableCellStyle[][];
+  richParagraphs?: SlideRichParagraph[];
+  fillGradient?: string;
+  borderWidthPx?: number;
+  borderRadius?: string;
+  rotationDeg?: number;
+  shadowCss?: string;
+  paddingPct?: { top: number; right: number; bottom: number; left: number };
+  fontScalePct?: number;
 }
 
 export interface SlideImageItem {
@@ -69,6 +102,9 @@ export interface SlideImageItem {
   yPct?: number;
   wPct?: number;
   hPct?: number;
+  rotationDeg?: number;
+  borderRadius?: string;
+  cropRect?: { l: number; t: number; r: number; b: number };
 }
 
 export interface SlidePreviewItem {

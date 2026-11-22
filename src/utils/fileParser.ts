@@ -8,7 +8,10 @@ import type {
   OutlineSection,
   SlideImageItem,
   SlidePreviewItem,
+  SlideRichParagraph,
+  SlideTableCellStyle,
   SlideTextBlock,
+  SlideTextRun,
   SpreadsheetSheet,
 } from '../types/document';
 import { columnIndexToLetter } from './formulaEvaluator';
@@ -1039,108 +1042,7 @@ function getDefaultPlaceholderPct(
   return { xPct: 6, yPct: top, wPct: 88, hPct: Math.max(18, 92 - top) };
 }
 
-function extractFirstRunStyle(
-  txBody: Element,
-  theme: PptxThemePalette
-): {
-  fontSize?: number;
-  bold?: boolean;
-  italic?: boolean;
-  color?: string;
-  align?: 'left' | 'center' | 'right';
-  fontFamily?: string;
-  valign?: 'top' | 'middle' | 'bottom';
-} {
-  const style: {
-    fontSize?: number;
-    bold?: boolean;
-    italic?: boolean;
-    color?: string;
-    align?: 'left' | 'center' | 'right';
-    fontFamily?: string;
-    valign?: 'top' | 'middle' | 'bottom';
-  } = {};
 
-  const bodyPr = getDirectChildrenByLocalName(txBody, 'bodyPr')[0];
-  const anchor = bodyPr?.getAttribute('anchor')?.trim();
-  if (anchor === 't') {
-    style.valign = 'top';
-  } else if (anchor === 'ctr') {
-    style.valign = 'middle';
-  } else if (anchor === 'b') {
-    style.valign = 'bottom';
-  }
-
-  const pPrList = getElementsByLocalName(txBody, 'pPr');
-  for (const pPr of pPrList) {
-    const algn = pPr.getAttribute('algn');
-    if (algn === 'ctr') {
-      style.align = 'center';
-      break;
-    }
-    if (algn === 'r') {
-      style.align = 'right';
-      break;
-    }
-    if (algn === 'l' || algn === 'just') {
-      style.align = 'left';
-      break;
-    }
-  }
-
-  // Inspect both run properties (<a:rPr>) and default run properties (<a:defRPr>)
-  const propEls = [
-    ...getElementsByLocalName(txBody, 'rPr'),
-    ...getElementsByLocalName(txBody, 'defRPr'),
-  ];
-
-  for (const rPr of propEls) {
-    if (style.fontSize === undefined) {
-      const szAttr = rPr.getAttribute('sz');
-      if (szAttr) {
-        const hundredths = Number.parseInt(szAttr, 10);
-        if (Number.isFinite(hundredths) && hundredths > 0) {
-          style.fontSize = Math.min(96, Math.max(8, Math.round(hundredths / 100)));
-        }
-      }
-    }
-    if (style.bold === undefined) {
-      const bAttr = rPr.getAttribute('b');
-      if (bAttr === '1' || bAttr === 'true') {
-        style.bold = true;
-      } else if (bAttr === '0' || bAttr === 'false') {
-        style.bold = false;
-      }
-    }
-    if (style.italic === undefined) {
-      const iAttr = rPr.getAttribute('i');
-      if (iAttr === '1' || iAttr === 'true') {
-        style.italic = true;
-      } else if (iAttr === '0' || iAttr === 'false') {
-        style.italic = false;
-      }
-    }
-    if (style.color === undefined) {
-      const solidFill = getDirectChildrenByLocalName(rPr, 'solidFill')[0];
-      const resolved = resolveDrawingColor(solidFill, theme.colors);
-      if (resolved) {
-        style.color = resolved;
-      }
-    }
-    if (style.fontFamily === undefined) {
-      const latin = getDirectChildrenByLocalName(rPr, 'latin')[0];
-      const ea = getDirectChildrenByLocalName(rPr, 'ea')[0];
-      const family =
-        resolveThemeFontName(latin?.getAttribute('typeface'), theme) ??
-        resolveThemeFontName(ea?.getAttribute('typeface'), theme);
-      if (family) {
-        style.fontFamily = family;
-      }
-    }
-  }
-
-  return style;
-}
 
 function extractGradientFromElement(
   gradFillEl: Element,
@@ -1219,6 +1121,380 @@ function extractShapeFillAndBorder(
   }
 
   return { fillColor, borderColor, fillBlipEmbedId };
+}
+
+
+function applyColorMapToPalette(
+  baseColors: Record<string, string>,
+  clrMapEl: Element | undefined
+): Record<string, string> {
+  const mapped: Record<string, string> = { ...baseColors };
+  if (!clrMapEl) {
+    mapped.tx1 = mapped.dk1;
+    mapped.bg1 = mapped.lt1;
+    mapped.tx2 = mapped.dk2;
+    mapped.bg2 = mapped.lt2;
+    return mapped;
+  }
+  const slots = ["bg1", "tx1", "bg2", "tx2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink"];
+  for (const slot of slots) {
+    const target = (clrMapEl.getAttribute(slot) ?? "").trim();
+    if (target && baseColors[target]) {
+      mapped[slot] = baseColors[target];
+      mapped[slot.toLowerCase()] = baseColors[target];
+    }
+  }
+  return mapped;
+}
+
+function resolveColorWithAlpha(
+  container: Element | undefined,
+  themeColors: Record<string, string>
+): string | undefined {
+  const hex = resolveDrawingColor(container, themeColors);
+  if (!hex || !container) return hex;
+  const colorNode =
+    getDirectChildrenByLocalName(container, "srgbClr")[0] ??
+    getDirectChildrenByLocalName(container, "schemeClr")[0] ??
+    getDirectChildrenByLocalName(container, "sysClr")[0];
+  if (!colorNode) return hex;
+  const alphaEl = getDirectChildrenByLocalName(colorNode, "alpha")[0];
+  if (!alphaEl) return hex;
+  const rawAlpha = Number.parseInt(alphaEl.getAttribute("val") ?? "", 10);
+  if (!Number.isFinite(rawAlpha)) return hex;
+  const alpha = Math.min(1, Math.max(0, rawAlpha / 100000));
+  if (alpha >= 0.99) return hex;
+  const rgb = hexToRgb(hex);
+  if (!rgb) return hex;
+  return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${alpha.toFixed(3)})`;
+}
+
+function extractShapeVisualDetails(
+  spEl: Element,
+  spPr: Element | undefined,
+  theme: PptxThemePalette,
+  themeColors: Record<string, string>
+): {
+  fillColor?: string;
+  fillGradient?: string;
+  borderColor?: string;
+  borderWidthPx?: number;
+  borderRadius?: string;
+  rotationDeg?: number;
+  shadowCss?: string;
+  fillBlipEmbedId?: string;
+  styleFontColor?: string;
+  styleFontFamily?: string;
+} {
+  let fillColor: string | undefined;
+  let fillGradient: string | undefined;
+  let fillBlipEmbedId: string | undefined;
+  let borderColor: string | undefined;
+  let borderWidthPx: number | undefined;
+  let borderRadius: string | undefined;
+  let rotationDeg: number | undefined;
+  let shadowCss: string | undefined;
+  let styleFontColor: string | undefined;
+  let styleFontFamily: string | undefined;
+
+  const styleEl = getDirectChildrenByLocalName(spEl, "style")[0];
+  if (styleEl) {
+    const fillRef = getDirectChildrenByLocalName(styleEl, "fillRef")[0];
+    const fillIdx = Number.parseInt(fillRef?.getAttribute("idx") ?? "0", 10);
+    if (fillRef && fillIdx > 0) {
+      fillColor = resolveColorWithAlpha(fillRef, themeColors);
+    }
+    const lnRef = getDirectChildrenByLocalName(styleEl, "lnRef")[0];
+    const lnIdx = Number.parseInt(lnRef?.getAttribute("idx") ?? "0", 10);
+    if (lnRef && lnIdx > 0) {
+      borderColor = resolveColorWithAlpha(lnRef, themeColors);
+      borderWidthPx = Math.max(1, Math.min(4, lnIdx));
+    }
+    const fontRef = getDirectChildrenByLocalName(styleEl, "fontRef")[0];
+    if (fontRef) {
+      styleFontColor = resolveColorWithAlpha(fontRef, themeColors);
+      const idxAttr = (fontRef.getAttribute("idx") ?? "").trim();
+      if (idxAttr === "major") styleFontFamily = withSansFallback(theme.majorFont);
+      else if (idxAttr === "minor") styleFontFamily = withSansFallback(theme.minorFont);
+    }
+  }
+
+  if (spPr) {
+    const xfrm = getDirectChildrenByLocalName(spPr, "xfrm")[0];
+    const rawRot = Number.parseInt(xfrm?.getAttribute("rot") ?? "", 10);
+    if (Number.isFinite(rawRot) && rawRot !== 0) {
+      rotationDeg = Math.round((rawRot / 60000) * 100) / 100;
+    }
+
+    const prstGeom = getDirectChildrenByLocalName(spPr, "prstGeom")[0];
+    const prst = (prstGeom?.getAttribute("prst") ?? "").trim();
+    if (prst === "ellipse" || prst === "flowChartTerminator") {
+      borderRadius = "9999px";
+    } else if (prst.toLowerCase().includes("round")) {
+      const gd = prstGeom ? getElementsByLocalName(prstGeom, "gd")[0] : undefined;
+      const fmla = gd?.getAttribute("fmla") ?? "";
+      const valMatch = /val\s+(\d+)/i.exec(fmla);
+      const adj = valMatch ? Number.parseInt(valMatch[1], 10) : 16667;
+      if (adj >= 45000) borderRadius = "9999px";
+      else borderRadius = `${Math.max(4, Math.round((adj / 50000) * 28))}px`;
+    } else if (prst === "rect") {
+      borderRadius = "0px";
+    }
+
+    const hasNoFill = getDirectChildrenByLocalName(spPr, "noFill").length > 0;
+    if (hasNoFill) {
+      fillColor = undefined;
+      fillGradient = undefined;
+    } else {
+      const solidFill = getDirectChildrenByLocalName(spPr, "solidFill")[0];
+      if (solidFill) {
+        fillColor = resolveColorWithAlpha(solidFill, themeColors);
+        fillGradient = undefined;
+      } else {
+        const gradFill = getDirectChildrenByLocalName(spPr, "gradFill")[0];
+        if (gradFill) {
+          const grad = extractGradientFromElement(gradFill, themeColors);
+          fillColor = grad.firstColor;
+          fillGradient = grad.gradientCss;
+        } else {
+          const blipFill = getDirectChildrenByLocalName(spPr, "blipFill")[0];
+          if (blipFill) {
+            const blip = getElementsByLocalName(blipFill, "blip")[0];
+            const embedId = blip ? getRelationshipAttr(blip, "embed") : "";
+            if (embedId) fillBlipEmbedId = embedId;
+          }
+        }
+      }
+    }
+
+    const ln = getDirectChildrenByLocalName(spPr, "ln")[0];
+    if (ln) {
+      if (getDirectChildrenByLocalName(ln, "noFill").length > 0) {
+        borderColor = undefined;
+        borderWidthPx = undefined;
+      } else {
+        const wEmu = Number.parseInt(ln.getAttribute("w") ?? "", 10);
+        if (Number.isFinite(wEmu) && wEmu > 0) {
+          borderWidthPx = Math.max(1, Math.min(8, Math.round(wEmu / 12700)));
+        }
+        const lnSolid = getDirectChildrenByLocalName(ln, "solidFill")[0];
+        if (lnSolid) {
+          borderColor = resolveColorWithAlpha(lnSolid, themeColors);
+        }
+      }
+    }
+
+    const outerShdw = getElementsByLocalName(spPr, "outerShdw")[0];
+    if (outerShdw) {
+      shadowCss = "0 8px 22px -4px rgba(15, 23, 42, 0.28)";
+    }
+  }
+
+  return {
+    fillColor,
+    fillGradient,
+    borderColor,
+    borderWidthPx,
+    borderRadius,
+    rotationDeg,
+    shadowCss,
+    fillBlipEmbedId,
+    styleFontColor,
+    styleFontFamily,
+  };
+}
+
+function extractRichTxBodyData(
+  txBody: Element,
+  theme: PptxThemePalette,
+  themeColors: Record<string, string>,
+  fallbackStyle: {
+    fontSize?: number;
+    bold?: boolean;
+    italic?: boolean;
+    color?: string;
+    fontFamily?: string;
+  }
+): {
+  paragraphsText: string[];
+  richParagraphs: SlideRichParagraph[];
+  valign?: "top" | "middle" | "bottom";
+  align?: "left" | "center" | "right";
+  paddingPct?: { top: number; right: number; bottom: number; left: number };
+  fontScalePct?: number;
+  firstRun: {
+    fontSize?: number;
+    bold?: boolean;
+    italic?: boolean;
+    color?: string;
+    fontFamily?: string;
+  };
+} {
+  const bodyPr = getDirectChildrenByLocalName(txBody, "bodyPr")[0];
+  let valign: "top" | "middle" | "bottom" | undefined;
+  const anchor = bodyPr?.getAttribute("anchor")?.trim();
+  if (anchor === "t") valign = "top";
+  else if (anchor === "ctr") valign = "middle";
+  else if (anchor === "b") valign = "bottom";
+
+  let fontScalePct: number | undefined;
+  const normAutofit = bodyPr ? getDirectChildrenByLocalName(bodyPr, "normAutofit")[0] : undefined;
+  if (normAutofit) {
+    const rawScale = Number.parseInt(normAutofit.getAttribute("fontScale") ?? "", 10);
+    if (Number.isFinite(rawScale) && rawScale > 10000 && rawScale <= 100000) {
+      fontScalePct = Math.round((rawScale / 1000) * 10) / 10;
+    }
+  }
+
+  const readIns = (attr: string, defPx: number) => {
+    const v = Number.parseInt(bodyPr?.getAttribute(attr) ?? "", 10);
+    return Number.isFinite(v) && v >= 0 ? Math.min(24, Math.round((v / 12700) * 10) / 10) : defPx;
+  };
+  const paddingPct = {
+    left: readIns("lIns", 6),
+    right: readIns("rIns", 6),
+    top: readIns("tIns", 3),
+    bottom: readIns("bIns", 3),
+  };
+
+  // Extract default run properties from lstStyle if present
+  const lstStyle = getDirectChildrenByLocalName(txBody, "lstStyle")[0];
+  const lvl1DefRPr = lstStyle ? getElementsByLocalName(lstStyle, "defRPr")[0] : undefined;
+  const readRPr = (rPrEl: Element | undefined) => {
+    const out: {
+      fontSize?: number;
+      bold?: boolean;
+      italic?: boolean;
+      underline?: boolean;
+      color?: string;
+      fontFamily?: string;
+    } = {};
+    if (!rPrEl) return out;
+    const szAttr = rPrEl.getAttribute("sz");
+    if (szAttr) {
+      const h = Number.parseInt(szAttr, 10);
+      if (Number.isFinite(h) && h > 0) out.fontSize = Math.min(96, Math.max(8, Math.round(h / 100)));
+    }
+    const bAttr = rPrEl.getAttribute("b");
+    if (bAttr === "1" || bAttr === "true") out.bold = true;
+    else if (bAttr === "0" || bAttr === "false") out.bold = false;
+
+    const iAttr = rPrEl.getAttribute("i");
+    if (iAttr === "1" || iAttr === "true") out.italic = true;
+    else if (iAttr === "0" || iAttr === "false") out.italic = false;
+
+    const uAttr = rPrEl.getAttribute("u");
+    if (uAttr && uAttr !== "none") out.underline = true;
+
+    const solidFill = getDirectChildrenByLocalName(rPrEl, "solidFill")[0];
+    const resolvedClr = resolveColorWithAlpha(solidFill, themeColors);
+    if (resolvedClr) out.color = resolvedClr;
+
+    const latin = getDirectChildrenByLocalName(rPrEl, "latin")[0];
+    const ea = getDirectChildrenByLocalName(rPrEl, "ea")[0];
+    const rawTf = latin?.getAttribute("typeface") || ea?.getAttribute("typeface");
+    if (rawTf) out.fontFamily = resolveThemeFontName(rawTf, theme);
+    return out;
+  };
+
+  const lstDefaults = readRPr(lvl1DefRPr);
+  const baseDefaults = {
+    fontSize: lstDefaults.fontSize ?? fallbackStyle.fontSize,
+    bold: lstDefaults.bold ?? fallbackStyle.bold,
+    italic: lstDefaults.italic ?? fallbackStyle.italic,
+    color: lstDefaults.color ?? fallbackStyle.color,
+    fontFamily: lstDefaults.fontFamily ?? fallbackStyle.fontFamily,
+  };
+
+  const paragraphsText: string[] = [];
+  const richParagraphs: SlideRichParagraph[] = [];
+  let blockAlign: "left" | "center" | "right" | undefined;
+  let firstRun: {
+    fontSize?: number;
+    bold?: boolean;
+    italic?: boolean;
+    color?: string;
+    fontFamily?: string;
+  } = {};
+  let autoNumCounter = 1;
+
+  for (const p of getDirectChildrenByLocalName(txBody, "p")) {
+    const pPr = getDirectChildrenByLocalName(p, "pPr")[0];
+    const algn = pPr?.getAttribute("algn");
+    let pAlign: "left" | "center" | "right" | undefined;
+    if (algn === "ctr") pAlign = "center";
+    else if (algn === "r") pAlign = "right";
+    else if (algn === "l" || algn === "just") pAlign = "left";
+    if (!blockAlign && pAlign) blockAlign = pAlign;
+
+    const lvl = Number.parseInt(pPr?.getAttribute("lvl") ?? "0", 10) || 0;
+    let bulletStr: string | undefined;
+    if (pPr && getDirectChildrenByLocalName(pPr, "buNone").length === 0) {
+      const buChar = getDirectChildrenByLocalName(pPr, "buChar")[0];
+      const buAutoNum = getDirectChildrenByLocalName(pPr, "buAutoNum")[0];
+      if (buChar) {
+        const ch = (buChar.getAttribute("char") ?? "•").trim();
+        bulletStr = ch === "" || ch === "" || ch === "" ? "•" : ch || "•";
+      } else if (buAutoNum) {
+        bulletStr = `${autoNumCounter++}.`;
+      }
+    }
+
+    const pDefRPr = pPr ? getDirectChildrenByLocalName(pPr, "defRPr")[0] : undefined;
+    const pDefaults = { ...baseDefaults, ...readRPr(pDefRPr) };
+
+    const runs: SlideTextRun[] = [];
+    for (let i = 0; i < p.childNodes.length; i++) {
+      const child = p.childNodes[i];
+      if (child.nodeType !== Node.ELEMENT_NODE) continue;
+      const el = child as Element;
+      const local = el.localName.toLowerCase();
+      if (local === "r" || local === "fld") {
+        const rPr = getDirectChildrenByLocalName(el, "rPr")[0];
+        const rStyle = { ...pDefaults, ...readRPr(rPr) };
+        const tEl = getDirectChildrenByLocalName(el, "t")[0];
+        const txt = tEl?.textContent ?? "";
+        if (txt) {
+          if (Object.keys(firstRun).length === 0) firstRun = rStyle;
+          runs.push({
+            text: txt,
+            fontSize: rStyle.fontSize,
+            bold: rStyle.bold,
+            italic: rStyle.italic,
+            underline: rStyle.underline,
+            color: rStyle.color,
+            fontFamily: rStyle.fontFamily,
+          });
+        }
+      } else if (local === "br") {
+        runs.push({ text: "\n", ...pDefaults });
+      } else if (local === "tab") {
+        runs.push({ text: "  ", ...pDefaults });
+      }
+    }
+
+    const joined = runs.map((r) => r.text).join("").replace(/\r\n/g, "\n").trim();
+    if (joined) {
+      const prefixedLine = bulletStr ? `${bulletStr} ${joined}` : joined;
+      paragraphsText.push(prefixedLine);
+      richParagraphs.push({
+        align: pAlign ?? blockAlign,
+        bullet: bulletStr,
+        level: lvl,
+        runs,
+      });
+    }
+  }
+
+  return {
+    paragraphsText,
+    richParagraphs,
+    valign,
+    align: blockAlign,
+    paddingPct,
+    fontScalePct,
+    firstRun: Object.keys(firstRun).length > 0 ? firstRun : baseDefaults,
+  };
 }
 
 function extractSlideBackgroundInfo(
@@ -1759,7 +2035,7 @@ export async function parsePptxArrayBuffer(
         }
       }
 
-      // 1. Parse slide background (<p:bg>) with inheritance from slideLayout & slideMaster
+      // 1. Parse slide background (<p:bg>) & clrMap with inheritance from slideLayout & slideMaster
       let layoutDoc: Document | null = null;
       let layoutRels = new Map<string, PptxRelRecord>();
       let masterDoc: Document | null = null;
@@ -1789,6 +2065,11 @@ export async function parsePptxArrayBuffer(
         }
       }
 
+      const masterClrMap = masterDoc ? getElementsByLocalName(masterDoc, "clrMap")[0] : undefined;
+      const layoutClrOvr = layoutDoc ? getElementsByLocalName(layoutDoc, "overrideClrMapping")[0] : undefined;
+      const slideClrOvr = getElementsByLocalName(xmlDoc, "overrideClrMapping")[0];
+      const slideColors = applyColorMapToPalette(theme.colors, slideClrOvr ?? layoutClrOvr ?? masterClrMap);
+
       const bgSources: Array<{ doc: Document; rels: Map<string, PptxRelRecord> }> = [
         { doc: xmlDoc, rels: slideRels },
         ...(layoutDoc ? [{ doc: layoutDoc, rels: layoutRels }] : []),
@@ -1801,7 +2082,7 @@ export async function parsePptxArrayBuffer(
       const backgroundImagePaths = new Set<string>();
 
       for (const srcEntry of bgSources) {
-        const info = extractSlideBackgroundInfo(srcEntry.doc, theme.colors);
+        const info = extractSlideBackgroundInfo(srcEntry.doc, slideColors);
         if (info.backgroundBlipEmbedId) {
           const bgRel = srcEntry.rels.get(info.backgroundBlipEmbedId);
           if (bgRel) {
@@ -1866,12 +2147,9 @@ export async function parsePptxArrayBuffer(
               ? mapBoxToPct(localBox, groupTransform, slideCx, slideCy)
               : getDefaultPlaceholderPct(phType, blockCounter);
 
-            const { fillColor, borderColor, fillBlipEmbedId } = extractShapeFillAndBorder(
-              spPr,
-              theme.colors
-            );
+            const shapeVis = extractShapeVisualDetails(el, spPr, theme, slideColors);
+            const { fillColor, fillGradient, borderColor, borderWidthPx, borderRadius, rotationDeg, shadowCss, fillBlipEmbedId } = shapeVis;
 
-            // Picture-filled shape (e.g. image cropped into shape frame)
             if (fillBlipEmbedId) {
               const rel = slideRels.get(fillBlipEmbedId);
               if (rel && !backgroundImagePaths.has(rel.resolvedPath.toLowerCase())) {
@@ -1887,31 +2165,53 @@ export async function parsePptxArrayBuffer(
                     yPct: coords.yPct,
                     wPct: coords.wPct,
                     hPct: coords.hPct,
+                    rotationDeg,
+                    borderRadius,
                   });
                 }
               }
             }
 
+            let role: 'title' | 'subtitle' | 'body' = 'body';
+            let defaultFontSize = 16;
+            let defaultBold = false;
+            if (phType === 'title' || phType === 'ctrTitle') {
+              role = 'title';
+              defaultFontSize = 32;
+              defaultBold = true;
+            } else if (phType === 'subTitle') {
+              role = 'subtitle';
+              defaultFontSize = 20;
+            }
+
             const txBodies = getDirectChildrenByLocalName(el, 'txBody');
             const paragraphsText: string[] = [];
-            let runStyle: ReturnType<typeof extractFirstRunStyle> = {};
+            const allRichParagraphs: SlideRichParagraph[] = [];
+            let firstRunMeta: { fontSize?: number; bold?: boolean; italic?: boolean; color?: string; fontFamily?: string } = {};
+            let parsedValign: 'top' | 'middle' | 'bottom' | undefined;
+            let parsedAlign: 'left' | 'center' | 'right' | undefined;
+            let parsedPadding: { top: number; right: number; bottom: number; left: number } | undefined;
+            let parsedFontScalePct: number | undefined;
 
             for (const txBody of txBodies) {
-              if (Object.keys(runStyle).length === 0) {
-                runStyle = extractFirstRunStyle(txBody, theme);
-              }
-              const paragraphs = getDirectChildrenByLocalName(txBody, 'p');
-              for (const p of paragraphs) {
-                const pText = extractParagraphText(p);
-                if (pText) {
-                  paragraphsText.push(pText);
-                }
-              }
+              const richData = extractRichTxBodyData(txBody, theme, slideColors, {
+                fontSize: defaultFontSize,
+                bold: defaultBold,
+                color: shapeVis.styleFontColor ?? slideColors.tx1,
+                fontFamily: shapeVis.styleFontFamily ?? withSansFallback(role === "title" ? theme.majorFont : theme.minorFont),
+              });
+              if (Object.keys(firstRunMeta).length === 0) firstRunMeta = richData.firstRun;
+              if (!parsedValign && richData.valign) parsedValign = richData.valign;
+              if (!parsedAlign && richData.align) parsedAlign = richData.align;
+              if (!parsedPadding && richData.paddingPct) parsedPadding = richData.paddingPct;
+              if (!parsedFontScalePct && richData.fontScalePct) parsedFontScalePct = richData.fontScalePct;
+              paragraphsText.push(...richData.paragraphsText);
+              allRichParagraphs.push(...richData.richParagraphs);
             }
 
             const combinedText = paragraphsText.join('\n').trim();
             if (!combinedText) {
-              if (!phType && !phMeta.idx && (fillColor || borderColor) && coords.wPct < 99.5 && coords.hPct < 99.5) {
+              if ((fillColor || fillGradient || borderColor) && coords.wPct < 99.8 && coords.hPct < 99.8) {
                 blockCounter++;
                 blocks.push({
                   id: `${idPrefix}slide-${slideNum}-shape-${blockCounter}`,
@@ -1919,7 +2219,12 @@ export async function parsePptxArrayBuffer(
                   text: "",
                   fontSize: 12,
                   fillColor,
+                  fillGradient,
                   borderColor,
+                  borderWidthPx,
+                  borderRadius,
+                  rotationDeg,
+                  shadowCss,
                   role: "body",
                   xPct: coords.xPct,
                   yPct: coords.yPct,
@@ -1930,33 +2235,28 @@ export async function parsePptxArrayBuffer(
               continue;
             }
 
-            let role: 'title' | 'subtitle' | 'body' = 'body';
-            let defaultFontSize = 16;
-            let defaultBold = false;
-
-            if (phType === 'title' || phType === 'ctrTitle') {
-              role = 'title';
-              defaultFontSize = 32;
-              defaultBold = true;
-            } else if (phType === 'subTitle') {
-              role = 'subtitle';
-              defaultFontSize = 20;
-            }
-
             blockCounter++;
             blocks.push({
               id: `${idPrefix}slide-${slideNum}-block-${blockCounter}`,
               kind: 'text',
               text: combinedText,
-              fontSize: runStyle.fontSize ?? defaultFontSize,
-              bold: runStyle.bold ?? defaultBold,
-              italic: runStyle.italic,
-              color: runStyle.color,
-              align: runStyle.align ?? (phType === 'ctrTitle' ? 'center' : 'left'),
-              valign: runStyle.valign ?? 'top',
-              fontFamily: runStyle.fontFamily,
+              richParagraphs: allRichParagraphs,
+              fontSize: firstRunMeta.fontSize ?? defaultFontSize,
+              bold: firstRunMeta.bold ?? defaultBold,
+              italic: firstRunMeta.italic,
+              color: firstRunMeta.color ?? shapeVis.styleFontColor ?? slideColors.tx1,
+              align: parsedAlign ?? (phType === 'ctrTitle' ? 'center' : 'left'),
+              valign: parsedValign ?? (fillColor || fillGradient || borderColor ? 'middle' : 'top'),
+              fontFamily: firstRunMeta.fontFamily ?? shapeVis.styleFontFamily,
               fillColor,
+              fillGradient,
               borderColor,
+              borderWidthPx,
+              borderRadius,
+              rotationDeg,
+              shadowCss,
+              paddingPct: parsedPadding,
+              fontScalePct: parsedFontScalePct,
               role,
               xPct: coords.xPct,
               yPct: coords.yPct,
@@ -1988,6 +2288,19 @@ export async function parsePptxArrayBuffer(
             const coords = localBox
               ? mapBoxToPct(localBox, groupTransform, slideCx, slideCy)
               : undefined;
+            const rawPicRot = Number.parseInt(xfrm?.getAttribute("rot") ?? "", 10);
+            const picRotDeg = Number.isFinite(rawPicRot) && rawPicRot !== 0 ? Math.round((rawPicRot / 60000) * 100) / 100 : undefined;
+            const srcRectEl = blipFill ? getDirectChildrenByLocalName(blipFill, "srcRect")[0] : undefined;
+            let cropRect: { l: number; t: number; r: number; b: number } | undefined;
+            if (srcRectEl) {
+              const cl = Math.max(0, (Number.parseInt(srcRectEl.getAttribute("l") ?? "0", 10) || 0) / 1000);
+              const ct = Math.max(0, (Number.parseInt(srcRectEl.getAttribute("t") ?? "0", 10) || 0) / 1000);
+              const cr = Math.max(0, (Number.parseInt(srcRectEl.getAttribute("r") ?? "0", 10) || 0) / 1000);
+              const cb = Math.max(0, (Number.parseInt(srcRectEl.getAttribute("b") ?? "0", 10) || 0) / 1000);
+              if (cl > 0 || ct > 0 || cr > 0 || cb > 0) cropRect = { l: cl, t: ct, r: cr, b: cb };
+            }
+            const picPrst = spPr ? getDirectChildrenByLocalName(spPr, "prstGeom")[0]?.getAttribute("prst") : undefined;
+            const picRadius = picPrst === "ellipse" ? "9999px" : picPrst?.toLowerCase().includes("round") ? "12px" : undefined;
 
             const cNvPr = getElementsByLocalName(el, 'cNvPr')[0];
             const descr =
@@ -2003,6 +2316,9 @@ export async function parsePptxArrayBuffer(
               yPct: coords?.yPct,
               wPct: coords?.wPct,
               hPct: coords?.hPct,
+              rotationDeg: picRotDeg,
+              borderRadius: picRadius,
+              cropRect,
             });
             continue;
           }
@@ -2020,12 +2336,25 @@ export async function parsePptxArrayBuffer(
 
             const trElements = getDirectChildrenByLocalName(tbl, 'tr');
             const tableRows: string[][] = [];
+            const tableCellStyles: SlideTableCellStyle[][] = [];
             for (const tr of trElements) {
               const cells = getDirectChildrenByLocalName(tr, 'tc');
               if (cells.length === 0) {
                 continue;
               }
+              const rowStyles: SlideTableCellStyle[] = [];
               const rowValues = cells.map((tc) => {
+                const tcPr = getDirectChildrenByLocalName(tc, "tcPr")[0];
+                const tcSolid = tcPr ? getDirectChildrenByLocalName(tcPr, "solidFill")[0] : undefined;
+                const cellFill = resolveColorWithAlpha(tcSolid, slideColors);
+                const txBody = getDirectChildrenByLocalName(tc, "txBody")[0];
+                const rich = txBody ? extractRichTxBodyData(txBody, theme, slideColors, { fontSize: 12 }) : null;
+                rowStyles.push({
+                  fillColor: cellFill,
+                  textColor: rich?.firstRun.color,
+                  bold: rich?.firstRun.bold,
+                  align: rich?.align,
+                });
                 const paras = getElementsByLocalName(tc, 'p');
                 return paras
                   .map((p) => extractParagraphText(p))
@@ -2033,6 +2362,7 @@ export async function parsePptxArrayBuffer(
                   .join(' ');
               });
               tableRows.push(rowValues);
+              tableCellStyles.push(rowStyles);
             }
 
             const hasAnyCellContent = tableRows.some((r) => r.some((cell) => cell.trim().length > 0));
@@ -2051,6 +2381,7 @@ export async function parsePptxArrayBuffer(
               id: `${idPrefix}slide-${slideNum}-block-${blockCounter}`,
               kind: 'table',
               tableRows,
+              tableCellStyles,
               text: tableTextFallback,
               fontSize: 13,
               role: 'body',
@@ -2082,7 +2413,7 @@ export async function parsePptxArrayBuffer(
             const box = extractEmuBoxFromXfrm(xfrm);
             if (!box) continue;
             const coords = mapBoxToPct(box, IDENTITY_GROUP_TRANSFORM, slideCx, slideCy);
-            const { fillColor, borderColor, fillBlipEmbedId } = extractShapeFillAndBorder(spPr, theme.colors);
+            const { fillColor, borderColor, fillBlipEmbedId } = extractShapeFillAndBorder(spPr, slideColors);
             if (fillBlipEmbedId) {
               const rel = relsMap.get(fillBlipEmbedId);
               if (rel) {

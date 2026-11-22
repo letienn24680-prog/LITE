@@ -32,6 +32,8 @@ import {
   Layers,
   LayoutGrid,
   Loader2,
+  Maximize2,
+  Minus,
   Move,
   PaintBucket,
   Pause,
@@ -468,6 +470,170 @@ interface AutoGrowTextareaProps {
   maxHeightFull?: boolean;
 }
 
+
+function RichTextFittedView({
+  block,
+  fontScale,
+  textColor,
+  underlined,
+  onActivateEdit,
+}: {
+  block: SlideTextBlock;
+  fontScale: number;
+  textColor: string;
+  underlined?: boolean;
+  onActivateEdit?: () => void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [overflowScale, setOverflowScale] = useState<number>(1);
+  const baseScalePct = (block.fontScalePct ?? 100) / 100;
+
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    setOverflowScale(1);
+    const raf = window.requestAnimationFrame(() => {
+      if (!containerRef.current) return;
+      const node = containerRef.current;
+      if (node.clientHeight > 8 && node.scrollHeight > node.clientHeight + 2) {
+        const ratio = Math.max(0.68, Math.min(1, node.clientHeight / node.scrollHeight));
+        setOverflowScale(ratio);
+      }
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [block.text, block.richParagraphs, fontScale, block.wPct, block.hPct, block.fontSize]);
+
+  const effectiveScale = fontScale * baseScalePct * overflowScale;
+  const paragraphs = block.richParagraphs;
+
+  if (!paragraphs || paragraphs.length === 0) {
+    const scaledPx = Math.max(4, (block.fontSize || 18) * effectiveScale);
+    return (
+      <div
+        ref={containerRef}
+        onClick={(e) => {
+          if (onActivateEdit) {
+            e.stopPropagation();
+            onActivateEdit();
+          }
+        }}
+        className="w-full h-full overflow-hidden flex flex-col justify-center"
+      >
+        <p
+          className="whitespace-pre-wrap break-words leading-[1.18] tracking-tight"
+          style={{
+            fontSize: `${scaledPx.toFixed(2)}px`,
+            fontWeight: block.bold || block.role === "title" ? 700 : 400,
+            fontStyle: block.italic ? "italic" : "normal",
+            textDecoration: underlined ? "underline" : "none",
+            color: textColor,
+            textAlign: block.align ?? "left",
+            fontFamily: block.fontFamily || "'Inter', 'Segoe UI', system-ui, sans-serif",
+          }}
+        >
+          {block.text}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      onClick={(e) => {
+        if (onActivateEdit) {
+          e.stopPropagation();
+          onActivateEdit();
+        }
+      }}
+      className="w-full max-h-full overflow-hidden space-y-[0.22em]"
+    >
+      {paragraphs.map((para, pIdx) => {
+        const firstRun = para.runs[0];
+        const bulletPx = Math.max(4, ((firstRun?.fontSize ?? block.fontSize) || 16) * effectiveScale);
+        return (
+          <p
+            key={`${block.id}-rp-${pIdx}`}
+            className="whitespace-pre-wrap break-words leading-[1.18] tracking-tight"
+            style={{
+              textAlign: para.align ?? block.align ?? "left",
+              paddingLeft: para.level ? `${para.level * 1.1}em` : undefined,
+            }}
+          >
+            {para.bullet && (
+              <span
+                style={{
+                  fontSize: `${bulletPx.toFixed(2)}px`,
+                  color: firstRun?.color ?? textColor,
+                  fontWeight: firstRun?.bold ? 700 : 400,
+                  marginRight: "0.35em",
+                }}
+              >
+                {para.bullet}
+              </span>
+            )}
+            {para.runs.map((run, rIdx) => {
+              const rPx = Math.max(4, ((run.fontSize ?? block.fontSize) || 16) * effectiveScale);
+              return (
+                <span
+                  key={`${block.id}-rp-${pIdx}-r-${rIdx}`}
+                  style={{
+                    fontSize: `${rPx.toFixed(2)}px`,
+                    fontWeight: (run.bold ?? block.bold ?? block.role === "title") ? 700 : 400,
+                    fontStyle: (run.italic ?? block.italic) ? "italic" : "normal",
+                    textDecoration: (run.underline || underlined) ? "underline" : "none",
+                    color: run.color ?? textColor,
+                    fontFamily: run.fontFamily || block.fontFamily || "'Inter', 'Segoe UI', system-ui, sans-serif",
+                  }}
+                >
+                  {run.text}
+                </span>
+              );
+            })}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+type ResizeHandleDir = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
+
+function PowerPointResizeHandles({
+  onStartResize,
+}: {
+  onStartResize: (e: ReactPointerEvent<HTMLButtonElement>, dir: ResizeHandleDir) => void;
+}) {
+  const handles: Array<{ dir: ResizeHandleDir; cls: string; cursor: string }> = [
+    { dir: "nw", cls: "-top-1.5 -left-1.5", cursor: "nwse-resize" },
+    { dir: "n", cls: "-top-1.5 left-1/2 -translate-x-1/2", cursor: "ns-resize" },
+    { dir: "ne", cls: "-top-1.5 -right-1.5", cursor: "nesw-resize" },
+    { dir: "e", cls: "top-1/2 -translate-y-1/2 -right-1.5", cursor: "ew-resize" },
+    { dir: "se", cls: "-bottom-1.5 -right-1.5", cursor: "nwse-resize" },
+    { dir: "s", cls: "-bottom-1.5 left-1/2 -translate-x-1/2", cursor: "ns-resize" },
+    { dir: "sw", cls: "-bottom-1.5 -left-1.5", cursor: "nesw-resize" },
+    { dir: "w", cls: "top-1/2 -translate-y-1/2 -left-1.5", cursor: "ew-resize" },
+  ];
+
+  return (
+    <>
+      {handles.map((h) => (
+        <button
+          key={h.dir}
+          type="button"
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            onStartResize(e, h.dir);
+          }}
+          aria-label={`Thay đổi kích thước (${h.dir})`}
+          style={{ cursor: h.cursor }}
+          className={`absolute ${h.cls} z-30 h-2.5 w-2.5 rounded-full bg-white border-2 border-indigo-600 shadow-sm hover:scale-125 transition-transform`}
+        />
+      ))}
+    </>
+  );
+}
+
 function AutoGrowTextarea({
   value,
   onChange,
@@ -668,11 +834,15 @@ function ReadOnlySlideStage({
                 width: `${width}%`,
                 height: height !== undefined ? `${height}%` : 'auto',
                 backgroundColor: block.fillColor,
+                backgroundImage: block.fillGradient,
                 borderColor: block.borderColor,
+                borderWidth: block.borderColor ? `${block.borderWidthPx ?? 1}px` : undefined,
+                borderStyle: block.borderColor ? "solid" : undefined,
+                borderRadius: block.borderRadius,
+                boxShadow: block.shadowCss,
+                transform: block.rotationDeg ? `rotate(${block.rotationDeg}deg)` : undefined,
               }}
-              className={`flex flex-col ${justifyClass} overflow-hidden px-1 py-0.5 ${
-                block.borderColor ? 'border' : ''
-              }`}
+              className={`flex flex-col ${justifyClass} overflow-hidden px-1.5 py-0.5`}
             >
               <p
                 className="whitespace-pre-wrap break-words leading-[1.16] tracking-tight"
@@ -981,6 +1151,8 @@ export function SlideWorkspace({
   );
   const [activeSlideIdx, setActiveSlideIdx] = useState<number>(0);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
+  const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
+  const [zoomPct, setZoomPct] = useState<number>(100);
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [newlyAddedBlockId, setNewlyAddedBlockId] = useState<string | null>(
     null
@@ -1382,8 +1554,9 @@ export function SlideWorkspace({
       1140
     )
   );
-  const editorFitHeightPx = editorFitWidthPx / currentAspectRatio;
-  const editorFontScale = editorFitWidthPx / REFERENCE_SLIDE_WIDTH_PT;
+  const zoomedWidthPx = editorFitWidthPx * (zoomPct / 100);
+  const zoomedHeightPx = (editorFitWidthPx / currentAspectRatio) * (zoomPct / 100);
+  const editorFontScale = zoomedWidthPx / REFERENCE_SLIDE_WIDTH_PT;
 
   const slideshowFitWidthPx = Math.max(
     240,
@@ -2160,6 +2333,62 @@ export function SlideWorkspace({
     window.addEventListener('pointermove', handleWindowPointerMove);
     window.addEventListener('pointerup', handleWindowPointerUp);
     window.addEventListener('pointercancel', handleWindowPointerUp);
+  };
+
+
+  const startElementResize = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    dir: ResizeHandleDir,
+    params: { kind: "block" | "image"; id: string; xPct: number; yPct: number; wPct: number; hPct: number }
+  ) => {
+    if (isReadOnly || isLaserActive || isSlideshowActive || event.button !== 0) return;
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const targetSlideIdx = safeSlideIdx;
+
+    const onMove = (moveEv: PointerEvent) => {
+      const rect = editorCanvasRef.current?.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0) return;
+      const dxPct = ((moveEv.clientX - startX) / rect.width) * 100;
+      const dyPct = ((moveEv.clientY - startY) / rect.height) * 100;
+
+      let { xPct, yPct, wPct, hPct } = params;
+      if (dir.includes("e")) wPct = roundPct(clampValue(params.wPct + dxPct, 3, 100 - params.xPct));
+      if (dir.includes("s")) hPct = roundPct(clampValue(params.hPct + dyPct, 3, 100 - params.yPct));
+      if (dir.includes("w")) {
+        const nextX = roundPct(clampValue(params.xPct + dxPct, 0, params.xPct + params.wPct - 3));
+        wPct = roundPct(params.wPct + (params.xPct - nextX));
+        xPct = nextX;
+      }
+      if (dir.includes("n")) {
+        const nextY = roundPct(clampValue(params.yPct + dyPct, 0, params.yPct + params.hPct - 3));
+        hPct = roundPct(params.hPct + (params.yPct - nextY));
+        yPct = nextY;
+      }
+
+      mutateSlideAt(targetSlideIdx, (slide) => {
+        if (params.kind === "block") {
+          return {
+            ...slide,
+            blocks: (slide.blocks ?? []).map((b) => (b.id === params.id ? { ...b, xPct, yPct, wPct, hPct } : b)),
+          };
+        }
+        return {
+          ...slide,
+          images: (slide.images ?? []).map((im) => (im.id === params.id ? { ...im, xPct, yPct, wPct, hPct } : im)),
+        };
+      });
+    };
+
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      justDraggedRef.current = true;
+      window.setTimeout(() => { justDraggedRef.current = false; }, 0);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
   };
 
   const updateLaserFromPointer = (
@@ -3121,7 +3350,7 @@ export function SlideWorkspace({
           <div className="flex-1 min-h-0 flex flex-col px-3 sm:px-6 lg:px-10 pt-3 sm:pt-4 pb-2 overflow-hidden">
             <div
               ref={editorViewportRef}
-              className="flex-1 min-h-0 w-full flex items-center justify-center relative overflow-hidden"
+              className="flex-1 min-h-0 w-full flex items-center justify-center relative overflow-auto"
             >
               <div
                 ref={editorCanvasRef}
@@ -3131,6 +3360,7 @@ export function SlideWorkspace({
                   }
                   if (!isLaserActive) {
                     setSelectedBlockId(null);
+                    setEditingBlockId(null);
                     setSelectedImageId(null);
                   }
                 }}
@@ -3138,8 +3368,8 @@ export function SlideWorkspace({
                 onPointerDown={updateLaserFromPointer}
                 onPointerLeave={handlePointerLeaveStage}
                 style={{
-                  width: `${Math.round(editorFitWidthPx)}px`,
-                  height: `${Math.round(editorFitHeightPx)}px`,
+                  width: `${Math.round(zoomedWidthPx)}px`,
+                  height: `${Math.round(zoomedHeightPx)}px`,
                   ...buildSlideBackgroundStyle(currentSlide),
                 }}
                 className={`relative rounded-2xl overflow-hidden border shadow-2xl shadow-black/55 transition-shadow duration-200 ${
@@ -3205,12 +3435,16 @@ export function SlideWorkspace({
                             height:
                               block.hPct !== undefined ? `${hPct}%` : 'auto',
                             backgroundColor: block.fillColor,
+                            backgroundImage: block.fillGradient,
                             borderColor: block.borderColor,
+                            borderWidth: block.borderColor ? `${block.borderWidthPx ?? 1}px` : undefined,
+                            borderStyle: block.borderColor ? "solid" : undefined,
+                            borderRadius: block.borderRadius ?? "6px",
+                            boxShadow: block.shadowCss,
+                            transform: block.rotationDeg ? `rotate(${block.rotationDeg}deg)` : undefined,
                             fontFamily: block.fontFamily || "'Inter', 'Segoe UI', system-ui, sans-serif",
                           }}
-                          className={`group flex flex-col ${justifyClass} rounded-lg px-1.5 py-1 transition-shadow ${
-                            block.borderColor ? 'border' : ''
-                          } ${
+                          className={`group flex flex-col ${justifyClass} px-1.5 py-1 transition-shadow ${
                             isSelected
                               ? 'ring-2 ring-indigo-500 z-10'
                               : isLaserActive
@@ -3220,6 +3454,13 @@ export function SlideWorkspace({
                                   : 'hover:ring-1 hover:ring-white/30'
                           } ${isBeingDragged ? 'opacity-90 shadow-xl' : ''}`}
                         >
+                          {isSelected && !isReadOnly && (
+                            <PowerPointResizeHandles
+                              onStartResize={(ev, dir) =>
+                                startElementResize(ev, dir, { kind: "block", id: block.id, xPct, yPct, wPct, hPct })
+                              }
+                            />
+                          )}
                           {/* Floating Drag Handle */}
                           {!isLaserActive && (
                             <button
@@ -3325,29 +3566,42 @@ export function SlideWorkspace({
                                 </tbody>
                               </table>
                             </div>
-                          ) : (
+                          ) : block.text.trim().length === 0 && editingBlockId !== block.id && newlyAddedBlockId !== block.id ? (
+                            <div
+                              onDoubleClick={(e) => {
+                                if (!isReadOnly && !isLaserActive) {
+                                  e.stopPropagation();
+                                  setSelectedBlockId(block.id);
+                                  setEditingBlockId(block.id);
+                                }
+                              }}
+                              className="w-full h-full"
+                            />
+                          ) : editingBlockId === block.id || newlyAddedBlockId === block.id || !block.richParagraphs || block.richParagraphs.length === 0 ? (
                             <AutoGrowTextarea
                               value={block.text}
                               onChange={(nextText) =>
                                 handleUpdateBlock(block.id, {
                                   text: nextText,
+                                  richParagraphs: undefined,
                                 })
                               }
                               onFocus={() => {
                                 if (!isLaserActive) {
                                   setSelectedBlockId(block.id);
+                                  setEditingBlockId(block.id);
                                   setSelectedImageId(null);
                                 }
                               }}
-                              disabled={isLaserActive}
-                              autoFocus={newlyAddedBlockId === block.id}
+                              disabled={isLaserActive || isReadOnly}
+                              autoFocus={editingBlockId === block.id || newlyAddedBlockId === block.id}
                               placeholder={
                                 block.role === 'title'
                                   ? 'Nhập tiêu đề slide...'
                                   : 'Nhập nội dung khung chữ...'
                               }
                               ariaLabel={`Khung chữ ${block.role ?? 'nội dung'} trên Slide ${safeSlideIdx + 1}`}
-                              scaledFontPx={scaledFontPx}
+                              scaledFontPx={scaledFontPx * ((block.fontScalePct ?? 100) / 100)}
                               bold={Boolean(block.bold)}
                               italic={Boolean(block.italic)}
                               underline={Boolean(underlinedBlockIds[block.id])}
@@ -3355,6 +3609,20 @@ export function SlideWorkspace({
                               align={block.align ?? 'left'}
                               fontFamily={block.fontFamily}
                               maxHeightFull
+                            />
+                          ) : (
+                            <RichTextFittedView
+                              block={block}
+                              fontScale={editorFontScale}
+                              textColor={textColor}
+                              underlined={Boolean(underlinedBlockIds[block.id])}
+                              onActivateEdit={() => {
+                                if (!isLaserActive) {
+                                  setSelectedBlockId(block.id);
+                                  setSelectedImageId(null);
+                                  if (!isReadOnly) setEditingBlockId(block.id);
+                                }
+                              }}
                             />
                           )}
                         </div>
@@ -3397,6 +3665,8 @@ export function SlideWorkspace({
                             top: `${yPct}%`,
                             width: `${wPct}%`,
                             height: `${hPct}%`,
+                            borderRadius: imageItem.borderRadius ?? "6px",
+                            transform: imageItem.rotationDeg ? `rotate(${imageItem.rotationDeg}deg)` : undefined,
                           }}
                           className={`group rounded-lg overflow-hidden flex items-center justify-center transition-shadow ${
                             isLaserActive
@@ -3408,6 +3678,13 @@ export function SlideWorkspace({
                               : 'hover:ring-1 hover:ring-indigo-400/60'
                           }`}
                         >
+                          {isSelected && !isReadOnly && (
+                            <PowerPointResizeHandles
+                              onStartResize={(ev, dir) =>
+                                startElementResize(ev, dir, { kind: "image", id: imageItem.id, xPct, yPct, wPct, hPct })
+                              }
+                            />
+                          )}
                           <img
                             src={imageItem.src}
                             alt={
@@ -3758,7 +4035,46 @@ export function SlideWorkspace({
                 </button>
               </div>
 
-              <div className="hidden sm:flex items-center gap-1.5 max-w-[160px] overflow-x-auto no-scrollbar">
+              <div className="hidden sm:flex items-center gap-1.5 bg-[#141923] border border-white/10 rounded-lg px-2 py-1">
+                <button
+                  type="button"
+                  onClick={() => setZoomPct((z) => Math.max(50, z - 10))}
+                  title="Thu nhỏ"
+                  className="p-0.5 rounded hover:bg-white/10 text-slate-300 hover:text-white"
+                >
+                  <Minus className="h-3.5 w-3.5" />
+                </button>
+                <input
+                  type="range"
+                  min={50}
+                  max={180}
+                  step={5}
+                  value={zoomPct}
+                  onChange={(e) => setZoomPct(Number(e.target.value))}
+                  aria-label="Thu phóng trang chiếu"
+                  className="w-20 accent-indigo-500 cursor-pointer"
+                />
+                <button
+                  type="button"
+                  onClick={() => setZoomPct((z) => Math.min(180, z + 10))}
+                  title="Phóng to"
+                  className="p-0.5 rounded hover:bg-white/10 text-slate-300 hover:text-white"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
+                <span className="text-[11px] font-mono text-slate-200 tabular-nums w-9 text-right">
+                  {zoomPct}%
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setZoomPct(100)}
+                  title="Vừa khung màn hình (100%)"
+                  className="ml-0.5 p-0.5 rounded hover:bg-white/10 text-slate-300 hover:text-white"
+                >
+                  <Maximize2 className="h-3 w-3" />
+                </button>
+              </div>
+              <div className="hidden xl:flex items-center gap-1.5 max-w-[140px] overflow-x-auto no-scrollbar">
                 {slides.map((slideItem, idx) => (
                   <button
                     key={`${slideItem.id}-dot`}
