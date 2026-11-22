@@ -1,7 +1,12 @@
 import JSZip from 'jszip';
 import PptxGenJS from 'pptxgenjs';
 import * as XLSX from 'xlsx';
-import type { SlidePreviewItem, SlideTextBlock, SpreadsheetSheet } from '../types/document';
+import type {
+  DocumentItem,
+  SlidePreviewItem,
+  SlideTextBlock,
+  SpreadsheetSheet,
+} from '../types/document';
 import { evaluateCellValue } from './formulaEvaluator';
 
 function sanitizeFileName(title: string, fallback: string, stripExtRegex?: RegExp): string {
@@ -1151,7 +1156,15 @@ const DOCX_NUMBERING_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes
   </w:num>
 </w:numbering>`;
 
-export async function exportWordToDocx(title: string, htmlContent: string): Promise<void> {
+const DOCX_MIME_TYPE =
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const XLSX_MIME_TYPE =
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const PPTX_MIME_TYPE =
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+const PDF_MIME_TYPE = 'application/pdf';
+
+async function buildWordDocxBlob(htmlContent: string): Promise<Blob> {
   const parser = new DOMParser();
   const parsed = parser.parseFromString(htmlContent || '', 'text/html');
   const ctx: DocxExportContext = {
@@ -1194,11 +1207,14 @@ export async function exportWordToDocx(title: string, htmlContent: string): Prom
     zip.file(`word/media/${img.fileName}`, img.bytes);
   }
 
-  const blob = await zip.generateAsync({
+  return zip.generateAsync({
     type: 'blob',
-    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    mimeType: DOCX_MIME_TYPE,
   });
+}
 
+export async function exportWordToDocx(title: string, htmlContent: string): Promise<void> {
+  const blob = await buildWordDocxBlob(htmlContent);
   const safeTitle = sanitizeFileName(title, 'tai-lieu', /\.docx$/i);
   triggerBlobDownload(blob, `${safeTitle}.docx`);
 }
@@ -1236,7 +1252,7 @@ function buildUniqueSheetName(rawName: string, index: number, usedLower: Set<str
   return fallback;
 }
 
-export function exportExcelToXlsx(title: string, sheets: SpreadsheetSheet[]): void {
+function buildExcelWorkbook(sheets: SpreadsheetSheet[]): XLSX.WorkBook {
   const wb = XLSX.utils.book_new();
   const usedSheetNames = new Set<string>();
 
@@ -1326,6 +1342,11 @@ export function exportExcelToXlsx(title: string, sheets: SpreadsheetSheet[]): vo
     XLSX.utils.book_append_sheet(wb, ws, uniqueName);
   });
 
+  return wb;
+}
+
+export function exportExcelToXlsx(title: string, sheets: SpreadsheetSheet[]): void {
+  const wb = buildExcelWorkbook(sheets);
   const safeTitle = sanitizeFileName(title, 'bang-tinh', /\.xlsx$/i);
   XLSX.writeFile(wb, `${safeTitle}.xlsx`);
 }
@@ -1374,7 +1395,11 @@ async function imageUrlToDataUrl(src: string): Promise<string | null> {
 
 function getEffectiveSlideBlocks(slide: SlidePreviewItem): SlideTextBlock[] {
   if (slide.blocks && slide.blocks.length > 0) {
-    return slide.blocks.filter((b) => b.text.trim().length > 0);
+    return slide.blocks.filter(
+      (b) =>
+        b.text.trim().length > 0 ||
+        (b.kind === 'table' && Array.isArray(b.tableRows) && b.tableRows.length > 0)
+    );
   }
 
   const fallback: SlideTextBlock[] = [];
@@ -1448,12 +1473,57 @@ function estimateBlockHeightInches(text: string, fontSizePt: number, boxWidthInc
   return Math.max(0.42, totalLines * lineHeightInches + 0.16);
 }
 
-export async function exportSlidesToPptx(
+function addTableBlockToPptxSlide(
+  slideObj: PptxGenJS.Slide,
+  block: SlideTextBlock,
+  box: { x: number; y: number; w: number; h: number }
+): void {
+  const rawRows = block.tableRows ?? [];
+  if (rawRows.length === 0) {
+    return;
+  }
+  const maxCols = Math.max(1, ...rawRows.map((row) => row.length));
+  const textColor = normalizePptxHex(block.color, '0F172A');
+  const fontFace = block.fontFamily || 'Arial';
+  const fontSize = Math.max(9, Math.min(24, block.fontSize || 12));
+
+  const tableRows: PptxGenJS.TableRow[] = rawRows.map((row, rowIdx) => {
+    const padded = Array.from({ length: maxCols }, (_, colIdx) => row[colIdx] ?? '');
+    return padded.map((cellText) => ({
+      text: cellText,
+      options: {
+        fontFace,
+        fontSize,
+        bold: rowIdx === 0,
+        color: textColor,
+        fill: {
+          color: rowIdx === 0 ? 'E2E8F0' : rowIdx % 2 === 1 ? 'FFFFFF' : 'F8FAFC',
+        },
+        border: { type: 'solid', pt: 0.75, color: 'CBD5E1' },
+        valign: 'middle',
+      },
+    }));
+  });
+
+  slideObj.addTable(tableRows, {
+    x: box.x,
+    y: box.y,
+    w: box.w,
+    h: box.h,
+  });
+}
+
+async function buildPptxPresentation(
   title: string,
-  slides: SlidePreviewItem[]
-): Promise<void> {
+  slides: SlidePreviewItem[],
+  slideAspectRatio?: number
+): Promise<PptxGenJS> {
   const pptx = new PptxGenJS();
-  pptx.layout = 'LAYOUT_16x9';
+  const effectiveRatio = slideAspectRatio ?? slides[0]?.slideWidthRatio ?? 1.77;
+  const isStandard4x3 = effectiveRatio < 1.5;
+  pptx.layout = isStandard4x3 ? 'LAYOUT_4x3' : 'LAYOUT_WIDE';
+  const slideW = isStandard4x3 ? 10 : 13.333;
+  const slideH = 7.5;
   pptx.title = title || 'Bài thuyết trình';
   pptx.author = 'LITE Workspace';
 
@@ -1479,26 +1549,45 @@ export async function exportSlidesToPptx(
     const defaultMutedColor = isDarkBg ? 'CBD5E1' : '475569';
     const accentHex = normalizePptxHex(slide.accentColor, '4F46E5');
 
-    slideObj.background = { color: bgHex };
+    // Slide background: image if present, else hex color
+    let appliedBgImage = false;
+    if (slide.backgroundImageSrc) {
+      try {
+        const bgData = await imageUrlToDataUrl(slide.backgroundImageSrc);
+        if (bgData) {
+          slideObj.background = { data: bgData };
+          appliedBgImage = true;
+        }
+      } catch {
+        // Fallback cleanly to solid background color
+      }
+    }
+    if (!appliedBgImage) {
+      slideObj.background = { color: bgHex };
+    }
 
-    // Top accent bar
-    slideObj.addShape(pptx.ShapeType.rect, {
-      x: 0,
-      y: 0,
-      w: 10,
-      h: 0.08,
-      fill: { color: accentHex },
-      line: { type: 'none' },
-    });
-
-    // Resolve embedded slide images cleanly
-    const resolvedImages: Array<{ data: string; alt?: string }> = [];
+    // Resolve embedded slide images cleanly while keeping original coordinate metadata
+    const resolvedImages: Array<{
+      data: string;
+      alt?: string;
+      xPct?: number;
+      yPct?: number;
+      wPct?: number;
+      hPct?: number;
+    }> = [];
     if (slide.images && slide.images.length > 0) {
       for (const img of slide.images) {
         try {
           const dataUrl = await imageUrlToDataUrl(img.src);
           if (dataUrl) {
-            resolvedImages.push({ data: dataUrl, alt: img.alt });
+            resolvedImages.push({
+              data: dataUrl,
+              alt: img.alt,
+              xPct: img.xPct,
+              yPct: img.yPct,
+              wPct: img.wPct,
+              hPct: img.hPct,
+            });
           }
         } catch {
           // Ignore single unreadable image without failing export
@@ -1506,85 +1595,188 @@ export async function exportSlidesToPptx(
       }
     }
 
-    const hasImages = resolvedImages.length > 0;
-    const hasBlocks = blocks.length > 0;
+    const positionedBlocks = blocks.filter(
+      (b) => typeof b.xPct === 'number' && typeof b.yPct === 'number'
+    );
+    const unpositionedBlocks = blocks.filter(
+      (b) => typeof b.xPct !== 'number' || typeof b.yPct !== 'number'
+    );
+    const positionedImages = resolvedImages.filter(
+      (img) => typeof img.xPct === 'number' && typeof img.yPct === 'number'
+    );
+    const unpositionedImages = resolvedImages.filter(
+      (img) => typeof img.xPct !== 'number' || typeof img.yPct !== 'number'
+    );
 
-    // 1. Place text blocks with non-overlapping vertical layout
-    if (hasBlocks) {
-      const textX = 0.55;
-      const textW = hasImages ? 5.55 : 8.9;
-      const startY = 0.42;
-      const maxAvailableH = 4.9;
-      const gap = 0.14;
+    const hasPositionedContent =
+      Boolean(slide.isMasterPositioned) ||
+      positionedBlocks.length > 0 ||
+      positionedImages.length > 0;
 
-      const desiredHeights = blocks.map((block) =>
-        estimateBlockHeightInches(block.text, block.fontSize, textW)
+    // Decorative accent bar only for auto-layout slides without master positioning or bg image
+    if (!hasPositionedContent && !appliedBgImage) {
+      slideObj.addShape(pptx.ShapeType.rect, {
+        x: 0,
+        y: 0,
+        w: slideW,
+        h: 0.1,
+        fill: { color: accentHex },
+        line: { type: 'none' },
+      });
+    }
+
+    // 1. Export explicitly positioned images (exact % -> inch mapping)
+    for (const img of positionedImages) {
+      const x = ((img.xPct ?? 0) / 100) * slideW;
+      const y = ((img.yPct ?? 0) / 100) * slideH;
+      const w = Math.max(0.3, ((img.wPct ?? 30) / 100) * slideW);
+      const h = Math.max(0.3, ((img.hPct ?? 30) / 100) * slideH);
+      try {
+        slideObj.addImage({
+          data: img.data,
+          x,
+          y,
+          w,
+          h,
+          sizing: { type: 'contain', w, h },
+          altText: img.alt,
+        });
+      } catch {
+        // Skip invalid image safely
+      }
+    }
+
+    // 2. Export explicitly positioned text & table blocks (exact % -> inch mapping)
+    for (const block of positionedBlocks) {
+      const x = ((block.xPct ?? 0) / 100) * slideW;
+      const y = ((block.yPct ?? 0) / 100) * slideH;
+      const w = Math.max(0.4, ((block.wPct ?? 40) / 100) * slideW);
+      const h = Math.max(0.25, ((block.hPct ?? 12) / 100) * slideH);
+
+      if (block.kind === 'table' && block.tableRows && block.tableRows.length > 0) {
+        addTableBlockToPptxSlide(slideObj, block, { x, y, w, h });
+        continue;
+      }
+
+      const fallbackColor =
+        block.role === 'subtitle' ? defaultMutedColor : defaultTextColor;
+      const textColor = normalizePptxHex(block.color, fallbackColor);
+      const fillHex = block.fillColor ? cssColorToHex6(block.fillColor) : undefined;
+      const borderHex = block.borderColor ? cssColorToHex6(block.borderColor) : undefined;
+
+      slideObj.addText(block.text, {
+        x,
+        y,
+        w,
+        h,
+        fontFace: block.fontFamily || 'Arial',
+        fontSize: Math.max(8, Math.min(96, Math.round(block.fontSize || 16))),
+        bold: Boolean(block.bold),
+        italic: Boolean(block.italic),
+        color: textColor,
+        align: block.align ?? 'left',
+        valign: block.valign ?? 'top',
+        fill: fillHex ? { color: fillHex } : undefined,
+        line: borderHex ? { color: borderHex, width: 1 } : undefined,
+        wrap: true,
+        margin: 0.04,
+      });
+    }
+
+    // 3. Auto-layout fallback for unpositioned blocks & images
+    const hasAutoImages = unpositionedImages.length > 0;
+    const hasAutoBlocks = unpositionedBlocks.length > 0;
+
+    if (hasAutoBlocks) {
+      const textX = slideW * 0.055;
+      const textW = hasAutoImages ? slideW * 0.555 : slideW * 0.89;
+      const startY = slideH * 0.075;
+      const maxAvailableH = slideH * 0.86;
+      const gap = 0.16;
+
+      const desiredHeights = unpositionedBlocks.map((block) =>
+        block.kind === 'table' && block.tableRows
+          ? Math.max(1.2, Math.min(3.5, block.tableRows.length * 0.42))
+          : estimateBlockHeightInches(block.text, block.fontSize, textW)
       );
       const totalDesiredH =
-        desiredHeights.reduce((sum, h) => sum + h, 0) + gap * Math.max(0, blocks.length - 1);
+        desiredHeights.reduce((sum, h) => sum + h, 0) +
+        gap * Math.max(0, unpositionedBlocks.length - 1);
       const scale = totalDesiredH > maxAvailableH ? maxAvailableH / totalDesiredH : 1;
 
       let cursorY = startY;
-      blocks.forEach((block, idx) => {
-        const scaledH = Math.max(0.32, desiredHeights[idx] * scale);
-        const scaledFont = Math.max(
-          10,
-          Math.round((block.fontSize || 16) * (scale < 0.88 ? Math.max(0.72, scale) : 1))
-        );
-        const fallbackColor =
-          block.role === 'subtitle' ? defaultMutedColor : defaultTextColor;
-        const textColor = normalizePptxHex(block.color, fallbackColor);
+      unpositionedBlocks.forEach((block, idx) => {
+        const scaledH = Math.max(0.35, desiredHeights[idx] * scale);
+        if (block.kind === 'table' && block.tableRows && block.tableRows.length > 0) {
+          addTableBlockToPptxSlide(slideObj, block, {
+            x: textX,
+            y: cursorY,
+            w: textW,
+            h: scaledH,
+          });
+        } else {
+          const scaledFont = Math.max(
+            10,
+            Math.round((block.fontSize || 16) * (scale < 0.88 ? Math.max(0.72, scale) : 1))
+          );
+          const fallbackColor =
+            block.role === 'subtitle' ? defaultMutedColor : defaultTextColor;
+          const textColor = normalizePptxHex(block.color, fallbackColor);
+          const fillHex = block.fillColor ? cssColorToHex6(block.fillColor) : undefined;
+          const borderHex = block.borderColor ? cssColorToHex6(block.borderColor) : undefined;
 
-        slideObj.addText(block.text, {
-          x: textX,
-          y: cursorY,
-          w: textW,
-          h: scaledH,
-          fontFace: 'Arial',
-          fontSize: scaledFont,
-          bold: Boolean(block.bold),
-          italic: Boolean(block.italic),
-          color: textColor,
-          align: block.align ?? 'left',
-          valign: 'top',
-          wrap: true,
-          margin: 0.04,
-        });
+          slideObj.addText(block.text, {
+            x: textX,
+            y: cursorY,
+            w: textW,
+            h: scaledH,
+            fontFace: block.fontFamily || 'Arial',
+            fontSize: scaledFont,
+            bold: Boolean(block.bold),
+            italic: Boolean(block.italic),
+            color: textColor,
+            align: block.align ?? 'left',
+            valign: block.valign ?? 'top',
+            fill: fillHex ? { color: fillHex } : undefined,
+            line: borderHex ? { color: borderHex, width: 1 } : undefined,
+            wrap: true,
+            margin: 0.04,
+          });
+        }
 
         cursorY += scaledH + gap * scale;
       });
     }
 
-    // 2. Place images cleanly without overlapping text
-    if (hasImages) {
-      const imgAreaX = hasBlocks ? 6.35 : 0.8;
-      const imgAreaY = 0.5;
-      const imgAreaW = hasBlocks ? 3.15 : 8.4;
-      const imgAreaH = 4.65;
-      const count = resolvedImages.length;
+    if (hasAutoImages) {
+      const imgAreaX = hasAutoBlocks ? slideW * 0.635 : slideW * 0.08;
+      const imgAreaY = slideH * 0.09;
+      const imgAreaW = hasAutoBlocks ? slideW * 0.315 : slideW * 0.84;
+      const imgAreaH = slideH * 0.82;
+      const count = unpositionedImages.length;
 
       if (count === 1) {
         try {
           slideObj.addImage({
-            data: resolvedImages[0].data,
+            data: unpositionedImages[0].data,
             x: imgAreaX,
             y: imgAreaY,
             w: imgAreaW,
             h: imgAreaH,
             sizing: { type: 'contain', w: imgAreaW, h: imgAreaH },
-            altText: resolvedImages[0].alt,
+            altText: unpositionedImages[0].alt,
           });
         } catch {
           // Skip invalid image format safely
         }
       } else {
-        const cols = hasBlocks ? 1 : Math.min(2, count);
+        const cols = hasAutoBlocks ? 1 : Math.min(2, count);
         const rows = Math.ceil(count / cols);
-        const cellGap = 0.16;
+        const cellGap = 0.18;
         const cellW = (imgAreaW - cellGap * (cols - 1)) / cols;
         const cellH = (imgAreaH - cellGap * (rows - 1)) / rows;
 
-        resolvedImages.forEach((img, idx) => {
+        unpositionedImages.forEach((img, idx) => {
           const r = Math.floor(idx / cols);
           const c = idx % cols;
           try {
@@ -1604,12 +1796,160 @@ export async function exportSlidesToPptx(
       }
     }
 
-    // 3. Speaker notes
+    // 4. Speaker notes
     if (slide.speakerNote && slide.speakerNote.trim()) {
       slideObj.addNotes(slide.speakerNote.trim());
     }
   }
 
+  return pptx;
+}
+
+export async function exportSlidesToPptx(
+  title: string,
+  slides: SlidePreviewItem[],
+  slideAspectRatio?: number
+): Promise<void> {
+  const pptx = await buildPptxPresentation(title, slides, slideAspectRatio);
   const safeTitle = sanitizeFileName(title, 'bai-thuyet-trinh', /\.pptx$/i);
   await pptx.writeFile({ fileName: `${safeTitle}.pptx` });
+}
+
+// ============================================================================
+// 4. BUILD UPLOAD PAYLOAD — Unified Blob Builder for Cloud / Google Drive
+// ============================================================================
+
+function buildFallbackWordHtmlFromDoc(doc: DocumentItem): string {
+  const parts: string[] = [];
+  if (doc.title.trim()) {
+    parts.push(`<h1>${escapeXmlText(doc.title.trim())}</h1>`);
+  }
+  if (doc.contentPreview.trim()) {
+    parts.push(`<p>${escapeXmlText(doc.contentPreview.trim())}</p>`);
+  }
+  for (const section of doc.outline) {
+    const heading = section.romanIndex
+      ? `${section.romanIndex}. ${section.title}`
+      : section.title;
+    parts.push(`<h2>${escapeXmlText(heading)}</h2>`);
+    const customParas = doc.wordParagraphs?.[section.id];
+    if (customParas && customParas.length > 0) {
+      for (const para of customParas) {
+        if (para.trim()) {
+          parts.push(`<p>${escapeXmlText(para.trim())}</p>`);
+        }
+      }
+    } else if (section.summary.trim()) {
+      parts.push(`<p>${escapeXmlText(section.summary.trim())}</p>`);
+    }
+    if (section.keyPoints.length > 0) {
+      const items = section.keyPoints
+        .filter((pt) => pt.trim().length > 0)
+        .map((pt) => `<li>${escapeXmlText(pt.trim())}</li>`)
+        .join('');
+      if (items) {
+        parts.push(`<ul>${items}</ul>`);
+      }
+    }
+  }
+  return parts.join('') || '<p></p>';
+}
+
+export async function buildDocumentUploadPayload(
+  doc: DocumentItem
+): Promise<{ blob: Blob; fileName: string; mimeType: string }> {
+  if (doc.type === 'docx') {
+    const safeTitle = sanitizeFileName(doc.title, 'tai-lieu', /\.docx$/i);
+    const fileName = `${safeTitle}.docx`;
+
+    if (doc.wordHtml && doc.wordHtml.trim().length > 0) {
+      const blob = await buildWordDocxBlob(doc.wordHtml);
+      return { blob, fileName, mimeType: DOCX_MIME_TYPE };
+    }
+    if (doc.rawArrayBuffer && doc.rawArrayBuffer.byteLength > 0) {
+      const blob = new Blob([doc.rawArrayBuffer], { type: DOCX_MIME_TYPE });
+      return { blob, fileName, mimeType: DOCX_MIME_TYPE };
+    }
+    const fallbackHtml = buildFallbackWordHtmlFromDoc(doc);
+    const blob = await buildWordDocxBlob(fallbackHtml);
+    return { blob, fileName, mimeType: DOCX_MIME_TYPE };
+  }
+
+  if (doc.type === 'xlsx') {
+    const safeTitle = sanitizeFileName(doc.title, 'bang-tinh', /\.xlsx$/i);
+    const fileName = `${safeTitle}.xlsx`;
+
+    const wb = buildExcelWorkbook(doc.sheets ?? []);
+    const output = XLSX.write(wb, {
+      type: 'array',
+      bookType: 'xlsx',
+    }) as ArrayBuffer | Uint8Array;
+    const bytes =
+      output instanceof Uint8Array
+        ? new Uint8Array(output)
+        : new Uint8Array(output);
+    const blob = new Blob([bytes], { type: XLSX_MIME_TYPE });
+    return { blob, fileName, mimeType: XLSX_MIME_TYPE };
+  }
+
+  if (doc.type === 'pptx') {
+    const safeTitle = sanitizeFileName(doc.title, 'bai-thuyet-trinh', /\.pptx$/i);
+    const fileName = `${safeTitle}.pptx`;
+
+    const pptx = await buildPptxPresentation(
+      doc.title,
+      doc.slidesPreview ?? [],
+      doc.slideAspectRatio
+    );
+    const rawOut = await pptx.write({ outputType: 'blob' });
+    let blob: Blob;
+    if (rawOut instanceof Blob) {
+      blob =
+        rawOut.type === PPTX_MIME_TYPE
+          ? rawOut
+          : new Blob([rawOut], { type: PPTX_MIME_TYPE });
+    } else if (rawOut instanceof Uint8Array) {
+      blob = new Blob([new Uint8Array(rawOut)], { type: PPTX_MIME_TYPE });
+    } else {
+      blob = new Blob([rawOut], { type: PPTX_MIME_TYPE });
+    }
+    return { blob, fileName, mimeType: PPTX_MIME_TYPE };
+  }
+
+  // PDF
+  const safeTitle = sanitizeFileName(doc.title, 'tai-lieu', /\.pdf$/i);
+  const fileName = `${safeTitle}.pdf`;
+
+  if (doc.sourceFile) {
+    const blob =
+      doc.sourceFile.type === PDF_MIME_TYPE
+        ? doc.sourceFile
+        : new Blob([doc.sourceFile], { type: PDF_MIME_TYPE });
+    return { blob, fileName, mimeType: PDF_MIME_TYPE };
+  }
+
+  const pdfUrl = doc.fileUrl ?? doc.objectUrl;
+  if (pdfUrl) {
+    const response = await fetch(pdfUrl);
+    if (!response.ok) {
+      throw new Error(
+        `Không thể đọc dữ liệu tệp PDF gốc (HTTP ${response.status}).`
+      );
+    }
+    const fetchedBlob = await response.blob();
+    const blob =
+      fetchedBlob.type === PDF_MIME_TYPE
+        ? fetchedBlob
+        : new Blob([fetchedBlob], { type: PDF_MIME_TYPE });
+    return { blob, fileName, mimeType: PDF_MIME_TYPE };
+  }
+
+  if (doc.rawArrayBuffer && doc.rawArrayBuffer.byteLength > 0) {
+    const blob = new Blob([doc.rawArrayBuffer], { type: PDF_MIME_TYPE });
+    return { blob, fileName, mimeType: PDF_MIME_TYPE };
+  }
+
+  throw new Error(
+    'Tài liệu PDF mẫu chưa có tệp PDF nhị phân gốc để tải lên Google Drive. Vui lòng mở tệp .pdf thật từ máy của bạn.'
+  );
 }

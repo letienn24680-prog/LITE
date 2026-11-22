@@ -1,4 +1,11 @@
-import type { DocumentItem, DocumentType } from '../types/document';
+import type {
+  CellStyle,
+  DocumentItem,
+  DocumentType,
+  OutlineSection,
+  SlidePreviewItem,
+  SpreadsheetSheet,
+} from '../types/document';
 
 const DEFAULT_ACCENTS: Record<DocumentType, string> = {
   pptx: '#4F46E5',
@@ -237,3 +244,435 @@ export const LEGACY_MOCK_DOCUMENT_IDS: readonly string[] = [
 ] as const;
 
 export const mockDocuments: DocumentItem[] = [];
+
+export type EditableDocumentType = 'docx' | 'xlsx' | 'pptx';
+export type NewDocumentTemplateMode = 'blank' | 'starter';
+
+export interface CreateEditableDocumentParams {
+  type: EditableDocumentType;
+  title?: string;
+  templateMode?: NewDocumentTemplateMode;
+  folder?: string;
+}
+
+const DEFAULT_NEW_TITLES: Record<EditableDocumentType, string> = {
+  docx: 'Tài liệu Word mới',
+  xlsx: 'Bảng tính Excel mới',
+  pptx: 'Bài thuyết trình mới',
+};
+
+export function createNewEditableDocument(
+  params: CreateEditableDocumentParams
+): DocumentItem {
+  const { type } = params;
+  const templateMode: NewDocumentTemplateMode = params.templateMode ?? 'blank';
+  const rawTitle = (params.title ?? '').trim().replace(/\.(docx|xlsx|pptx)$/i, '').trim();
+  const cleanTitle = rawTitle || DEFAULT_NEW_TITLES[type];
+  const safeHtmlTitle = escapeXml(cleanTitle);
+  const accent = DEFAULT_ACCENTS[type];
+  const id = `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const folder = params.folder?.trim() || 'Tài liệu của tôi';
+  const nowIso = new Date().toISOString();
+
+  const baseDoc: Omit<
+    DocumentItem,
+    'slidesPreview' | 'outline' | 'contentPreview' | 'pageCount'
+  > = {
+    id,
+    title: cleanTitle,
+    type,
+    updatedAt: 'Vừa tạo',
+    lastSavedAt: nowIso,
+    lastAccessedAt: nowIso,
+    isFavorite: false,
+    isShared: false,
+    isUploaded: true,
+    folder,
+    fileSize: '12 KB',
+    originalFileName: `${cleanTitle}.${type}`,
+    thumbnail: createThumbnailDataUri(type, cleanTitle, accent),
+  };
+
+  if (type === 'docx') {
+    if (templateMode === 'starter') {
+      const wordHtml = [
+        `<h1 id="heading-1">${safeHtmlTitle}</h1>`,
+        '<h2 id="sec-1">I. Mục tiêu &amp; Tổng quan</h2>',
+        '<p>Tài liệu này tóm tắt mục tiêu trọng tâm, phạm vi công việc và các nguyên tắc phối hợp cốt lõi. Bạn có thể nhấp trực tiếp vào bất kỳ đoạn văn bản nào trên trang A4 để chỉnh sửa, định dạng hoặc chèn thêm nội dung.</p>',
+        '<h2 id="sec-2">II. Nội dung chi tiết</h2>',
+        '<p>Bảng tổng hợp các hạng mục ưu tiên và trạng thái thực hiện hiện tại:</p>',
+        '<table><thead><tr><th>Hạng mục công việc</th><th>Đầu mối phụ trách</th><th>Mốc hoàn thành</th></tr></thead><tbody><tr><td>Khởi tạo khung tài liệu &amp; tiêu chuẩn định dạng</td><td>Nhóm Sản phẩm</td><td>Tuần 1</td></tr><tr><td>Hoàn thiện nội dung chuyên môn &amp; số liệu</td><td>Nhóm Kỹ thuật</td><td>Tuần 2</td></tr><tr><td>Rà soát nghiệm thu &amp; xuất bản chính thức</td><td>Ban Điều phối</td><td>Tuần 3</td></tr></tbody></table>',
+        '<h2 id="sec-3">III. Kế hoạch tiếp theo</h2>',
+        '<ul><li>Cập nhật số liệu thực tế vào bảng theo dõi hàng tuần.</li><li>Thống nhất các điểm nhấn quan trọng trước buổi họp tổng kết.</li><li>Lưu thay đổi hoặc xuất tệp .docx để chia sẻ cho các bên liên quan.</li></ul>',
+      ].join('');
+
+      const outline: OutlineSection[] = [
+        {
+          id: 'sec-1',
+          romanIndex: 'I',
+          title: 'I. Mục tiêu & Tổng quan',
+          summary:
+            'Tóm tắt mục tiêu trọng tâm, phạm vi công việc và nguyên tắc phối hợp cốt lõi.',
+          keyPoints: [
+            'Xác định mục tiêu & phạm vi công việc',
+            'Soạn thảo trực tiếp trên trang A4',
+          ],
+          pageNumber: 1,
+        },
+        {
+          id: 'sec-2',
+          romanIndex: 'II',
+          title: 'II. Nội dung chi tiết',
+          summary:
+            'Bảng tổng hợp các hạng mục ưu tiên, đầu mối phụ trách và mốc hoàn thành.',
+          keyPoints: [
+            'Khởi tạo khung tài liệu & tiêu chuẩn định dạng',
+            'Hoàn thiện nội dung chuyên môn & số liệu',
+            'Rà soát nghiệm thu & xuất bản chính thức',
+          ],
+          pageNumber: 1,
+        },
+        {
+          id: 'sec-3',
+          romanIndex: 'III',
+          title: 'III. Kế hoạch tiếp theo',
+          summary: 'Danh sách các đầu việc cần triển khai và mốc theo dõi định kỳ.',
+          keyPoints: [
+            'Cập nhật số liệu thực tế hàng tuần',
+            'Thống nhất điểm nhấn trước buổi họp tổng kết',
+            'Lưu thay đổi hoặc xuất tệp .docx',
+          ],
+          pageNumber: 1,
+        },
+      ];
+
+      return {
+        ...baseDoc,
+        pageCount: 1,
+        wordHtml,
+        outline,
+        slidesPreview: [],
+        contentPreview:
+          'Tài liệu khởi tạo theo bố cục gợi ý gồm 3 phần: Mục tiêu & Tổng quan, Nội dung chi tiết kèm bảng 3 cột và Kế hoạch tiếp theo.',
+      };
+    }
+
+    const blankHtml = `<h1 id="heading-1">${safeHtmlTitle}</h1><p>Bắt đầu soạn thảo văn bản của bạn tại đây...</p>`;
+    return {
+      ...baseDoc,
+      pageCount: 1,
+      wordHtml: blankHtml,
+      outline: [
+        {
+          id: 'heading-1',
+          romanIndex: 'I',
+          title: cleanTitle,
+          summary: 'Bắt đầu soạn thảo văn bản của bạn tại đây...',
+          keyPoints: ['Soạn thảo trực tiếp trên trang giấy A4'],
+          pageNumber: 1,
+        },
+      ],
+      slidesPreview: [],
+      contentPreview: 'Bắt đầu soạn thảo văn bản của bạn tại đây...',
+    };
+  }
+
+  if (type === 'xlsx') {
+    const columns = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+
+    if (templateMode === 'starter') {
+      const starterRows: (string | number)[][] = [
+        ['Hạng mục', 'Số lượng', 'Đơn giá', 'Thành tiền', 'Ghi chú', '', '', ''],
+        ['Thiết bị trình chiếu phòng họp', 4, 12500000, '=B2*C2', 'Đã bàn giao', '', '', ''],
+        ['Bản quyền phần mềm cộng tác', 25, 1800000, '=B3*C3', 'Gia hạn năm', '', '', ''],
+        ['Chi phí hạ tầng đám mây & lưu trữ', 12, 3500000, '=B4*C4', 'Theo tháng', '', '', ''],
+        ['Tổng cộng', '=SUM(B2:B4)', '', '=SUM(D2:D4)', 'Tự động tính tổng', '', '', ''],
+      ];
+      for (let r = 0; r < 15; r += 1) {
+        starterRows.push(['', '', '', '', '', '', '', '']);
+      }
+
+      const cellStyles: Record<string, CellStyle> = {
+        '0:0': { bold: true, align: 'left' },
+        '0:1': { bold: true, align: 'right' },
+        '0:2': { bold: true, align: 'right' },
+        '0:3': { bold: true, align: 'right' },
+        '0:4': { bold: true, align: 'left' },
+        '4:0': { bold: true, align: 'left' },
+        '4:1': { bold: true, align: 'right' },
+        '4:3': { bold: true, align: 'right' },
+      };
+
+      const sheets: SpreadsheetSheet[] = [
+        {
+          id: 'sheet-1',
+          name: 'Sheet 1',
+          columns,
+          rows: starterRows,
+          cellStyles,
+        },
+      ];
+
+      return {
+        ...baseDoc,
+        pageCount: 1,
+        sheets,
+        outline: [],
+        slidesPreview: [],
+        contentPreview:
+          'Bảng tính mẫu có sẵn công thức Thành tiền (=B2*C2) và dòng Tổng cộng (=SUM(D2:D4)) để chỉnh sửa số liệu ngay.',
+      };
+    }
+
+    const blankRows: (string | number)[][] = Array.from({ length: 20 }, () =>
+      Array.from({ length: 8 }, () => '')
+    );
+
+    return {
+      ...baseDoc,
+      pageCount: 1,
+      sheets: [
+        {
+          id: 'sheet-1',
+          name: 'Sheet 1',
+          columns,
+          rows: blankRows,
+          cellStyles: {},
+        },
+      ],
+      outline: [],
+      slidesPreview: [],
+      contentPreview:
+        'Bảng tính Excel trắng gồm 20 dòng × 8 cột, sẵn sàng nhập số liệu và công thức.',
+    };
+  }
+
+  // type === 'pptx'
+  if (templateMode === 'starter') {
+    const slidesPreview: SlidePreviewItem[] = [
+      {
+        id: `${id}-slide-1`,
+        index: 1,
+        title: cleanTitle,
+        subtitle: 'Bối cảnh, mục tiêu cốt lõi & định hướng triển khai',
+        bullets: [
+          'Tóm tắt thông điệp quan trọng nhất trong 1 câu ngắn gọn',
+          'Người trình bày • Ngày cập nhật mới nhất',
+        ],
+        accentColor: '#4F46E5',
+        speakerNote:
+          'Giới thiệu ngắn gọn mục tiêu buổi trình bày và cấu trúc 3 phần chính.',
+        blocks: [
+          {
+            id: `${id}-s1-title`,
+            text: cleanTitle,
+            fontSize: 32,
+            bold: true,
+            italic: false,
+            color: '#FFFFFF',
+            align: 'left',
+            role: 'title',
+          },
+          {
+            id: `${id}-s1-subtitle`,
+            text: 'Bối cảnh, mục tiêu cốt lõi & định hướng triển khai',
+            fontSize: 18,
+            bold: false,
+            italic: false,
+            color: '#CBD5E1',
+            align: 'left',
+            role: 'subtitle',
+          },
+          {
+            id: `${id}-s1-body-1`,
+            text: '• Tóm tắt thông điệp quan trọng nhất trong 1 câu ngắn gọn\n• Người trình bày • Ngày cập nhật mới nhất',
+            fontSize: 18,
+            bold: false,
+            italic: false,
+            color: '#FFFFFF',
+            align: 'left',
+            role: 'body',
+          },
+        ],
+      },
+      {
+        id: `${id}-slide-2`,
+        index: 2,
+        title: 'Nội dung trọng tâm & Giải pháp',
+        subtitle: 'Ba trụ cột chính cần tập trung nguồn lực',
+        bullets: [
+          'Trụ cột 1: Chuẩn hóa quy trình và dữ liệu đầu vào',
+          'Trụ cột 2: Tối ưu trải nghiệm cộng tác và tốc độ xử lý',
+          'Trụ cột 3: Đo lường kết quả thực tế qua các chỉ số rõ ràng',
+        ],
+        metricHighlight: {
+          label: 'Mục tiêu hiệu suất',
+          value: '+35%',
+        },
+        accentColor: '#0EA5E9',
+        speakerNote:
+          'Đi sâu vào 3 luận điểm chính và dẫn chứng số liệu minh họa.',
+        blocks: [
+          {
+            id: `${id}-s2-title`,
+            text: 'Nội dung trọng tâm & Giải pháp',
+            fontSize: 32,
+            bold: true,
+            italic: false,
+            color: '#FFFFFF',
+            align: 'left',
+            role: 'title',
+          },
+          {
+            id: `${id}-s2-subtitle`,
+            text: 'Ba trụ cột chính cần tập trung nguồn lực',
+            fontSize: 18,
+            bold: false,
+            italic: false,
+            color: '#CBD5E1',
+            align: 'left',
+            role: 'subtitle',
+          },
+          {
+            id: `${id}-s2-body-1`,
+            text: '• Trụ cột 1: Chuẩn hóa quy trình và dữ liệu đầu vào\n• Trụ cột 2: Tối ưu trải nghiệm cộng tác và tốc độ xử lý\n• Trụ cột 3: Đo lường kết quả thực tế qua các chỉ số rõ ràng',
+            fontSize: 18,
+            bold: false,
+            italic: false,
+            color: '#FFFFFF',
+            align: 'left',
+            role: 'body',
+          },
+        ],
+      },
+      {
+        id: `${id}-slide-3`,
+        index: 3,
+        title: 'Tổng kết & Kế hoạch hành động',
+        subtitle: 'Các bước tiếp theo và mốc thời gian cam kết',
+        bullets: [
+          'Chốt phạm vi ưu tiên và phân công đầu mối phụ trách',
+          'Triển khai thử nghiệm và thu thập phản hồi thực tế',
+          'Đánh giá nghiệm thu và mở rộng quy mô vận hành',
+        ],
+        metricHighlight: {
+          label: 'Mốc hoàn thành',
+          value: '100%',
+        },
+        accentColor: '#10B981',
+        speakerNote:
+          'Tổng kết lại các quyết định cần thông qua và mở phần thảo luận.',
+        blocks: [
+          {
+            id: `${id}-s3-title`,
+            text: 'Tổng kết & Kế hoạch hành động',
+            fontSize: 32,
+            bold: true,
+            italic: false,
+            color: '#FFFFFF',
+            align: 'left',
+            role: 'title',
+          },
+          {
+            id: `${id}-s3-subtitle`,
+            text: 'Các bước tiếp theo và mốc thời gian cam kết',
+            fontSize: 18,
+            bold: false,
+            italic: false,
+            color: '#CBD5E1',
+            align: 'left',
+            role: 'subtitle',
+          },
+          {
+            id: `${id}-s3-body-1`,
+            text: '• Chốt phạm vi ưu tiên và phân công đầu mối phụ trách\n• Triển khai thử nghiệm và thu thập phản hồi thực tế\n• Đánh giá nghiệm thu và mở rộng quy mô vận hành',
+            fontSize: 18,
+            bold: false,
+            italic: false,
+            color: '#FFFFFF',
+            align: 'left',
+            role: 'body',
+          },
+        ],
+      },
+    ];
+
+    const outline: OutlineSection[] = slidesPreview.map((slide, idx) => ({
+      id: `${id}-outline-${idx + 1}`,
+      romanIndex: ['I', 'II', 'III'][idx] ?? String(idx + 1),
+      title: slide.title,
+      summary: slide.subtitle ?? slide.title,
+      keyPoints: slide.bullets,
+      pageNumber: idx + 1,
+    }));
+
+    return {
+      ...baseDoc,
+      pageCount: 3,
+      slidesPreview,
+      outline,
+      contentPreview:
+        'Bộ bài thuyết trình khởi tạo gồm 3 slide 16:9: Trang bìa, Nội dung trọng tâm và Tổng kết & Hành động.',
+    };
+  }
+
+  const blankSlide: SlidePreviewItem = {
+    id: `${id}-slide-1`,
+    index: 1,
+    title: cleanTitle,
+    subtitle: 'Nhấp đúp hoặc chọn khung chữ để chỉnh sửa nội dung',
+    bullets: ['Thêm điểm nhấn chính của bạn tại đây'],
+    accentColor: '#4F46E5',
+    speakerNote: 'Ghi chú diễn giả cho slide mở đầu.',
+    blocks: [
+      {
+        id: `${id}-s1-title`,
+        text: cleanTitle,
+        fontSize: 32,
+        bold: true,
+        italic: false,
+        color: '#FFFFFF',
+        align: 'left',
+        role: 'title',
+      },
+      {
+        id: `${id}-s1-subtitle`,
+        text: 'Nhấp đúp hoặc chọn khung chữ để chỉnh sửa nội dung',
+        fontSize: 18,
+        bold: false,
+        italic: false,
+        color: '#CBD5E1',
+        align: 'left',
+        role: 'subtitle',
+      },
+      {
+        id: `${id}-s1-body-1`,
+        text: '• Thêm điểm nhấn chính của bạn tại đây',
+        fontSize: 18,
+        bold: false,
+        italic: false,
+        color: '#FFFFFF',
+        align: 'left',
+        role: 'body',
+      },
+    ],
+  };
+
+  return {
+    ...baseDoc,
+    pageCount: 1,
+    slidesPreview: [blankSlide],
+    outline: [
+      {
+        id: `${id}-outline-1`,
+        romanIndex: 'I',
+        title: cleanTitle,
+        summary: 'Nhấp đúp hoặc chọn khung chữ để chỉnh sửa nội dung',
+        keyPoints: ['Thêm điểm nhấn chính của bạn tại đây'],
+        pageNumber: 1,
+      },
+    ],
+    contentPreview:
+      'Bài thuyết trình 16:9 mới — chọn khung chữ để soạn thảo hoặc thêm slide mới.',
+  };
+}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
+import type { CSSProperties, FormEvent } from 'react';
 import {
   AlertCircle,
   ArrowLeft,
@@ -457,6 +457,484 @@ function LiteLogoMark({ onClick }: { onClick: () => void }) {
         LITE
       </span>
     </button>
+  );
+}
+
+function getSafeSlideAspectRatio(
+  slide: SlidePreviewItem | null | undefined,
+  doc: DocumentItem
+): number {
+  const candidate = slide?.slideWidthRatio ?? doc.slideAspectRatio ?? 16 / 9;
+  return Number.isFinite(candidate) && candidate > 0.3 && candidate < 4
+    ? candidate
+    : 16 / 9;
+}
+
+function isPositionedSlideItem(slide: SlidePreviewItem): boolean {
+  if (slide.isMasterPositioned) {
+    return true;
+  }
+  const hasPositionedBlock = (slide.blocks ?? []).some(
+    (b) => typeof b.xPct === 'number' && typeof b.yPct === 'number'
+  );
+  const hasPositionedImage = (slide.images ?? []).some(
+    (img) => typeof img.xPct === 'number' && typeof img.yPct === 'number'
+  );
+  return hasPositionedBlock || hasPositionedImage;
+}
+
+function inferPositionedLightBackground(slide: SlidePreviewItem): boolean {
+  if (slide.backgroundColor) {
+    return isLightHexColor(slide.backgroundColor);
+  }
+  if (slide.backgroundGradient || slide.backgroundImageSrc) {
+    return false;
+  }
+  const coloredBlocks = (slide.blocks ?? []).filter((b) => Boolean(b.color));
+  if (coloredBlocks.length === 0) {
+    return true;
+  }
+  const lightTextCount = coloredBlocks.filter((b) =>
+    isLightHexColor(b.color)
+  ).length;
+  return lightTextCount <= coloredBlocks.length / 2;
+}
+
+function buildSharedSlideBackground(
+  slide: SlidePreviewItem,
+  isPositioned: boolean,
+  hasLightBg: boolean
+): CSSProperties {
+  const style: CSSProperties = {};
+  if (slide.backgroundImageSrc) {
+    style.backgroundImage = slide.backgroundGradient
+      ? `url("${slide.backgroundImageSrc}"), ${slide.backgroundGradient}`
+      : `url("${slide.backgroundImageSrc}")`;
+    style.backgroundSize = 'cover';
+    style.backgroundPosition = 'center';
+    style.backgroundRepeat = 'no-repeat';
+    style.backgroundColor =
+      slide.backgroundColor ?? (isPositioned && hasLightBg ? '#FFFFFF' : '#151B28');
+    return style;
+  }
+
+  if (slide.backgroundGradient) {
+    style.backgroundImage = slide.backgroundGradient;
+    style.backgroundColor =
+      slide.backgroundColor ?? (isPositioned && hasLightBg ? '#FFFFFF' : '#151B28');
+    return style;
+  }
+
+  if (slide.backgroundColor) {
+    style.backgroundColor = slide.backgroundColor;
+    return style;
+  }
+
+  if (isPositioned) {
+    style.backgroundColor = hasLightBg ? '#FFFFFF' : '#151B28';
+    return style;
+  }
+
+  style.backgroundColor = '#151B28';
+  return style;
+}
+
+interface SharedSlideCanvasProps {
+  doc: DocumentItem;
+  slide: SlidePreviewItem;
+  slideIndex: number;
+  totalSlides: number;
+  onPrevSlide: () => void;
+  onNextSlide: () => void;
+  onOpenPresenter: () => void;
+}
+
+function SharedSlideCanvas({
+  doc,
+  slide,
+  slideIndex,
+  totalSlides,
+  onPrevSlide,
+  onNextSlide,
+  onOpenPresenter,
+}: SharedSlideCanvasProps) {
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const [frameWidthPx, setFrameWidthPx] = useState<number>(860);
+
+  useEffect(() => {
+    const el = frameRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+    const updateWidth = () => {
+      const width = el.getBoundingClientRect().width;
+      if (width > 0) {
+        setFrameWidthPx(width);
+      }
+    };
+    updateWidth();
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+
+  const aspectRatio = getSafeSlideAspectRatio(slide, doc);
+  const isPositioned = isPositionedSlideItem(slide);
+  const hasLightBg = isPositioned
+    ? inferPositionedLightBackground(slide)
+    : isLightHexColor(slide.backgroundColor);
+  const backgroundStyle = buildSharedSlideBackground(
+    slide,
+    isPositioned,
+    hasLightBg
+  );
+  const fontScale = frameWidthPx > 0 ? frameWidthPx / 960 : 0.9;
+  const defaultTextColor = hasLightBg ? '#0F172A' : '#FFFFFF';
+
+  const activeBlocks = (slide.blocks ?? []).filter(
+    (b) =>
+      b.kind === 'table' ||
+      b.text.trim().length > 0 ||
+      Boolean(b.fillColor) ||
+      Boolean(b.borderColor)
+  );
+  const activeImages = slide.images ?? [];
+  const hasRealContent =
+    activeBlocks.length > 0 || activeImages.length > 0;
+
+  return (
+    <div className="rounded-2xl sm:rounded-3xl border border-[#DDD6CA] bg-white shadow-xl overflow-hidden flex flex-col">
+      {/* Slide Surface */}
+      <div
+        ref={frameRef}
+        className="w-full relative overflow-hidden"
+        style={{
+          aspectRatio: String(aspectRatio),
+          ...backgroundStyle,
+        }}
+      >
+        {isPositioned ? (
+          <>
+            {activeImages.map((img) => {
+              const hasCoords =
+                typeof img.xPct === 'number' && typeof img.yPct === 'number';
+              return (
+                <div
+                  key={img.id}
+                  className="overflow-hidden flex items-center justify-center"
+                  style={
+                    hasCoords
+                      ? {
+                          position: 'absolute',
+                          left: `${img.xPct ?? 0}%`,
+                          top: `${img.yPct ?? 0}%`,
+                          width: `${img.wPct ?? 35}%`,
+                          height: `${img.hPct ?? 35}%`,
+                        }
+                      : {
+                          position: 'absolute',
+                          right: '5%',
+                          bottom: '8%',
+                          width: '36%',
+                          height: '48%',
+                        }
+                  }
+                >
+                  <img
+                    src={img.src}
+                    alt={img.alt ?? slide.title}
+                    draggable={false}
+                    className="w-full h-full object-contain select-none"
+                  />
+                </div>
+              );
+            })}
+
+            {activeBlocks.map((block) => {
+              const isTable =
+                block.kind === 'table' &&
+                Array.isArray(block.tableRows) &&
+                block.tableRows.length > 0;
+              const baseFontPt = block.fontSize || (isTable ? 12 : 18);
+              const scaledFontPx = Math.max(8, baseFontPt * fontScale);
+              const valignJustify =
+                block.valign === 'middle'
+                  ? 'center'
+                  : block.valign === 'bottom'
+                    ? 'flex-end'
+                    : 'flex-start';
+              const textColor = block.color ?? defaultTextColor;
+
+              return (
+                <div
+                  key={block.id}
+                  className="overflow-hidden flex flex-col"
+                  style={{
+                    position: 'absolute',
+                    left: `${block.xPct ?? 5}%`,
+                    top: `${block.yPct ?? 5}%`,
+                    width: `${block.wPct ?? 90}%`,
+                    height: `${block.hPct ?? 16}%`,
+                    justifyContent: isTable ? 'flex-start' : valignJustify,
+                    backgroundColor: block.fillColor ?? undefined,
+                    border: block.borderColor
+                      ? `1px solid ${block.borderColor}`
+                      : undefined,
+                    borderRadius:
+                      block.fillColor || block.borderColor
+                        ? '0.25rem'
+                        : undefined,
+                    padding: isTable ? 0 : '2px 6px',
+                  }}
+                >
+                  {isTable && block.tableRows ? (
+                    <table
+                      className="w-full h-full border-collapse table-fixed"
+                      style={{
+                        fontSize: `${scaledFontPx.toFixed(2)}px`,
+                        lineHeight: 1.22,
+                        color: textColor,
+                        fontFamily: block.fontFamily
+                          ? `${block.fontFamily}, sans-serif`
+                          : undefined,
+                      }}
+                    >
+                      <tbody>
+                        {block.tableRows.map((row, rIdx) => (
+                          <tr
+                            key={`${block.id}-tr-${rIdx}`}
+                            style={{
+                              backgroundColor:
+                                rIdx === 0
+                                  ? hasLightBg
+                                    ? 'rgba(15, 23, 42, 0.07)'
+                                    : 'rgba(255, 255, 255, 0.1)'
+                                  : undefined,
+                            }}
+                          >
+                            {row.map((cell, cIdx) => (
+                              <td
+                                key={`${block.id}-td-${rIdx}-${cIdx}`}
+                                className="break-words align-middle overflow-hidden"
+                                style={{
+                                  border: `1px solid ${
+                                    block.borderColor ??
+                                    (hasLightBg
+                                      ? 'rgba(15, 23, 42, 0.18)'
+                                      : 'rgba(255, 255, 255, 0.22)')
+                                  }`,
+                                  padding: '3px 6px',
+                                  fontWeight:
+                                    rIdx === 0 || block.bold ? 600 : 400,
+                                  textAlign: block.align ?? 'left',
+                                }}
+                              >
+                                {cell}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p
+                      className="w-full whitespace-pre-wrap break-words"
+                      style={{
+                        fontSize: `${scaledFontPx.toFixed(2)}px`,
+                        lineHeight: 1.25,
+                        fontWeight: block.bold ? 700 : 400,
+                        fontStyle: block.italic ? 'italic' : 'normal',
+                        fontFamily: block.fontFamily
+                          ? `${block.fontFamily}, sans-serif`
+                          : undefined,
+                        color: textColor,
+                        textAlign: block.align ?? 'left',
+                      }}
+                    >
+                      {block.text}
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </>
+        ) : (
+          <div className="w-full h-full p-5 sm:p-10 flex flex-col justify-center">
+            {hasRealContent ? (
+              <div
+                className={`grid gap-6 items-center ${
+                  activeImages.length > 0 && activeBlocks.length > 0
+                    ? 'grid-cols-1 md:grid-cols-12'
+                    : slide.metricHighlight && activeImages.length === 0
+                      ? 'grid-cols-1 sm:grid-cols-12'
+                      : 'grid-cols-1'
+                }`}
+              >
+                {activeBlocks.length > 0 && (
+                  <div
+                    className={`space-y-3 ${
+                      activeImages.length > 0
+                        ? 'md:col-span-7'
+                        : slide.metricHighlight
+                          ? 'sm:col-span-8'
+                          : 'col-span-1'
+                    }`}
+                  >
+                    {activeBlocks.map((block) => (
+                      <p
+                        key={block.id}
+                        className="whitespace-pre-wrap leading-snug break-words"
+                        style={{
+                          fontSize: getResponsiveBlockFontSize(block),
+                          fontWeight: block.bold ? 700 : 400,
+                          fontStyle: block.italic ? 'italic' : 'normal',
+                          color: block.color ?? defaultTextColor,
+                          textAlign: block.align ?? 'left',
+                        }}
+                      >
+                        {block.text}
+                      </p>
+                    ))}
+                  </div>
+                )}
+
+                {activeImages.length > 0 ? (
+                  <div
+                    className={`${
+                      activeBlocks.length > 0 ? 'md:col-span-5' : 'col-span-1'
+                    } grid gap-3 ${
+                      activeImages.length > 1 ? 'grid-cols-2' : 'grid-cols-1'
+                    }`}
+                  >
+                    {activeImages.map((img) => (
+                      <div
+                        key={img.id}
+                        className="rounded-xl overflow-hidden bg-black/20 border border-white/10 p-1.5 flex items-center justify-center"
+                      >
+                        <img
+                          src={img.src}
+                          alt={img.alt ?? slide.title}
+                          className="max-h-[340px] w-full object-contain rounded-lg"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  slide.metricHighlight && (
+                    <div
+                      className="sm:col-span-4 rounded-2xl p-5 border flex flex-col justify-center sm:items-end sm:text-right"
+                      style={{
+                        backgroundColor: `${slide.accentColor}22`,
+                        borderColor: `${slide.accentColor}66`,
+                      }}
+                    >
+                      <div
+                        className={`text-2xl sm:text-4xl font-bold tabular-nums ${
+                          hasLightBg ? 'text-slate-900' : 'text-white'
+                        }`}
+                      >
+                        {slide.metricHighlight.value}
+                      </div>
+                      <div
+                        className={`mt-1.5 text-xs sm:text-sm ${
+                          hasLightBg ? 'text-slate-700' : 'text-slate-200'
+                        }`}
+                      >
+                        {slide.metricHighlight.label}
+                      </div>
+                    </div>
+                  )
+                )}
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <h2
+                  className={`text-xl sm:text-3xl font-bold leading-tight ${
+                    hasLightBg ? 'text-slate-900' : 'text-white'
+                  }`}
+                >
+                  {slide.title}
+                </h2>
+                {slide.subtitle && (
+                  <p
+                    className={`text-sm sm:text-base ${
+                      hasLightBg ? 'text-slate-600' : 'text-slate-300'
+                    }`}
+                  >
+                    {slide.subtitle}
+                  </p>
+                )}
+                {slide.bullets.length > 0 && (
+                  <ul className="space-y-2.5 pt-2">
+                    {slide.bullets.map((bullet, idx) => (
+                      <li
+                        key={`${slide.id}-sh-b-${idx}`}
+                        className={`flex items-start gap-2.5 text-sm leading-relaxed ${
+                          hasLightBg ? 'text-slate-800' : 'text-slate-100'
+                        }`}
+                      >
+                        <span
+                          className="mt-2 h-2 w-2 rounded-full shrink-0"
+                          style={{
+                            backgroundColor: slide.accentColor,
+                          }}
+                        />
+                        <span>{bullet}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Dedicated Control Bar Below Slide Surface */}
+      <div className="px-4 sm:px-6 py-3 bg-[#151B28] border-t border-white/10 flex flex-wrap items-center justify-between gap-3 text-white">
+        <div className="flex items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-200">
+            <Layers className="h-3.5 w-3.5 text-indigo-400" />
+            <span className="tabular-nums">
+              Slide {slideIndex + 1} / {totalSlides}
+            </span>
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onPrevSlide}
+            disabled={slideIndex === 0}
+            className="inline-flex items-center gap-1.5 min-h-[36px] px-3 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-semibold text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            <ChevronLeft className="h-4 w-4" />
+            <span>Trước</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onNextSlide}
+            disabled={slideIndex >= totalSlides - 1}
+            className="inline-flex items-center gap-1.5 min-h-[36px] px-3 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-semibold text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            <span>Tiếp</span>
+            <ChevronRight className="h-4 w-4" />
+          </button>
+
+          <button
+            type="button"
+            onClick={onOpenPresenter}
+            className="inline-flex items-center gap-1.5 min-h-[36px] px-3 rounded-xl bg-[#4F46E5] hover:bg-indigo-600 text-xs font-semibold text-white transition-colors"
+          >
+            <Presentation className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Trình chiếu</span>
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1249,229 +1727,21 @@ export function SharedDocumentView({
           <div className="flex-1 max-w-5xl w-full mx-auto px-3 sm:px-6 py-5 sm:py-8 space-y-5">
             {activeSlide ? (
               <>
-                {(() => {
-                  const activeBlocks =
-                    activeSlide.blocks?.filter(
-                      (b) => b.text.trim().length > 0
-                    ) ?? [];
-                  const activeImages = activeSlide.images ?? [];
-                  const hasRealContent =
-                    activeBlocks.length > 0 || activeImages.length > 0;
-                  const hasLightBg = isLightHexColor(
-                    activeSlide.backgroundColor
-                  );
-
-                  return (
-                    <div
-                      className="w-full rounded-2xl sm:rounded-3xl border border-[#DDD6CA] shadow-xl overflow-hidden flex flex-col justify-between min-h-[320px] sm:min-h-[460px] p-5 sm:p-10 relative"
-                      style={{
-                        backgroundColor:
-                          activeSlide.backgroundColor ?? '#151B28',
-                      }}
-                    >
-                      <div className="flex items-center justify-between gap-2 pb-4 border-b border-white/10">
-                        <span
-                          className={`inline-flex items-center gap-1.5 text-xs font-semibold ${
-                            hasLightBg ? 'text-slate-700' : 'text-slate-300'
-                          }`}
-                        >
-                          <Layers className="h-3.5 w-3.5 text-indigo-400" />
-                          <span>
-                            Slide {safeSlideIdx + 1} / {slides.length}
-                          </span>
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => setIsPresenterOpen(true)}
-                          className="inline-flex items-center gap-1.5 rounded-xl bg-white/10 hover:bg-white/20 px-3 py-1.5 text-xs font-semibold text-white transition-colors"
-                        >
-                          <Presentation className="h-3.5 w-3.5" />
-                          <span>Trình chiếu</span>
-                        </button>
-                      </div>
-
-                      <div className="my-auto py-5">
-                        {hasRealContent ? (
-                          <div
-                            className={`grid gap-6 items-center ${
-                              activeImages.length > 0 && activeBlocks.length > 0
-                                ? 'grid-cols-1 md:grid-cols-12'
-                                : activeSlide.metricHighlight &&
-                                    activeImages.length === 0
-                                  ? 'grid-cols-1 sm:grid-cols-12'
-                                  : 'grid-cols-1'
-                            }`}
-                          >
-                            {activeBlocks.length > 0 && (
-                              <div
-                                className={`space-y-3 ${
-                                  activeImages.length > 0
-                                    ? 'md:col-span-7'
-                                    : activeSlide.metricHighlight
-                                      ? 'sm:col-span-8'
-                                      : 'col-span-1'
-                                }`}
-                              >
-                                {activeBlocks.map((block) => (
-                                  <p
-                                    key={block.id}
-                                    className="whitespace-pre-wrap leading-snug break-words"
-                                    style={{
-                                      fontSize:
-                                        getResponsiveBlockFontSize(block),
-                                      fontWeight: block.bold ? 700 : 400,
-                                      fontStyle: block.italic
-                                        ? 'italic'
-                                        : 'normal',
-                                      color:
-                                        block.color ??
-                                        (hasLightBg ? '#0F172A' : '#FFFFFF'),
-                                      textAlign: block.align ?? 'left',
-                                    }}
-                                  >
-                                    {block.text}
-                                  </p>
-                                ))}
-                              </div>
-                            )}
-
-                            {activeImages.length > 0 ? (
-                              <div
-                                className={`${
-                                  activeBlocks.length > 0
-                                    ? 'md:col-span-5'
-                                    : 'col-span-1'
-                                } grid gap-3 ${
-                                  activeImages.length > 1
-                                    ? 'grid-cols-2'
-                                    : 'grid-cols-1'
-                                }`}
-                              >
-                                {activeImages.map((img) => (
-                                  <div
-                                    key={img.id}
-                                    className="rounded-xl overflow-hidden bg-black/20 border border-white/10 p-1.5 flex items-center justify-center"
-                                  >
-                                    <img
-                                      src={img.src}
-                                      alt={img.alt ?? activeSlide.title}
-                                      className="max-h-[340px] w-full object-contain rounded-lg"
-                                    />
-                                  </div>
-                                ))}
-                              </div>
-                            ) : (
-                              activeSlide.metricHighlight && (
-                                <div
-                                  className="sm:col-span-4 rounded-2xl p-5 border flex flex-col justify-center sm:items-end sm:text-right"
-                                  style={{
-                                    backgroundColor: `${activeSlide.accentColor}22`,
-                                    borderColor: `${activeSlide.accentColor}66`,
-                                  }}
-                                >
-                                  <div
-                                    className={`text-2xl sm:text-4xl font-bold tabular-nums ${
-                                      hasLightBg
-                                        ? 'text-slate-900'
-                                        : 'text-white'
-                                    }`}
-                                  >
-                                    {activeSlide.metricHighlight.value}
-                                  </div>
-                                  <div
-                                    className={`mt-1.5 text-xs sm:text-sm ${
-                                      hasLightBg
-                                        ? 'text-slate-700'
-                                        : 'text-slate-200'
-                                    }`}
-                                  >
-                                    {activeSlide.metricHighlight.label}
-                                  </div>
-                                </div>
-                              )
-                            )}
-                          </div>
-                        ) : (
-                          <div className="space-y-4">
-                            <h2
-                              className={`text-xl sm:text-3xl font-bold leading-tight ${
-                                hasLightBg ? 'text-slate-900' : 'text-white'
-                              }`}
-                            >
-                              {activeSlide.title}
-                            </h2>
-                            {activeSlide.subtitle && (
-                              <p
-                                className={`text-sm sm:text-base ${
-                                  hasLightBg
-                                    ? 'text-slate-600'
-                                    : 'text-slate-300'
-                                }`}
-                              >
-                                {activeSlide.subtitle}
-                              </p>
-                            )}
-                            {activeSlide.bullets.length > 0 && (
-                              <ul className="space-y-2.5 pt-2">
-                                {activeSlide.bullets.map((bullet, idx) => (
-                                  <li
-                                    key={`${activeSlide.id}-sh-b-${idx}`}
-                                    className={`flex items-start gap-2.5 text-sm leading-relaxed ${
-                                      hasLightBg
-                                        ? 'text-slate-800'
-                                        : 'text-slate-100'
-                                    }`}
-                                  >
-                                    <span
-                                      className="mt-2 h-2 w-2 rounded-full shrink-0"
-                                      style={{
-                                        backgroundColor:
-                                          activeSlide.accentColor,
-                                      }}
-                                    />
-                                    <span>{bullet}</span>
-                                  </li>
-                                ))}
-                              </ul>
-                            )}
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="pt-4 border-t border-white/10 flex items-center justify-between gap-3">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setSlideIdx((prev) => Math.max(0, prev - 1))
-                          }
-                          disabled={safeSlideIdx === 0}
-                          className="inline-flex items-center gap-1.5 min-h-[38px] px-3.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-semibold text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                        >
-                          <ChevronLeft className="h-4 w-4" />
-                          <span>Trước</span>
-                        </button>
-
-                        <span className="text-xs font-medium text-slate-300 tabular-nums">
-                          {safeSlideIdx + 1} / {slides.length}
-                        </span>
-
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setSlideIdx((prev) =>
-                              Math.min(slides.length - 1, prev + 1)
-                            )
-                          }
-                          disabled={safeSlideIdx >= slides.length - 1}
-                          className="inline-flex items-center gap-1.5 min-h-[38px] px-3.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-semibold text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                        >
-                          <span>Tiếp</span>
-                          <ChevronRight className="h-4 w-4" />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })()}
+                <SharedSlideCanvas
+                  doc={resolvedDoc}
+                  slide={activeSlide}
+                  slideIndex={safeSlideIdx}
+                  totalSlides={slides.length}
+                  onPrevSlide={() =>
+                    setSlideIdx((prev) => Math.max(0, prev - 1))
+                  }
+                  onNextSlide={() =>
+                    setSlideIdx((prev) =>
+                      Math.min(slides.length - 1, prev + 1)
+                    )
+                  }
+                  onOpenPresenter={() => setIsPresenterOpen(true)}
+                />
 
                 {/* Slide Thumbnails Strip */}
                 {slides.length > 1 && (

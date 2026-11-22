@@ -40,8 +40,11 @@ export function AuthModal({
   const [password, setPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [isGoogleLoading, setIsGoogleLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  const isBusy = isSubmitting || isGoogleLoading;
 
   useEffect(() => {
     if (!isOpen) {
@@ -52,6 +55,7 @@ export function AuthModal({
     setPassword('');
     setShowPassword(false);
     setIsSubmitting(false);
+    setIsGoogleLoading(false);
     setErrorMessage(null);
     setSuccessMessage(null);
   }, [isOpen, initialMode]);
@@ -62,7 +66,7 @@ export function AuthModal({
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !isSubmitting) {
+      if (event.key === 'Escape' && !isBusy) {
         onClose();
       }
     };
@@ -71,7 +75,7 @@ export function AuthModal({
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [isOpen, isSubmitting, onClose]);
+  }, [isOpen, isBusy, onClose]);
 
   if (!isOpen) {
     return null;
@@ -80,7 +84,7 @@ export function AuthModal({
   const isCloudReady = isSupabaseConfigured && supabase !== null;
 
   const handleSwitchMode = (nextMode: AuthMode) => {
-    if (isSubmitting || nextMode === mode) {
+    if (isBusy || nextMode === mode) {
       return;
     }
     setMode(nextMode);
@@ -89,9 +93,48 @@ export function AuthModal({
     setShowPassword(false);
   };
 
+  const handleGoogleAuth = async () => {
+    if (isBusy) {
+      return;
+    }
+
+    if (!isSupabaseConfigured || !supabase) {
+      setErrorMessage(
+        'Ứng dụng đang ở Chế độ cục bộ (Local Mode), chưa cấu hình Supabase nên chưa thể đăng nhập bằng Google.'
+      );
+      return;
+    }
+
+    setIsGoogleLoading(true);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin,
+          scopes:
+            'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly',
+          queryParams: { access_type: 'offline', prompt: 'consent' },
+        },
+      });
+
+      if (error) {
+        setErrorMessage(mapAuthErrorToVietnamese(error.message));
+        setIsGoogleLoading(false);
+      }
+    } catch (error) {
+      const rawMessage =
+        error instanceof Error ? error.message : 'Network request failed';
+      setErrorMessage(mapAuthErrorToVietnamese(rawMessage));
+      setIsGoogleLoading(false);
+    }
+  };
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (isSubmitting) {
+    if (isBusy) {
       return;
     }
 
@@ -189,7 +232,7 @@ export function AuthModal({
     >
       <div
         onClick={(event) => {
-          if (event.target === event.currentTarget && !isSubmitting) {
+          if (event.target === event.currentTarget && !isBusy) {
             onClose();
           }
         }}
@@ -230,7 +273,7 @@ export function AuthModal({
             <button
               type="button"
               onClick={onClose}
-              disabled={isSubmitting}
+              disabled={isBusy}
               aria-label="Đóng hộp thoại tài khoản"
               className="shrink-0 min-h-[40px] min-w-[40px] sm:min-h-[36px] sm:min-w-[36px] rounded-xl bg-white hover:bg-slate-100 border border-[#E6E0D6] text-slate-600 hover:text-slate-900 flex items-center justify-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
@@ -339,7 +382,7 @@ export function AuthModal({
                     type="button"
                     role="tab"
                     aria-selected={mode === 'login'}
-                    disabled={isSubmitting}
+                    disabled={isBusy}
                     onClick={() => handleSwitchMode('login')}
                     className={`min-h-[40px] rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-1.5 ${
                       mode === 'login'
@@ -354,7 +397,7 @@ export function AuthModal({
                     type="button"
                     role="tab"
                     aria-selected={mode === 'register'}
-                    disabled={isSubmitting}
+                    disabled={isBusy}
                     onClick={() => handleSwitchMode('register')}
                     className={`min-h-[40px] rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-1.5 ${
                       mode === 'register'
@@ -397,6 +440,57 @@ export function AuthModal({
                   </div>
                 )}
 
+                {/* Google OAuth Button (available in both Login & Register tabs) */}
+                <button
+                  type="button"
+                  onClick={() => void handleGoogleAuth()}
+                  disabled={isBusy}
+                  className="w-full min-h-[44px] rounded-xl bg-white hover:bg-[#FAF8F5] text-slate-800 border border-[#DDD6CA] shadow-sm text-sm font-semibold flex items-center justify-center gap-2.5 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {isGoogleLoading ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin text-[#4F46E5]" />
+                      <span>Đang kết nối Google...</span>
+                    </>
+                  ) : (
+                    <>
+                      <svg
+                        viewBox="0 0 24 24"
+                        className="h-4 w-4 shrink-0"
+                        aria-hidden="true"
+                      >
+                        <path
+                          fill="#4285F4"
+                          d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"
+                        />
+                        <path
+                          fill="#34A853"
+                          d="M12 24c3.3 0 6.08-1.09 8.105-2.96l-3.88-3.05c-1.1.74-2.51 1.18-4.225 1.18-3.24 0-5.99-2.19-6.97-5.13H1.02v3.14C3.035 21.18 7.21 24 12 24z"
+                        />
+                        <path
+                          fill="#FBBC05"
+                          d="M5.03 14.04c-.25-.74-.39-1.53-.39-2.34s.14-1.6.39-2.34V6.22H1.02C.37 7.51 0 8.97 0 10.5s.37 2.99 1.02 4.28l4.01-3.14z"
+                        />
+                        <path
+                          fill="#EA4335"
+                          d="M12 4.75c1.8 0 3.41.62 4.68 1.84l3.51-3.51C18.07 1.19 15.3 0 12 0 7.21 0 3.035 2.82 1.02 6.86l4.01 3.14c.98-2.94 3.73-5.25 6.97-5.25z"
+                        />
+                      </svg>
+                      <span>Tiếp tục với Google</span>
+                    </>
+                  )}
+                </button>
+
+                <div className="relative flex items-center justify-center">
+                  <div
+                    aria-hidden="true"
+                    className="absolute inset-x-0 top-1/2 border-t border-[#EAE5DC]"
+                  />
+                  <span className="relative bg-white px-3 text-[11px] font-medium uppercase tracking-wider text-slate-400">
+                    hoặc
+                  </span>
+                </div>
+
                 {/* Form */}
                 <form onSubmit={handleSubmit} className="space-y-4" noValidate>
                   <div className="space-y-1.5">
@@ -416,7 +510,7 @@ export function AuthModal({
                         type="email"
                         autoComplete="email"
                         value={email}
-                        disabled={isSubmitting}
+                        disabled={isBusy}
                         onChange={(event) => {
                           setEmail(event.target.value);
                           if (errorMessage) {
@@ -455,7 +549,7 @@ export function AuthModal({
                           mode === 'login' ? 'current-password' : 'new-password'
                         }
                         value={password}
-                        disabled={isSubmitting}
+                        disabled={isBusy}
                         onChange={(event) => {
                           setPassword(event.target.value);
                           if (errorMessage) {
@@ -472,7 +566,7 @@ export function AuthModal({
                       <button
                         type="button"
                         onClick={() => setShowPassword((prev) => !prev)}
-                        disabled={isSubmitting}
+                        disabled={isBusy}
                         aria-label={
                           showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'
                         }
@@ -489,7 +583,7 @@ export function AuthModal({
 
                   <button
                     type="submit"
-                    disabled={isSubmitting}
+                    disabled={isBusy}
                     className="w-full min-h-[44px] rounded-xl bg-[#4F46E5] hover:bg-indigo-700 text-white text-sm font-semibold shadow-sm shadow-indigo-600/20 flex items-center justify-center gap-2 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     {isSubmitting ? (

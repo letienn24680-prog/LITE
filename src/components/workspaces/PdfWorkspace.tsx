@@ -33,6 +33,7 @@ import {
   renderPdfThumbnailDataUrl,
 } from '../../utils/pdfEngine';
 import type { PdfDocumentProxy } from '../../utils/pdfEngine';
+import { CustomVerticalScrollbar } from '../ui/CustomVerticalScrollbar';
 import { WorkspaceTopBar } from './WorkspaceTopBar';
 
 export interface PdfWorkspaceProps {
@@ -197,7 +198,7 @@ export function PdfWorkspace({
 
   // Refs
   const viewerOuterRef = useRef<HTMLDivElement | null>(null);
-  const viewerScrollRef = useRef<HTMLDivElement | null>(null);
+  const viewerScrollRef = useRef<HTMLElement | null>(null);
   const activeThumbRef = useRef<HTMLButtonElement | null>(null);
   const replaceInputRef = useRef<HTMLInputElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -1558,81 +1559,91 @@ export function PdfWorkspace({
                 </div>
               </div>
             ) : (
-              <main
-                ref={viewerScrollRef}
-                className="flex-1 min-w-0 min-h-0 overflow-auto p-3 sm:p-6 md:p-7"
-              >
-                <div className="w-fit min-w-full pb-8">
-                  {/* Khung Canvas + Lớp văn bản chọn được 1:1 */}
-                  <div
-                    style={
-                      renderedSize
-                        ? {
-                            width: `${renderedSize.width}px`,
-                            height: `${renderedSize.height}px`,
-                          }
-                        : {
-                            width: '100%',
-                            maxWidth: `${BASE_PAGE_WIDTH_PX}px`,
-                            minHeight: '68vh',
-                          }
-                    }
-                    className="relative mx-auto bg-white shadow-md border border-slate-300/70 rounded-sm overflow-hidden"
-                  >
-                    <canvas
-                      ref={canvasRef}
-                      className="block"
-                    />
-
+              <div className="relative flex-1 min-w-0 min-h-0 flex overflow-hidden">
+                <main
+                  ref={viewerScrollRef}
+                  className="flex-1 min-w-0 min-h-0 overflow-auto scrollbar-none p-3 pr-5 sm:p-6 sm:pr-7 md:p-7 md:pr-8"
+                >
+                  <div className="w-fit min-w-full pb-8">
+                    {/* Khung Canvas + Lớp văn bản chọn được 1:1 */}
                     <div
-                      ref={textLayerRef}
-                      className="textLayer"
-                      aria-label={`Nội dung chữ trang ${currentPageNumber}`}
-                    />
-
-                    {isRenderingPage && (
-                      <div className="absolute inset-0 z-10 bg-white/55 backdrop-blur-[1px] flex items-center justify-center pointer-events-none">
-                        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white shadow-sm border border-slate-200 text-xs font-semibold text-slate-600">
-                          <Loader2 className="w-3.5 h-3.5 animate-spin text-pink-600" />
-                          <span>Đang dựng trang {currentPageNumber}...</span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Thanh điều hướng trang nhanh dưới chân trang */}
-                  <div className="mt-5 mx-auto w-full max-w-[760px] flex items-center justify-between gap-2 px-1 pb-safe">
-                    <button
-                      type="button"
-                      onClick={handlePrevPage}
-                      disabled={!canGoPrev}
-                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white hover:bg-[#FAF9F6] border border-[#DCD6CB] text-xs font-semibold text-slate-700 shadow-sm disabled:opacity-40 disabled:hover:bg-white transition-colors"
+                      style={
+                        renderedSize
+                          ? {
+                              width: `${renderedSize.width}px`,
+                              height: `${renderedSize.height}px`,
+                            }
+                          : {
+                              width: '100%',
+                              maxWidth: `${BASE_PAGE_WIDTH_PX}px`,
+                              minHeight: '68vh',
+                            }
+                      }
+                      className="relative mx-auto bg-white shadow-md border border-slate-300/70 rounded-sm overflow-hidden"
                     >
-                      <ChevronLeft className="w-4 h-4 shrink-0" />
-                      <span>Trang trước</span>
-                    </button>
+                      <canvas
+                        ref={canvasRef}
+                        className="block"
+                      />
 
-                    <div className="flex flex-col items-center">
-                      <span className="text-xs font-bold text-slate-700 tabular-nums">
-                        Trang {currentPageNumber} / {pdfNumPages}
-                      </span>
-                      <span className="hidden sm:inline text-[11px] text-slate-500">
-                        Bôi đen để sao chép chữ • Phím ← / → lật trang
-                      </span>
+                      <div
+                        ref={textLayerRef}
+                        className="textLayer"
+                        aria-label={`Nội dung chữ trang ${currentPageNumber}`}
+                      />
+
+                      {isRenderingPage && (
+                        <div className="absolute inset-0 z-10 bg-white/55 backdrop-blur-[1px] flex items-center justify-center pointer-events-none">
+                          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white shadow-sm border border-slate-200 text-xs font-semibold text-slate-600">
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-pink-600" />
+                            <span>Đang dựng trang {currentPageNumber}...</span>
+                          </div>
+                        </div>
+                      )}
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={handleNextPage}
-                      disabled={!canGoNext}
-                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white hover:bg-[#FAF9F6] border border-[#DCD6CB] text-xs font-semibold text-slate-700 shadow-sm disabled:opacity-40 disabled:hover:bg-white transition-colors"
-                    >
-                      <span>Trang sau</span>
-                      <ChevronRight className="w-4 h-4 shrink-0" />
-                    </button>
+                    {/* Thanh điều hướng trang nhanh dưới chân trang */}
+                    <div className="mt-5 mx-auto w-full max-w-[760px] flex items-center justify-between gap-2 px-1 pb-safe">
+                      <button
+                        type="button"
+                        onClick={handlePrevPage}
+                        disabled={!canGoPrev}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white hover:bg-[#FAF9F6] border border-[#DCD6CB] text-xs font-semibold text-slate-700 shadow-sm disabled:opacity-40 disabled:hover:bg-white transition-colors"
+                      >
+                        <ChevronLeft className="w-4 h-4 shrink-0" />
+                        <span>Trang trước</span>
+                      </button>
+
+                      <div className="flex flex-col items-center">
+                        <span className="text-xs font-bold text-slate-700 tabular-nums">
+                          Trang {currentPageNumber} / {pdfNumPages}
+                        </span>
+                        <span className="hidden sm:inline text-[11px] text-slate-500">
+                          Bôi đen để sao chép chữ • Phím ← / → lật trang
+                        </span>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleNextPage}
+                        disabled={!canGoNext}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white hover:bg-[#FAF9F6] border border-[#DCD6CB] text-xs font-semibold text-slate-700 shadow-sm disabled:opacity-40 disabled:hover:bg-white transition-colors"
+                      >
+                        <span>Trang sau</span>
+                        <ChevronRight className="w-4 h-4 shrink-0" />
+                      </button>
+                    </div>
                   </div>
-                </div>
-              </main>
+                </main>
+
+                <CustomVerticalScrollbar
+                  scrollContainerRef={viewerScrollRef}
+                  theme="light"
+                  getDragLabel={({ percent }) =>
+                    `Trang ${currentPageNumber} / ${pdfNumPages} · ${Math.round(percent)}%`
+                  }
+                />
+              </div>
             )}
           </div>
         </div>
@@ -1897,11 +1908,12 @@ export function PdfWorkspace({
           </div>
         )}
 
-        <main
-          ref={viewerScrollRef}
-          className="flex-1 min-w-0 overflow-auto p-3 sm:p-6 md:p-8"
-        >
-          {currentSamplePage && (
+        <div className="relative flex-1 min-w-0 min-h-0 flex overflow-hidden">
+          <main
+            ref={viewerScrollRef}
+            className="flex-1 min-w-0 min-h-0 overflow-auto scrollbar-none p-3 pr-5 sm:p-6 sm:pr-7 md:p-8 md:pr-9"
+          >
+            {currentSamplePage && (
             <div className="w-fit min-w-full pb-8">
               <article
                 style={pageContainerStyle}
@@ -2051,6 +2063,15 @@ export function PdfWorkspace({
             </div>
           )}
         </main>
+
+          <CustomVerticalScrollbar
+            scrollContainerRef={viewerScrollRef}
+            theme="light"
+            getDragLabel={({ percent }) =>
+              `Trang ${currentPageNumber} / ${totalPages} · ${Math.round(percent)}%`
+            }
+          />
+        </div>
       </div>
     </div>
   );

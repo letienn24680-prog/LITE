@@ -49,12 +49,26 @@ export interface SlideTextBlock {
   color?: string;
   align?: 'left' | 'center' | 'right';
   role?: 'title' | 'subtitle' | 'body';
+  xPct?: number;
+  yPct?: number;
+  wPct?: number;
+  hPct?: number;
+  fillColor?: string;
+  borderColor?: string;
+  fontFamily?: string;
+  valign?: 'top' | 'middle' | 'bottom';
+  kind?: 'text' | 'table';
+  tableRows?: string[][];
 }
 
 export interface SlideImageItem {
   id: string;
   src: string;
   alt?: string;
+  xPct?: number;
+  yPct?: number;
+  wPct?: number;
+  hPct?: number;
 }
 
 export interface SlidePreviewItem {
@@ -72,6 +86,10 @@ export interface SlidePreviewItem {
   blocks?: SlideTextBlock[];
   images?: SlideImageItem[];
   backgroundColor?: string;
+  backgroundGradient?: string;
+  backgroundImageSrc?: string;
+  slideWidthRatio?: number;
+  isMasterPositioned?: boolean;
 }
 
 export interface OutlineSection {
@@ -224,4 +242,8 @@ export interface DocumentItem {
   shareToken?: string;
   shareAccess?: ShareAccessLevel;
   shareAllowDownload?: boolean;
+  rawArrayBuffer?: ArrayBuffer;
+  slideAspectRatio?: number;
+  collabPermission?: 'owner' | 'edit' | 'view';
+  sharedOwnerId?: string;
 }

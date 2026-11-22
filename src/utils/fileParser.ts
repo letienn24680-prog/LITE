@@ -256,6 +256,174 @@ function sanitizeWordHtml(rawHtml: string): string {
   return parsed.body.innerHTML;
 }
 
+const COVER_CONTAINS_BLACKLIST = [
+  'BỘ GIÁO DỤC',
+  'TRƯỜNG ĐẠI HỌC',
+  'HỌC VIỆN',
+  'CỘNG HÒA XÃ HỘI',
+  'ĐỘC LẬP - TỰ DO',
+  'ĐỘC LẬP – TỰ DO',
+  'HỌ VÀ TÊN',
+  'SINH VIÊN',
+  'HỌC VIÊN',
+  'GIẢNG VIÊN',
+  'NGƯỜI HƯỚNG DẪN',
+  'CÁN BỘ HƯỚNG DẪN',
+  'GVHD',
+  'MÃ SỐ',
+  'MSSV',
+  'MSHV',
+  'CHUYÊN NGÀNH',
+  'NGÀNH HỌC',
+  'NĂM HỌC',
+  'NIÊN KHÓA',
+  'HỆ ĐÀO TẠO',
+  'BỘ MÔN',
+];
+
+const COVER_PREFIX_BLACKLIST = [
+  'TRƯỜNG ',
+  'TRƯỜNG:',
+  'KHOA ',
+  'KHOA:',
+  'VIỆN ',
+  'VIỆN:',
+  'LỚP ',
+  'LỚP:',
+  'KHÓA ',
+  'KHÓA:',
+  'ĐỀ TÀI',
+  'TÊN ĐỀ TÀI',
+  'TIỂU LUẬN',
+];
+
+const COVER_DOC_KIND_KEYWORDS = ['ĐỒ ÁN', 'LUẬN VĂN', 'KHÓA LUẬN', 'BÁO CÁO THỰC TẬP'];
+
+const STRUCTURAL_START_KEYWORDS = [
+  'LỜI CAM ĐOAN',
+  'LỜI CẢM ƠN',
+  'TÓM TẮT',
+  'MỤC LỤC',
+  'DANH MỤC',
+  'MỞ ĐẦU',
+  'LỜI MỞ ĐẦU',
+  'CHƯƠNG ',
+  'CHƯƠNG:',
+  'CHAPTER ',
+  'PHẦN ',
+  'PHẦN:',
+  'PART ',
+  'KẾT LUẬN',
+  'KIẾN NGHỊ',
+  'TÀI LIỆU THAM KHẢO',
+  'PHỤ LỤC',
+];
+
+const LOCATION_YEAR_REGEX =
+  /^(?:HÀ NỘI|TP\.?\s*HỒ CHÍ MINH|THÀNH PHỐ HỒ CHÍ MINH|ĐÀ NẴNG|HẢI PHÒNG|CẦN THƠ|HUẾ|THÁNG\s+\d{1,2})(?:[\s,\-–/]+.*?(?:19|20)\d{2}|\s*)$/i;
+
+const YEAR_FOOTER_REGEX = /,\s*(?:THÁNG\s+\d{1,2}\s+)?NĂM\s+(?:19|20)\d{2}\s*$/i;
+const DOTTED_TOC_LINE_REGEX = /\.{4,}\s*\d*\s*$/;
+const ROMAN_HEADING_REGEX =
+  /^(?:I|II|III|IV|V|VI|VII|VIII|IX|X|XI|XII|XIII|XIV|XV)\.\s+\S/;
+const NUMBERED_DOT_HEADING_REGEX = /^\d+(?:\.\d+){0,3}\.\s+\S/;
+const MULTI_LEVEL_NUMBER_HEADING_REGEX = /^\d+\.\d+(?:\.\d+){0,2}\s+\S/;
+
+function matchesStructuralOutlinePattern(clean: string, upper: string): boolean {
+  for (const kw of STRUCTURAL_START_KEYWORDS) {
+    if (upper === kw.trim() || upper.startsWith(kw)) {
+      return true;
+    }
+  }
+  if (ROMAN_HEADING_REGEX.test(clean)) {
+    return true;
+  }
+  if (NUMBERED_DOT_HEADING_REGEX.test(clean) || MULTI_LEVEL_NUMBER_HEADING_REGEX.test(clean)) {
+    // Reject long sentence-like paragraphs that happen to start with a number
+    if (clean.length <= 120 && !/[,;]$/.test(clean)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function isLikelyStructuralOutlineTitle(
+  text: string,
+  isExplicitHeadingTag: boolean
+): boolean {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  if (clean.length < 2 || clean.length > 140) {
+    return false;
+  }
+
+  // Reject lines without any letter (pure numbers, dates, separator lines)
+  if (!/[A-Za-zÀ-ỹ]/u.test(clean)) {
+    return false;
+  }
+
+  // Reject printed table-of-contents entries containing dotted leaders ".... 12"
+  if (DOTTED_TOC_LINE_REGEX.test(clean)) {
+    return false;
+  }
+
+  const upper = clean.toUpperCase();
+
+  // Reject administrative / cover-page lines even if bolded or styled as Heading
+  for (const banned of COVER_CONTAINS_BLACKLIST) {
+    if (upper.includes(banned)) {
+      return false;
+    }
+  }
+
+  for (const prefix of COVER_PREFIX_BLACKLIST) {
+    if (upper === prefix.trim() || upper.startsWith(prefix)) {
+      return false;
+    }
+  }
+
+  if (LOCATION_YEAR_REGEX.test(clean) || YEAR_FOOTER_REGEX.test(clean)) {
+    return false;
+  }
+
+  const isStructuralMatch = matchesStructuralOutlinePattern(clean, upper);
+
+  // Reject cover-page document type headers (e.g. "ĐỒ ÁN TỐT NGHIỆP", "LUẬN VĂN THẠC SĨ")
+  // unless prefixed by a true chapter/section number
+  if (!isStructuralMatch) {
+    for (const kindKw of COVER_DOC_KIND_KEYWORDS) {
+      if (upper === kindKw || upper.startsWith(`${kindKw} `) || (upper.includes(kindKw) && clean.length <= 90)) {
+        return false;
+      }
+    }
+  }
+
+  if (isStructuralMatch) {
+    return true;
+  }
+
+  return isExplicitHeadingTag;
+}
+
+function inferStructuralHeadingLevel(el: Element, title: string): number {
+  const tag = el.tagName.toUpperCase();
+  if (tag === 'H1') {
+    return 1;
+  }
+  if (tag === 'H2') {
+    return 2;
+  }
+  if (tag === 'H3') {
+    return 3;
+  }
+
+  const numbered = /^(\d+(?:\.\d+){0,3})\.?\s+/.exec(title);
+  if (numbered) {
+    const depth = numbered[1].split('.').length;
+    return Math.min(3, Math.max(1, depth));
+  }
+  return 1;
+}
+
 export function extractOutlineFromHtml(html: string): {
   htmlWithIds: string;
   outline: OutlineSection[];
@@ -263,16 +431,36 @@ export function extractOutlineFromHtml(html: string): {
 } {
   const parser = new DOMParser();
   const parsed = parser.parseFromString(html || '', 'text/html');
-  const headingElements = Array.from(parsed.body.querySelectorAll('h1, h2, h3'));
 
-  const validHeadings = headingElements.filter(
-    (el) => (el.textContent ?? '').replace(/\s+/g, ' ').trim().length > 0
+  const explicitHeadingElements = Array.from(parsed.body.querySelectorAll('h1, h2, h3')).filter(
+    (el) => {
+      const text = (el.textContent ?? '').replace(/\s+/g, ' ').trim();
+      return isLikelyStructuralOutlineTitle(text, true);
+    }
   );
 
-  const minLevel =
-    validHeadings.length > 0
-      ? Math.min(...validHeadings.map((el) => Number.parseInt(el.tagName.slice(1), 10)))
-      : 1;
+  let validHeadings: Element[];
+  if (explicitHeadingElements.length >= 2) {
+    validHeadings = explicitHeadingElements;
+  } else {
+    // Fallback: include structural <p> headings (e.g. CHƯƠNG 1, 1.1., LỜI MỞ ĐẦU) outside tables/lists
+    const candidates = Array.from(parsed.body.querySelectorAll('h1, h2, h3, p'));
+    validHeadings = candidates.filter((el) => {
+      const tag = el.tagName.toUpperCase();
+      const isExplicit = tag === 'H1' || tag === 'H2' || tag === 'H3';
+      if (!isExplicit && el.closest('td, th, li')) {
+        return false;
+      }
+      const text = (el.textContent ?? '').replace(/\s+/g, ' ').trim();
+      return isLikelyStructuralOutlineTitle(text, isExplicit);
+    });
+  }
+
+  const levels = validHeadings.map((el) => {
+    const title = (el.textContent ?? '').replace(/\s+/g, ' ').trim();
+    return inferStructuralHeadingLevel(el, title);
+  });
+  const minLevel = levels.length > 0 ? Math.min(...levels) : 1;
 
   const outline: OutlineSection[] = [];
   let topCount = 0;
@@ -289,7 +477,7 @@ export function extractOutlineFromHtml(html: string): {
     const id = `heading-${headingSeq}`;
     headingEl.setAttribute('id', id);
 
-    const level = Number.parseInt(headingEl.tagName.slice(1), 10);
+    const level = levels[i];
     let romanIndex: string;
     if (level <= minLevel) {
       topCount++;
@@ -451,12 +639,409 @@ function extractParagraphText(pElement: Element): string {
   return parts.join('').replace(/\r\n/g, '\n').trim();
 }
 
-function extractFirstRunStyle(txBody: Element): {
+interface PptxThemePalette {
+  colors: Record<string, string>;
+  majorFont?: string;
+  minorFont?: string;
+}
+
+const DEFAULT_PPTX_THEME_COLORS: Record<string, string> = {
+  dk1: '#000000',
+  lt1: '#FFFFFF',
+  dk2: '#1F2937',
+  lt2: '#F1F5F9',
+  accent1: '#4F46E5',
+  accent2: '#EA580C',
+  accent3: '#64748B',
+  accent4: '#F59E0B',
+  accent5: '#0EA5E9',
+  accent6: '#10B981',
+  hlink: '#2563EB',
+  folHlink: '#7C3AED',
+  tx1: '#000000',
+  bg1: '#FFFFFF',
+  tx2: '#1F2937',
+  bg2: '#F1F5F9',
+};
+
+interface EmuBox {
+  x: number;
+  y: number;
+  cx: number;
+  cy: number;
+}
+
+interface GroupTransform {
+  offsetX: number;
+  offsetY: number;
+  scaleX: number;
+  scaleY: number;
+}
+
+const IDENTITY_GROUP_TRANSFORM: GroupTransform = {
+  offsetX: 0,
+  offsetY: 0,
+  scaleX: 1,
+  scaleY: 1,
+};
+
+function clampByte(n: number): number {
+  return Math.min(255, Math.max(0, Math.round(n)));
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  return `#${[clampByte(r), clampByte(g), clampByte(b)]
+    .map((v) => v.toString(16).padStart(2, '0'))
+    .join('')
+    .toUpperCase()}`;
+}
+
+function hexToRgb(hex: string): [number, number, number] | null {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) {
+    return null;
+  }
+  const h = m[1];
+  return [
+    Number.parseInt(h.slice(0, 2), 16),
+    Number.parseInt(h.slice(2, 4), 16),
+    Number.parseInt(h.slice(4, 6), 16),
+  ];
+}
+
+function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const l = (max + min) / 2;
+  if (max === min) {
+    return [0, 0, l];
+  }
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h = 0;
+  if (max === rn) {
+    h = (gn - bn) / d + (gn < bn ? 6 : 0);
+  } else if (max === gn) {
+    h = (bn - rn) / d + 2;
+  } else {
+    h = (rn - gn) / d + 4;
+  }
+  return [h / 6, s, l];
+}
+
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  if (s === 0) {
+    const v = clampByte(l * 255);
+    return [v, v, v];
+  }
+  const hue2rgb = (p: number, q: number, tIn: number): number => {
+    let t = tIn;
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  return [
+    clampByte(hue2rgb(p, q, h + 1 / 3) * 255),
+    clampByte(hue2rgb(p, q, h) * 255),
+    clampByte(hue2rgb(p, q, h - 1 / 3) * 255),
+  ];
+}
+
+function applyDrawingColorModifiers(baseHex: string, colorEl: Element): string {
+  const rgb = hexToRgb(baseHex);
+  if (!rgb) {
+    return baseHex;
+  }
+  let [r, g, b] = rgb;
+  let lumMod: number | null = null;
+  let lumOff: number | null = null;
+
+  for (let i = 0; i < colorEl.childNodes.length; i++) {
+    const child = colorEl.childNodes[i];
+    if (child.nodeType !== Node.ELEMENT_NODE) {
+      continue;
+    }
+    const modEl = child as Element;
+    const local = modEl.localName.toLowerCase();
+    const rawVal = Number.parseInt(modEl.getAttribute('val') ?? '', 10);
+    if (!Number.isFinite(rawVal)) {
+      continue;
+    }
+    const factor = rawVal / 100000;
+    if (local === 'tint') {
+      r = clampByte(r * factor + 255 * (1 - factor));
+      g = clampByte(g * factor + 255 * (1 - factor));
+      b = clampByte(b * factor + 255 * (1 - factor));
+    } else if (local === 'shade') {
+      r = clampByte(r * factor);
+      g = clampByte(g * factor);
+      b = clampByte(b * factor);
+    } else if (local === 'lummod') {
+      lumMod = factor;
+    } else if (local === 'lumoff') {
+      lumOff = factor;
+    }
+  }
+
+  if (lumMod !== null || lumOff !== null) {
+    const [h, s, l] = rgbToHsl(r, g, b);
+    const nextL = Math.min(1, Math.max(0, l * (lumMod ?? 1) + (lumOff ?? 0)));
+    [r, g, b] = hslToRgb(h, s, nextL);
+  }
+
+  return rgbToHex(r, g, b);
+}
+
+function resolveDrawingColor(
+  container: Element | undefined,
+  themeColors: Record<string, string>
+): string | undefined {
+  if (!container) {
+    return undefined;
+  }
+
+  const srgb = getDirectChildrenByLocalName(container, 'srgbClr')[0];
+  if (srgb) {
+    const val = srgb.getAttribute('val')?.trim();
+    if (val && /^[0-9a-fA-F]{6}$/.test(val)) {
+      return applyDrawingColorModifiers(`#${val.toUpperCase()}`, srgb);
+    }
+  }
+
+  const scheme = getDirectChildrenByLocalName(container, 'schemeClr')[0];
+  if (scheme) {
+    const key = (scheme.getAttribute('val') ?? '').trim();
+    const mapped = themeColors[key] ?? themeColors[key.toLowerCase()];
+    if (mapped) {
+      return applyDrawingColorModifiers(mapped, scheme);
+    }
+  }
+
+  const sys = getDirectChildrenByLocalName(container, 'sysClr')[0];
+  if (sys) {
+    const lastClr = sys.getAttribute('lastClr')?.trim();
+    if (lastClr && /^[0-9a-fA-F]{6}$/.test(lastClr)) {
+      return applyDrawingColorModifiers(`#${lastClr.toUpperCase()}`, sys);
+    }
+  }
+
+  return undefined;
+}
+
+async function parsePptxThemePalette(
+  zip: JSZip,
+  xmlParser: DOMParser
+): Promise<PptxThemePalette> {
+  const colors: Record<string, string> = { ...DEFAULT_PPTX_THEME_COLORS };
+  let majorFont: string | undefined;
+  let minorFont: string | undefined;
+
+  const themeFile = findZipFileInsensitive(zip, 'ppt/theme/theme1.xml');
+  if (!themeFile) {
+    return { colors, majorFont, minorFont };
+  }
+
+  try {
+    const themeXml = await themeFile.async('string');
+    const themeDoc = xmlParser.parseFromString(themeXml, 'application/xml');
+
+    const clrScheme = getElementsByLocalName(themeDoc, 'clrScheme')[0];
+    if (clrScheme) {
+      const slotNames = [
+        'dk1',
+        'lt1',
+        'dk2',
+        'lt2',
+        'accent1',
+        'accent2',
+        'accent3',
+        'accent4',
+        'accent5',
+        'accent6',
+        'hlink',
+        'folHlink',
+      ];
+      for (const slot of slotNames) {
+        const slotEl = getDirectChildrenByLocalName(clrScheme, slot)[0];
+        if (!slotEl) {
+          continue;
+        }
+        const resolved = resolveDrawingColor(slotEl, colors);
+        if (resolved) {
+          colors[slot] = resolved;
+          colors[slot.toLowerCase()] = resolved;
+        }
+      }
+      // Map OpenXML presentation theme aliases
+      colors.tx1 = colors.dk1;
+      colors.bg1 = colors.lt1;
+      colors.tx2 = colors.dk2;
+      colors.bg2 = colors.lt2;
+    }
+
+    const fontScheme = getElementsByLocalName(themeDoc, 'fontScheme')[0];
+    if (fontScheme) {
+      const majorEl = getDirectChildrenByLocalName(fontScheme, 'majorFont')[0];
+      const minorEl = getDirectChildrenByLocalName(fontScheme, 'minorFont')[0];
+      const majorLatin = majorEl ? getDirectChildrenByLocalName(majorEl, 'latin')[0] : undefined;
+      const minorLatin = minorEl ? getDirectChildrenByLocalName(minorEl, 'latin')[0] : undefined;
+      const mj = majorLatin?.getAttribute('typeface')?.trim();
+      const mn = minorLatin?.getAttribute('typeface')?.trim();
+      if (mj) majorFont = mj;
+      if (mn) minorFont = mn;
+    }
+  } catch {
+    // Keep default palette on malformed theme XML
+  }
+
+  return { colors, majorFont, minorFont };
+}
+
+function resolveThemeFontName(
+  rawTypeface: string | null | undefined,
+  theme: PptxThemePalette
+): string | undefined {
+  const tf = (rawTypeface ?? '').trim();
+  if (!tf) {
+    return undefined;
+  }
+  if (tf.startsWith('+mj-')) {
+    return theme.majorFont;
+  }
+  if (tf.startsWith('+mn-')) {
+    return theme.minorFont;
+  }
+  return tf;
+}
+
+function getRelationshipAttr(el: Element, attrLocalName: string): string {
+  const direct = el.getAttribute(`r:${attrLocalName}`);
+  if (direct) {
+    return direct.trim();
+  }
+  const attrs = el.attributes;
+  const targetLower = attrLocalName.toLowerCase();
+  for (let i = 0; i < attrs.length; i++) {
+    const attr = attrs[i];
+    if (
+      attr.localName.toLowerCase() === targetLower &&
+      (attr.namespaceURI ===
+        'http://schemas.openxmlformats.org/officeDocument/2006/relationships' ||
+        attr.name.toLowerCase().endsWith(`:${targetLower}`))
+    ) {
+      return attr.value.trim();
+    }
+  }
+  return '';
+}
+
+function extractEmuBoxFromXfrm(xfrmEl: Element | undefined): EmuBox | null {
+  if (!xfrmEl) {
+    return null;
+  }
+  const off = getDirectChildrenByLocalName(xfrmEl, 'off')[0];
+  const ext = getDirectChildrenByLocalName(xfrmEl, 'ext')[0];
+  if (!off || !ext) {
+    return null;
+  }
+  const x = Number.parseInt(off.getAttribute('x') ?? '', 10);
+  const y = Number.parseInt(off.getAttribute('y') ?? '', 10);
+  const cx = Number.parseInt(ext.getAttribute('cx') ?? '', 10);
+  const cy = Number.parseInt(ext.getAttribute('cy') ?? '', 10);
+  if (
+    !Number.isFinite(x) ||
+    !Number.isFinite(y) ||
+    !Number.isFinite(cx) ||
+    !Number.isFinite(cy) ||
+    cx <= 0 ||
+    cy <= 0
+  ) {
+    return null;
+  }
+  return { x, y, cx, cy };
+}
+
+function composeGroupTransform(
+  parent: GroupTransform,
+  grpXfrmEl: Element | undefined
+): GroupTransform {
+  if (!grpXfrmEl) {
+    return parent;
+  }
+  const outer = extractEmuBoxFromXfrm(grpXfrmEl);
+  if (!outer) {
+    return parent;
+  }
+  const chOff = getDirectChildrenByLocalName(grpXfrmEl, 'chOff')[0];
+  const chExt = getDirectChildrenByLocalName(grpXfrmEl, 'chExt')[0];
+  const chX = Number.parseInt(chOff?.getAttribute('x') ?? '0', 10) || 0;
+  const chY = Number.parseInt(chOff?.getAttribute('y') ?? '0', 10) || 0;
+  const chCx = Number.parseInt(chExt?.getAttribute('cx') ?? '0', 10) || outer.cx;
+  const chCy = Number.parseInt(chExt?.getAttribute('cy') ?? '0', 10) || outer.cy;
+
+  const localScaleX = chCx > 0 ? outer.cx / chCx : 1;
+  const localScaleY = chCy > 0 ? outer.cy / chCy : 1;
+
+  return {
+    offsetX: parent.offsetX + (outer.x - chX * localScaleX) * parent.scaleX,
+    offsetY: parent.offsetY + (outer.y - chY * localScaleY) * parent.scaleY,
+    scaleX: parent.scaleX * localScaleX,
+    scaleY: parent.scaleY * localScaleY,
+  };
+}
+
+function mapBoxToPct(
+  localBox: EmuBox,
+  groupTransform: GroupTransform,
+  slideCx: number,
+  slideCy: number
+): { xPct: number; yPct: number; wPct: number; hPct: number } {
+  const absX = groupTransform.offsetX + localBox.x * groupTransform.scaleX;
+  const absY = groupTransform.offsetY + localBox.y * groupTransform.scaleY;
+  const absCx = localBox.cx * groupTransform.scaleX;
+  const absCy = localBox.cy * groupTransform.scaleY;
+
+  const round2 = (v: number): number => Math.round(v * 100) / 100;
+  const xPct = round2(Math.min(99, Math.max(0, (absX / slideCx) * 100)));
+  const yPct = round2(Math.min(99, Math.max(0, (absY / slideCy) * 100)));
+  const wPct = round2(Math.min(100 - xPct, Math.max(1, (absCx / slideCx) * 100)));
+  const hPct = round2(Math.min(100 - yPct, Math.max(1, (absCy / slideCy) * 100)));
+  return { xPct, yPct, wPct, hPct };
+}
+
+function getDefaultPlaceholderPct(
+  phType: string,
+  fallbackIndex: number
+): { xPct: number; yPct: number; wPct: number; hPct: number } {
+  if (phType === 'title' || phType === 'ctrTitle') {
+    return { xPct: 6, yPct: 6, wPct: 88, hPct: 16 };
+  }
+  if (phType === 'subTitle') {
+    return { xPct: 8, yPct: 24, wPct: 84, hPct: 14 };
+  }
+  const top = Math.min(72, 24 + fallbackIndex * 16);
+  return { xPct: 6, yPct: top, wPct: 88, hPct: Math.max(18, 92 - top) };
+}
+
+function extractFirstRunStyle(
+  txBody: Element,
+  theme: PptxThemePalette
+): {
   fontSize?: number;
   bold?: boolean;
   italic?: boolean;
   color?: string;
   align?: 'left' | 'center' | 'right';
+  fontFamily?: string;
+  valign?: 'top' | 'middle' | 'bottom';
 } {
   const style: {
     fontSize?: number;
@@ -464,7 +1049,19 @@ function extractFirstRunStyle(txBody: Element): {
     italic?: boolean;
     color?: string;
     align?: 'left' | 'center' | 'right';
+    fontFamily?: string;
+    valign?: 'top' | 'middle' | 'bottom';
   } = {};
+
+  const bodyPr = getDirectChildrenByLocalName(txBody, 'bodyPr')[0];
+  const anchor = bodyPr?.getAttribute('anchor')?.trim();
+  if (anchor === 't') {
+    style.valign = 'top';
+  } else if (anchor === 'ctr') {
+    style.valign = 'middle';
+  } else if (anchor === 'b') {
+    style.valign = 'bottom';
+  }
 
   const pPrList = getElementsByLocalName(txBody, 'pPr');
   for (const pPr of pPrList) {
@@ -483,14 +1080,19 @@ function extractFirstRunStyle(txBody: Element): {
     }
   }
 
-  const rPrList = getElementsByLocalName(txBody, 'rPr');
-  for (const rPr of rPrList) {
+  // Inspect both run properties (<a:rPr>) and default run properties (<a:defRPr>)
+  const propEls = [
+    ...getElementsByLocalName(txBody, 'rPr'),
+    ...getElementsByLocalName(txBody, 'defRPr'),
+  ];
+
+  for (const rPr of propEls) {
     if (style.fontSize === undefined) {
       const szAttr = rPr.getAttribute('sz');
       if (szAttr) {
         const hundredths = Number.parseInt(szAttr, 10);
         if (Number.isFinite(hundredths) && hundredths > 0) {
-          style.fontSize = Math.min(48, Math.max(12, Math.round(hundredths / 100)));
+          style.fontSize = Math.min(96, Math.max(8, Math.round(hundredths / 100)));
         }
       }
     }
@@ -498,22 +1100,33 @@ function extractFirstRunStyle(txBody: Element): {
       const bAttr = rPr.getAttribute('b');
       if (bAttr === '1' || bAttr === 'true') {
         style.bold = true;
+      } else if (bAttr === '0' || bAttr === 'false') {
+        style.bold = false;
       }
     }
     if (style.italic === undefined) {
       const iAttr = rPr.getAttribute('i');
       if (iAttr === '1' || iAttr === 'true') {
         style.italic = true;
+      } else if (iAttr === '0' || iAttr === 'false') {
+        style.italic = false;
       }
     }
     if (style.color === undefined) {
       const solidFill = getDirectChildrenByLocalName(rPr, 'solidFill')[0];
-      if (solidFill) {
-        const srgb = getElementsByLocalName(solidFill, 'srgbClr')[0];
-        const hex = srgb?.getAttribute('val')?.trim();
-        if (hex && /^[0-9a-fA-F]{6}$/.test(hex)) {
-          style.color = `#${hex.toUpperCase()}`;
-        }
+      const resolved = resolveDrawingColor(solidFill, theme.colors);
+      if (resolved) {
+        style.color = resolved;
+      }
+    }
+    if (style.fontFamily === undefined) {
+      const latin = getDirectChildrenByLocalName(rPr, 'latin')[0];
+      const ea = getDirectChildrenByLocalName(rPr, 'ea')[0];
+      const family =
+        resolveThemeFontName(latin?.getAttribute('typeface'), theme) ??
+        resolveThemeFontName(ea?.getAttribute('typeface'), theme);
+      if (family) {
+        style.fontFamily = family;
       }
     }
   }
@@ -521,25 +1134,146 @@ function extractFirstRunStyle(txBody: Element): {
   return style;
 }
 
-function extractSlideBackgroundColor(xmlDoc: Document): string | undefined {
-  const bgList = getElementsByLocalName(xmlDoc, 'bg');
-  for (const bg of bgList) {
-    const solidFill = getElementsByLocalName(bg, 'solidFill')[0];
-    if (!solidFill) {
-      continue;
-    }
-    const srgb = getElementsByLocalName(solidFill, 'srgbClr')[0];
-    const val = srgb?.getAttribute('val')?.trim();
-    if (val && /^[0-9a-fA-F]{6}$/.test(val)) {
-      return `#${val.toUpperCase()}`;
+function extractGradientFromElement(
+  gradFillEl: Element,
+  themeColors: Record<string, string>
+): { gradientCss?: string; firstColor?: string } {
+  const gsLst = getDirectChildrenByLocalName(gradFillEl, 'gsLst')[0];
+  if (!gsLst) {
+    return {};
+  }
+  const stops: Array<{ posPct: number; color: string }> = [];
+  for (const gs of getDirectChildrenByLocalName(gsLst, 'gs')) {
+    const rawPos = Number.parseInt(gs.getAttribute('pos') ?? '0', 10);
+    const posPct = Number.isFinite(rawPos)
+      ? Math.min(100, Math.max(0, Math.round(rawPos / 1000)))
+      : 0;
+    const color = resolveDrawingColor(gs, themeColors);
+    if (color) {
+      stops.push({ posPct, color });
     }
   }
-  return undefined;
+  if (stops.length === 0) {
+    return {};
+  }
+  stops.sort((a, b) => a.posPct - b.posPct);
+  if (stops.length === 1) {
+    return { firstColor: stops[0].color };
+  }
+
+  const lin = getDirectChildrenByLocalName(gradFillEl, 'lin')[0];
+  const rawAng = Number.parseInt(lin?.getAttribute('ang') ?? '', 10);
+  const cssDeg = Number.isFinite(rawAng) ? Math.round((rawAng / 60000 + 90) % 360) : 135;
+  const stopsCss = stops.map((s) => `${s.color} ${s.posPct}%`).join(', ');
+  return {
+    gradientCss: `linear-gradient(${cssDeg}deg, ${stopsCss})`,
+    firstColor: stops[0].color,
+  };
+}
+
+function extractShapeFillAndBorder(
+  spPr: Element | undefined,
+  themeColors: Record<string, string>
+): { fillColor?: string; borderColor?: string; fillBlipEmbedId?: string } {
+  if (!spPr) {
+    return {};
+  }
+  let fillColor: string | undefined;
+  let fillBlipEmbedId: string | undefined;
+
+  const hasNoFill = getDirectChildrenByLocalName(spPr, 'noFill').length > 0;
+  if (!hasNoFill) {
+    const solidFill = getDirectChildrenByLocalName(spPr, 'solidFill')[0];
+    if (solidFill) {
+      fillColor = resolveDrawingColor(solidFill, themeColors);
+    } else {
+      const gradFill = getDirectChildrenByLocalName(spPr, 'gradFill')[0];
+      if (gradFill) {
+        fillColor = extractGradientFromElement(gradFill, themeColors).firstColor;
+      } else {
+        const blipFill = getDirectChildrenByLocalName(spPr, 'blipFill')[0];
+        if (blipFill) {
+          const blip = getElementsByLocalName(blipFill, 'blip')[0];
+          const embedId = blip ? getRelationshipAttr(blip, 'embed') : '';
+          if (embedId) {
+            fillBlipEmbedId = embedId;
+          }
+        }
+      }
+    }
+  }
+
+  let borderColor: string | undefined;
+  const ln = getDirectChildrenByLocalName(spPr, 'ln')[0];
+  if (ln && getDirectChildrenByLocalName(ln, 'noFill').length === 0) {
+    const lnSolid = getDirectChildrenByLocalName(ln, 'solidFill')[0];
+    borderColor = resolveDrawingColor(lnSolid, themeColors);
+  }
+
+  return { fillColor, borderColor, fillBlipEmbedId };
+}
+
+function extractSlideBackgroundInfo(
+  xmlDoc: Document,
+  themeColors: Record<string, string>
+): {
+  backgroundColor?: string;
+  backgroundGradient?: string;
+  backgroundBlipEmbedId?: string;
+} {
+  const bg = getElementsByLocalName(xmlDoc, 'bg')[0];
+  if (!bg) {
+    return {};
+  }
+
+  const bgPr = getDirectChildrenByLocalName(bg, 'bgPr')[0];
+  if (bgPr) {
+    const blipFill = getDirectChildrenByLocalName(bgPr, 'blipFill')[0];
+    if (blipFill) {
+      const blip = getElementsByLocalName(blipFill, 'blip')[0];
+      const embedId = blip ? getRelationshipAttr(blip, 'embed') : '';
+      if (embedId) {
+        return { backgroundBlipEmbedId: embedId };
+      }
+    }
+
+    const gradFill = getDirectChildrenByLocalName(bgPr, 'gradFill')[0];
+    if (gradFill) {
+      const grad = extractGradientFromElement(gradFill, themeColors);
+      return {
+        backgroundColor: grad.firstColor,
+        backgroundGradient: grad.gradientCss,
+      };
+    }
+
+    const solidFill = getDirectChildrenByLocalName(bgPr, 'solidFill')[0];
+    if (solidFill) {
+      return {
+        backgroundColor: resolveDrawingColor(solidFill, themeColors),
+      };
+    }
+  }
+
+  const bgRef = getDirectChildrenByLocalName(bg, 'bgRef')[0];
+  if (bgRef) {
+    return {
+      backgroundColor: resolveDrawingColor(bgRef, themeColors),
+    };
+  }
+
+  return {};
+}
+
+function getPlaceholderMeta(spElement: Element): { type: string; idx: string } {
+  const ph = getElementsByLocalName(spElement, 'ph')[0];
+  return {
+    type: (ph?.getAttribute('type') ?? '').trim(),
+    idx: (ph?.getAttribute('idx') ?? '').trim(),
+  };
 }
 
 function getPlaceholderType(spElement: Element): string {
-  const ph = getElementsByLocalName(spElement, 'ph')[0];
-  return (ph?.getAttribute('type') ?? '').trim();
+  return getPlaceholderMeta(spElement).type;
 }
 
 function extractNotesText(notesXml: string): string {
@@ -570,8 +1304,8 @@ function extractNotesText(notesXml: string): string {
 }
 
 async function parseDocxFile(file: File): Promise<ParseFileResult> {
-  const arrayBuffer = await file.arrayBuffer();
-  const result = await mammoth.convertToHtml({ arrayBuffer });
+  const rawBuffer = await file.arrayBuffer();
+  const result = await mammoth.convertToHtml({ arrayBuffer: rawBuffer.slice(0) });
   const sanitizedHtml = sanitizeWordHtml(result.value ?? '');
   const { htmlWithIds, outline, plainText } = extractOutlineFromHtml(sanitizedHtml);
 
@@ -597,6 +1331,7 @@ async function parseDocxFile(file: File): Promise<ParseFileResult> {
     outline,
     contentPreview,
     wordHtml,
+    rawArrayBuffer: rawBuffer.slice(0),
     isUploaded: true,
     sourceFile: file,
   };
@@ -745,80 +1480,150 @@ async function parseExcelFile(file: File, ext: string): Promise<ParseFileResult>
   };
 }
 
-function getRelationshipIdAttr(el: Element): string {
-  const direct = el.getAttribute('r:id');
-  if (direct) {
-    return direct.trim();
-  }
-  const attrs = el.attributes;
-  for (let i = 0; i < attrs.length; i++) {
-    const attr = attrs[i];
-    if (
-      attr.localName === 'id' &&
-      (attr.namespaceURI ===
-        'http://schemas.openxmlformats.org/officeDocument/2006/relationships' ||
-        attr.name.endsWith(':id'))
-    ) {
-      return attr.value.trim();
-    }
-  }
-  return '';
+const DEFAULT_SLIDE_CX = 12192000; // 13.333 in (16:9 widescreen)
+const DEFAULT_SLIDE_CY = 6858000; // 7.5 in
+
+interface PptxRelRecord {
+  id: string;
+  type: string;
+  resolvedPath: string;
 }
 
-async function resolveOrderedPptxSlideEntries(
+async function parseRelationshipsFile(
+  zip: JSZip,
+  xmlParser: DOMParser,
+  relsPath: string,
+  baseDir: string
+): Promise<Map<string, PptxRelRecord>> {
+  const map = new Map<string, PptxRelRecord>();
+  const relsFile = findZipFileInsensitive(zip, relsPath);
+  if (!relsFile) {
+    return map;
+  }
+  try {
+    const relsXml = await relsFile.async('string');
+    const relsDoc = xmlParser.parseFromString(relsXml, 'application/xml');
+    for (const rel of getElementsByLocalName(relsDoc, 'Relationship')) {
+      const id = (rel.getAttribute('Id') ?? '').trim();
+      const type = (rel.getAttribute('Type') ?? '').trim();
+      const target = (rel.getAttribute('Target') ?? '').trim();
+      const targetMode = (rel.getAttribute('TargetMode') ?? '').trim();
+      if (!id || !target || targetMode.toLowerCase() === 'external') {
+        continue;
+      }
+      map.set(id, {
+        id,
+        type,
+        resolvedPath: resolveZipPath(baseDir, target),
+      });
+    }
+  } catch {
+    // Ignore malformed .rels safely
+  }
+  return map;
+}
+
+async function extractLayoutPlaceholderBoxes(
+  zip: JSZip,
+  xmlParser: DOMParser,
+  layoutPath: string
+): Promise<Map<string, EmuBox>> {
+  const boxes = new Map<string, EmuBox>();
+  const layoutFile = findZipFileInsensitive(zip, layoutPath);
+  if (!layoutFile) {
+    return boxes;
+  }
+  try {
+    const xml = await layoutFile.async('string');
+    const doc = xmlParser.parseFromString(xml, 'application/xml');
+    for (const sp of getElementsByLocalName(doc, 'sp')) {
+      const ph = getPlaceholderMeta(sp);
+      if (!ph.type && !ph.idx) {
+        continue;
+      }
+      const spPr = getDirectChildrenByLocalName(sp, 'spPr')[0];
+      const xfrm = spPr ? getDirectChildrenByLocalName(spPr, 'xfrm')[0] : undefined;
+      const box = extractEmuBoxFromXfrm(xfrm);
+      if (!box) {
+        continue;
+      }
+      if (ph.type && ph.idx) {
+        boxes.set(`${ph.type}:${ph.idx}`, box);
+      }
+      if (ph.type && !boxes.has(ph.type)) {
+        boxes.set(ph.type, box);
+      }
+      if (ph.idx && !boxes.has(`idx:${ph.idx}`)) {
+        boxes.set(`idx:${ph.idx}`, box);
+      }
+    }
+  } catch {
+    // Ignore malformed layout XML
+  }
+  return boxes;
+}
+
+async function parsePresentationMetaAndOrder(
   zip: JSZip,
   xmlParser: DOMParser
-): Promise<Array<{ path: string; num: number }>> {
+): Promise<{
+  slideEntries: Array<{ path: string; num: number }>;
+  slideCx: number;
+  slideCy: number;
+}> {
   const ordered: Array<{ path: string; num: number }> = [];
   const seenPathsLower = new Set<string>();
+  let slideCx = DEFAULT_SLIDE_CX;
+  let slideCy = DEFAULT_SLIDE_CY;
 
   const presFile = findZipFileInsensitive(zip, 'ppt/presentation.xml');
-  const presRelsFile = findZipFileInsensitive(zip, 'ppt/_rels/presentation.xml.rels');
+  const presRels = await parseRelationshipsFile(
+    zip,
+    xmlParser,
+    'ppt/_rels/presentation.xml.rels',
+    'ppt'
+  );
 
-  if (presFile && presRelsFile) {
+  if (presFile) {
     try {
-      const [presXml, presRelsXml] = await Promise.all([
-        presFile.async('string'),
-        presRelsFile.async('string'),
-      ]);
+      const presXml = await presFile.async('string');
+      const presDoc = xmlParser.parseFromString(presXml, 'application/xml');
 
-      const relsDoc = xmlParser.parseFromString(presRelsXml, 'application/xml');
-      const relTargetById = new Map<string, string>();
-      for (const rel of getElementsByLocalName(relsDoc, 'Relationship')) {
-        const id = (rel.getAttribute('Id') ?? '').trim();
-        const target = (rel.getAttribute('Target') ?? '').trim();
-        const targetMode = (rel.getAttribute('TargetMode') ?? '').trim();
-        if (id && target && targetMode.toLowerCase() !== 'external') {
-          relTargetById.set(id, target);
+      const sldSz = getElementsByLocalName(presDoc, 'sldSz')[0];
+      if (sldSz) {
+        const parsedCx = Number.parseInt(sldSz.getAttribute('cx') ?? '', 10);
+        const parsedCy = Number.parseInt(sldSz.getAttribute('cy') ?? '', 10);
+        if (Number.isFinite(parsedCx) && parsedCx > 0 && Number.isFinite(parsedCy) && parsedCy > 0) {
+          slideCx = parsedCx;
+          slideCy = parsedCy;
         }
       }
 
-      const presDoc = xmlParser.parseFromString(presXml, 'application/xml');
-      const sldIdElements = getElementsByLocalName(presDoc, 'sldId');
-
-      for (const sldIdEl of sldIdElements) {
-        const rId = getRelationshipIdAttr(sldIdEl);
-        if (!rId) {
-          continue;
+      if (presRels.size > 0) {
+        const sldIdElements = getElementsByLocalName(presDoc, 'sldId');
+        for (const sldIdEl of sldIdElements) {
+          const rId = getRelationshipAttr(sldIdEl, 'id');
+          if (!rId) {
+            continue;
+          }
+          const rel = presRels.get(rId);
+          if (!rel) {
+            continue;
+          }
+          const zipObj = findZipFileInsensitive(zip, rel.resolvedPath);
+          if (!zipObj || zipObj.dir) {
+            continue;
+          }
+          const canonicalPath = zipObj.name;
+          const lowerKey = canonicalPath.toLowerCase();
+          if (seenPathsLower.has(lowerKey)) {
+            continue;
+          }
+          seenPathsLower.add(lowerKey);
+          const numMatch = /slide(\d+)\.xml$/i.exec(canonicalPath);
+          const num = numMatch ? Number.parseInt(numMatch[1], 10) : ordered.length + 1;
+          ordered.push({ path: canonicalPath, num });
         }
-        const target = relTargetById.get(rId);
-        if (!target) {
-          continue;
-        }
-        const resolvedPath = resolveZipPath('ppt', target);
-        const zipObj = findZipFileInsensitive(zip, resolvedPath);
-        if (!zipObj || zipObj.dir) {
-          continue;
-        }
-        const canonicalPath = zipObj.name;
-        const lowerKey = canonicalPath.toLowerCase();
-        if (seenPathsLower.has(lowerKey)) {
-          continue;
-        }
-        seenPathsLower.add(lowerKey);
-        const numMatch = /slide(\d+)\.xml$/i.exec(canonicalPath);
-        const num = numMatch ? Number.parseInt(numMatch[1], 10) : ordered.length + 1;
-        ordered.push({ path: canonicalPath, num });
       }
     } catch {
       // Fallback cleanly to numeric slide scan below
@@ -839,28 +1644,68 @@ async function resolveOrderedPptxSlideEntries(
   fallbackEntries.sort((a, b) => a.num - b.num);
   ordered.push(...fallbackEntries);
 
-  return ordered;
+  return {
+    slideEntries: ordered,
+    slideCx,
+    slideCy,
+  };
 }
 
-async function parsePptxFile(file: File): Promise<ParseFileResult> {
+export async function parsePptxArrayBuffer(
+  arrayBuffer: ArrayBuffer,
+  options?: { docIdPrefix?: string }
+): Promise<{
+  slidesPreview: SlidePreviewItem[];
+  slideAspectRatio: number;
+  outline: OutlineSection[];
+  contentPreview: string;
+  createdObjectUrls: string[];
+}> {
   const createdObjectUrls: string[] = [];
 
   try {
-    const arrayBuffer = await file.arrayBuffer();
     const zip = await JSZip.loadAsync(arrayBuffer);
     const xmlParser = new DOMParser();
 
-    const slideEntries = await resolveOrderedPptxSlideEntries(zip, xmlParser);
+    const [{ slideEntries, slideCx, slideCy }, theme] = await Promise.all([
+      parsePresentationMetaAndOrder(zip, xmlParser),
+      parsePptxThemePalette(zip, xmlParser),
+    ]);
 
     if (slideEntries.length === 0) {
-      return {
-        error: 'Không tìm thấy trang slide hợp lệ bên trong tệp .pptx này.',
-        createdObjectUrls: [],
-      };
+      throw new Error('Không tìm thấy trang slide hợp lệ bên trong tệp .pptx này.');
     }
 
+    const slideAspectRatio = slideCx / slideCy;
     const slidesPreview: SlidePreviewItem[] = [];
     const ignoredShapePh = new Set(['sldNum', 'dt', 'ftr']);
+    const idPrefix = options?.docIdPrefix ? `${options.docIdPrefix}-` : 'uploaded-';
+    const layoutPlaceholderCache = new Map<string, Map<string, EmuBox>>();
+    const mediaBlobCache = new Map<string, string>();
+
+    const getMediaBlobUrl = async (resolvedPath: string): Promise<string | null> => {
+      const lowerKey = resolvedPath.toLowerCase();
+      const cached = mediaBlobCache.get(lowerKey);
+      if (cached) {
+        return cached;
+      }
+      const extMatch = /\.([a-z0-9]+)$/i.exec(resolvedPath);
+      const imgExt = extMatch ? extMatch[1].toLowerCase() : '';
+      const mime = IMAGE_MIME_BY_EXT[imgExt];
+      if (!mime) {
+        return null;
+      }
+      const imgZipObj = findZipFileInsensitive(zip, resolvedPath);
+      if (!imgZipObj || imgZipObj.dir) {
+        return null;
+      }
+      const imgBuffer = await imgZipObj.async('arraybuffer');
+      const blob = new Blob([imgBuffer], { type: mime });
+      const blobUrl = URL.createObjectURL(blob);
+      createdObjectUrls.push(blobUrl);
+      mediaBlobCache.set(lowerKey, blobUrl);
+      return blobUrl;
+    };
 
     for (let i = 0; i < slideEntries.length; i++) {
       const { path: slidePath, num: slideNum } = slideEntries[i];
@@ -869,156 +1714,318 @@ async function parsePptxFile(file: File): Promise<ParseFileResult> {
         continue;
       }
 
-      const xmlText = await slideFile.async('string');
+      const lastSlash = slidePath.lastIndexOf('/');
+      const slideDir = lastSlash >= 0 ? slidePath.slice(0, lastSlash) : '';
+      const slideBaseName = lastSlash >= 0 ? slidePath.slice(lastSlash + 1) : slidePath;
+      const relsPath = slideDir
+        ? `${slideDir}/_rels/${slideBaseName}.rels`
+        : `_rels/${slideBaseName}.rels`;
+
+      const [xmlText, slideRels] = await Promise.all([
+        slideFile.async('string'),
+        parseRelationshipsFile(zip, xmlParser, relsPath, slideDir || 'ppt/slides'),
+      ]);
+
       const xmlDoc = xmlParser.parseFromString(xmlText, 'application/xml');
-      const explicitBackgroundColor = extractSlideBackgroundColor(xmlDoc);
+
+      // Find linked slideLayout (for inherited placeholder geometry) and notesSlide
+      let layoutPath: string | null = null;
+      let notesPath: string | null = null;
+      for (const rel of slideRels.values()) {
+        if (rel.type.includes('/slideLayout') && !layoutPath) {
+          layoutPath = rel.resolvedPath;
+        } else if (rel.type.includes('/notesSlide') && !notesPath) {
+          notesPath = rel.resolvedPath;
+        }
+      }
+
+      let layoutPlaceholders = new Map<string, EmuBox>();
+      if (layoutPath) {
+        const layoutKey = layoutPath.toLowerCase();
+        const cachedLayout = layoutPlaceholderCache.get(layoutKey);
+        if (cachedLayout) {
+          layoutPlaceholders = cachedLayout;
+        } else {
+          layoutPlaceholders = await extractLayoutPlaceholderBoxes(zip, xmlParser, layoutPath);
+          layoutPlaceholderCache.set(layoutKey, layoutPlaceholders);
+        }
+      }
+
+      // 1. Parse slide background (<p:bg>: solidFill / gradFill / blipFill)
+      const bgInfo = extractSlideBackgroundInfo(xmlDoc, theme.colors);
+      let backgroundColor = bgInfo.backgroundColor;
+      const backgroundGradient = bgInfo.backgroundGradient;
+      let backgroundImageSrc: string | undefined;
+      const backgroundImagePaths = new Set<string>();
+
+      if (bgInfo.backgroundBlipEmbedId) {
+        const bgRel = slideRels.get(bgInfo.backgroundBlipEmbedId);
+        if (bgRel) {
+          const bgBlob = await getMediaBlobUrl(bgRel.resolvedPath);
+          if (bgBlob) {
+            backgroundImageSrc = bgBlob;
+            backgroundImagePaths.add(bgRel.resolvedPath.toLowerCase());
+          }
+        }
+      }
 
       const blocks: SlideTextBlock[] = [];
+      const images: SlideImageItem[] = [];
+      const positionedImagePaths = new Set<string>();
       let blockCounter = 0;
 
-      // 1. Parse all text shapes (sp)
-      const shapes = getElementsByLocalName(xmlDoc, 'sp');
-      for (const sp of shapes) {
-        const phType = getPlaceholderType(sp);
-        if (phType && ignoredShapePh.has(phType)) {
-          continue;
-        }
-
-        const txBodies = getDirectChildrenByLocalName(sp, 'txBody');
-        const paragraphsText: string[] = [];
-        let runStyle: ReturnType<typeof extractFirstRunStyle> = {};
-
-        for (const txBody of txBodies) {
-          if (Object.keys(runStyle).length === 0) {
-            runStyle = extractFirstRunStyle(txBody);
+      // 2. Recursively traverse <p:spTree> preserving Z-order & nested <p:grpSp> coordinates
+      const walkShapeContainer = async (
+        containerEl: Element,
+        groupTransform: GroupTransform
+      ): Promise<void> => {
+        for (let cIdx = 0; cIdx < containerEl.childNodes.length; cIdx++) {
+          const child = containerEl.childNodes[cIdx];
+          if (child.nodeType !== Node.ELEMENT_NODE) {
+            continue;
           }
-          const paragraphs = getDirectChildrenByLocalName(txBody, 'p');
-          for (const p of paragraphs) {
-            const pText = extractParagraphText(p);
-            if (pText) {
-              paragraphsText.push(pText);
-            }
-          }
-        }
+          const el = child as Element;
+          const local = el.localName.toLowerCase();
 
-        const combinedText = paragraphsText.join('\n').trim();
-        if (!combinedText) {
-          continue;
-        }
-
-        let role: 'title' | 'subtitle' | 'body' = 'body';
-        let defaultFontSize = 16;
-        let defaultBold = false;
-
-        if (phType === 'title' || phType === 'ctrTitle') {
-          role = 'title';
-          defaultFontSize = 32;
-          defaultBold = true;
-        } else if (phType === 'subTitle') {
-          role = 'subtitle';
-          defaultFontSize = 20;
-        }
-
-        blockCounter++;
-        blocks.push({
-          id: `slide-${slideNum}-block-${blockCounter}`,
-          text: combinedText,
-          fontSize: runStyle.fontSize ?? defaultFontSize,
-          bold: runStyle.bold ?? defaultBold,
-          italic: runStyle.italic,
-          color: runStyle.color,
-          align: runStyle.align ?? (phType === 'ctrTitle' ? 'center' : 'left'),
-          role,
-        });
-      }
-
-      // 2. Also extract text from embedded PowerPoint tables (a:tbl) if present
-      const tables = getElementsByLocalName(xmlDoc, 'tbl');
-      for (const tbl of tables) {
-        const rows = getDirectChildrenByLocalName(tbl, 'tr');
-        const tableLines: string[] = [];
-        for (const tr of rows) {
-          const cells = getDirectChildrenByLocalName(tr, 'tc');
-          const cellTexts = cells
-            .map((tc) => {
-              const paras = getElementsByLocalName(tc, 'p');
-              return paras
-                .map((p) => extractParagraphText(p))
-                .filter(Boolean)
-                .join(' ');
-            })
-            .filter(Boolean);
-          if (cellTexts.length > 0) {
-            tableLines.push(cellTexts.join(' | '));
-          }
-        }
-        const tableCombined = tableLines.join('\n').trim();
-        if (tableCombined) {
-          blockCounter++;
-          blocks.push({
-            id: `slide-${slideNum}-block-${blockCounter}`,
-            text: tableCombined,
-            fontSize: 15,
-            role: 'body',
-            align: 'left',
-          });
-        }
-      }
-
-      // 3. Parse slide relationships for real images & speaker notes
-      const images: SlideImageItem[] = [];
-      let notesPath: string | null = null;
-      const seenImagePaths = new Set<string>();
-
-      const relsFile = findZipFileInsensitive(zip, `ppt/slides/_rels/slide${slideNum}.xml.rels`);
-      if (relsFile) {
-        const relsXml = await relsFile.async('string');
-        const relsDoc = xmlParser.parseFromString(relsXml, 'application/xml');
-        const relationships = getElementsByLocalName(relsDoc, 'Relationship');
-
-        for (const rel of relationships) {
-          const relType = rel.getAttribute('Type') ?? '';
-          const relTarget = rel.getAttribute('Target') ?? '';
-          const targetMode = rel.getAttribute('TargetMode') ?? '';
-          if (!relTarget || targetMode.toLowerCase() === 'external') {
+          if (local === 'grpsp') {
+            const grpSpPr = getDirectChildrenByLocalName(el, 'grpSpPr')[0];
+            const grpXfrm = grpSpPr ? getDirectChildrenByLocalName(grpSpPr, 'xfrm')[0] : undefined;
+            const nextTransform = composeGroupTransform(groupTransform, grpXfrm);
+            await walkShapeContainer(el, nextTransform);
             continue;
           }
 
-          const resolvedPath = resolveZipPath('ppt/slides', relTarget);
+          if (local === 'sp') {
+            const phMeta = getPlaceholderMeta(el);
+            const phType = phMeta.type;
+            if (phType && ignoredShapePh.has(phType)) {
+              continue;
+            }
 
-          if (relType.includes('/image')) {
-            const pathKey = resolvedPath.toLowerCase();
-            if (seenImagePaths.has(pathKey)) {
+            const spPr = getDirectChildrenByLocalName(el, 'spPr')[0];
+            const xfrm = spPr ? getDirectChildrenByLocalName(spPr, 'xfrm')[0] : undefined;
+            const localBox =
+              extractEmuBoxFromXfrm(xfrm) ??
+              (phType && phMeta.idx ? layoutPlaceholders.get(`${phType}:${phMeta.idx}`) : undefined) ??
+              (phType ? layoutPlaceholders.get(phType) : undefined) ??
+              (phMeta.idx ? layoutPlaceholders.get(`idx:${phMeta.idx}`) : undefined) ??
+              null;
+
+            const coords = localBox
+              ? mapBoxToPct(localBox, groupTransform, slideCx, slideCy)
+              : getDefaultPlaceholderPct(phType, blockCounter);
+
+            const { fillColor, borderColor, fillBlipEmbedId } = extractShapeFillAndBorder(
+              spPr,
+              theme.colors
+            );
+
+            // Picture-filled shape (e.g. image cropped into shape frame)
+            if (fillBlipEmbedId) {
+              const rel = slideRels.get(fillBlipEmbedId);
+              if (rel && !backgroundImagePaths.has(rel.resolvedPath.toLowerCase())) {
+                const blobUrl = await getMediaBlobUrl(rel.resolvedPath);
+                if (blobUrl) {
+                  positionedImagePaths.add(rel.resolvedPath.toLowerCase());
+                  const fileName = rel.resolvedPath.split('/').pop() ?? `image-${images.length + 1}`;
+                  images.push({
+                    id: `${idPrefix}slide-${slideNum}-img-${images.length + 1}`,
+                    src: blobUrl,
+                    alt: `Ảnh slide ${i + 1} (${fileName})`,
+                    xPct: coords.xPct,
+                    yPct: coords.yPct,
+                    wPct: coords.wPct,
+                    hPct: coords.hPct,
+                  });
+                }
+              }
+            }
+
+            const txBodies = getDirectChildrenByLocalName(el, 'txBody');
+            const paragraphsText: string[] = [];
+            let runStyle: ReturnType<typeof extractFirstRunStyle> = {};
+
+            for (const txBody of txBodies) {
+              if (Object.keys(runStyle).length === 0) {
+                runStyle = extractFirstRunStyle(txBody, theme);
+              }
+              const paragraphs = getDirectChildrenByLocalName(txBody, 'p');
+              for (const p of paragraphs) {
+                const pText = extractParagraphText(p);
+                if (pText) {
+                  paragraphsText.push(pText);
+                }
+              }
+            }
+
+            const combinedText = paragraphsText.join('\n').trim();
+            if (!combinedText) {
               continue;
             }
-            const extMatch = /\.([a-z0-9]+)$/i.exec(resolvedPath);
-            const imgExt = extMatch ? extMatch[1].toLowerCase() : '';
-            const mime = IMAGE_MIME_BY_EXT[imgExt];
-            if (!mime) {
-              continue;
+
+            let role: 'title' | 'subtitle' | 'body' = 'body';
+            let defaultFontSize = 16;
+            let defaultBold = false;
+
+            if (phType === 'title' || phType === 'ctrTitle') {
+              role = 'title';
+              defaultFontSize = 32;
+              defaultBold = true;
+            } else if (phType === 'subTitle') {
+              role = 'subtitle';
+              defaultFontSize = 20;
             }
-            const imgZipObj = findZipFileInsensitive(zip, resolvedPath);
-            if (!imgZipObj) {
-              continue;
-            }
-            seenImagePaths.add(pathKey);
-            const imgBuffer = await imgZipObj.async('arraybuffer');
-            const blob = new Blob([imgBuffer], { type: mime });
-            const blobUrl = URL.createObjectURL(blob);
-            createdObjectUrls.push(blobUrl);
-            const fileName = resolvedPath.split('/').pop() ?? `image-${images.length + 1}`;
-            images.push({
-              id: `slide-${slideNum}-img-${images.length + 1}`,
-              src: blobUrl,
-              alt: `Ảnh slide ${i + 1} (${fileName})`,
+
+            blockCounter++;
+            blocks.push({
+              id: `${idPrefix}slide-${slideNum}-block-${blockCounter}`,
+              kind: 'text',
+              text: combinedText,
+              fontSize: runStyle.fontSize ?? defaultFontSize,
+              bold: runStyle.bold ?? defaultBold,
+              italic: runStyle.italic,
+              color: runStyle.color,
+              align: runStyle.align ?? (phType === 'ctrTitle' ? 'center' : 'left'),
+              valign: runStyle.valign ?? 'top',
+              fontFamily: runStyle.fontFamily,
+              fillColor,
+              borderColor,
+              role,
+              xPct: coords.xPct,
+              yPct: coords.yPct,
+              wPct: coords.wPct,
+              hPct: coords.hPct,
             });
-          } else if (relType.includes('/notesSlide') && !notesPath) {
-            notesPath = resolvedPath;
+            continue;
+          }
+
+          if (local === 'pic') {
+            const blipFill = getDirectChildrenByLocalName(el, 'blipFill')[0];
+            const blip = blipFill ? getElementsByLocalName(blipFill, 'blip')[0] : undefined;
+            const embedId = blip ? getRelationshipAttr(blip, 'embed') : '';
+            if (!embedId) {
+              continue;
+            }
+            const rel = slideRels.get(embedId);
+            if (!rel || backgroundImagePaths.has(rel.resolvedPath.toLowerCase())) {
+              continue;
+            }
+            const blobUrl = await getMediaBlobUrl(rel.resolvedPath);
+            if (!blobUrl) {
+              continue;
+            }
+
+            const spPr = getDirectChildrenByLocalName(el, 'spPr')[0];
+            const xfrm = spPr ? getDirectChildrenByLocalName(spPr, 'xfrm')[0] : undefined;
+            const localBox = extractEmuBoxFromXfrm(xfrm);
+            const coords = localBox
+              ? mapBoxToPct(localBox, groupTransform, slideCx, slideCy)
+              : undefined;
+
+            const cNvPr = getElementsByLocalName(el, 'cNvPr')[0];
+            const descr =
+              (cNvPr?.getAttribute('descr') ?? cNvPr?.getAttribute('name') ?? '').trim();
+            const fileName = rel.resolvedPath.split('/').pop() ?? `image-${images.length + 1}`;
+            positionedImagePaths.add(rel.resolvedPath.toLowerCase());
+
+            images.push({
+              id: `${idPrefix}slide-${slideNum}-img-${images.length + 1}`,
+              src: blobUrl,
+              alt: descr || `Ảnh slide ${i + 1} (${fileName})`,
+              xPct: coords?.xPct,
+              yPct: coords?.yPct,
+              wPct: coords?.wPct,
+              hPct: coords?.hPct,
+            });
+            continue;
+          }
+
+          if (local === 'graphicframe') {
+            const tbl = getElementsByLocalName(el, 'tbl')[0];
+            if (!tbl) {
+              continue;
+            }
+            const xfrm = getDirectChildrenByLocalName(el, 'xfrm')[0];
+            const localBox = extractEmuBoxFromXfrm(xfrm);
+            const coords = localBox
+              ? mapBoxToPct(localBox, groupTransform, slideCx, slideCy)
+              : { xPct: 6, yPct: 22, wPct: 88, hPct: 62 };
+
+            const trElements = getDirectChildrenByLocalName(tbl, 'tr');
+            const tableRows: string[][] = [];
+            for (const tr of trElements) {
+              const cells = getDirectChildrenByLocalName(tr, 'tc');
+              if (cells.length === 0) {
+                continue;
+              }
+              const rowValues = cells.map((tc) => {
+                const paras = getElementsByLocalName(tc, 'p');
+                return paras
+                  .map((p) => extractParagraphText(p))
+                  .filter(Boolean)
+                  .join(' ');
+              });
+              tableRows.push(rowValues);
+            }
+
+            const hasAnyCellContent = tableRows.some((r) => r.some((cell) => cell.trim().length > 0));
+            if (!hasAnyCellContent) {
+              continue;
+            }
+
+            const tableTextFallback = tableRows
+              .map((row) => row.join(' | '))
+              .filter((line) => line.replace(/\|/g, '').trim().length > 0)
+              .join('\n')
+              .trim();
+
+            blockCounter++;
+            blocks.push({
+              id: `${idPrefix}slide-${slideNum}-block-${blockCounter}`,
+              kind: 'table',
+              tableRows,
+              text: tableTextFallback,
+              fontSize: 13,
+              role: 'body',
+              align: 'left',
+              valign: 'middle',
+              xPct: coords.xPct,
+              yPct: coords.yPct,
+              wPct: coords.wPct,
+              hPct: coords.hPct,
+            });
           }
         }
+      };
+
+      const spTree = getElementsByLocalName(xmlDoc, 'spTree')[0];
+      if (spTree) {
+        await walkShapeContainer(spTree, IDENTITY_GROUP_TRANSFORM);
       }
 
-      // 4. Read real speaker notes from rel target or fallback path
+      // Fallback: pick up any unreferenced image rels not already placed via <p:pic>/<p:sp>/<p:bg>
+      for (const rel of slideRels.values()) {
+        if (!rel.type.includes('/image')) {
+          continue;
+        }
+        const pathKey = rel.resolvedPath.toLowerCase();
+        if (backgroundImagePaths.has(pathKey) || positionedImagePaths.has(pathKey)) {
+          continue;
+        }
+        const blobUrl = await getMediaBlobUrl(rel.resolvedPath);
+        if (!blobUrl) {
+          continue;
+        }
+        positionedImagePaths.add(pathKey);
+        const fileName = rel.resolvedPath.split('/').pop() ?? `image-${images.length + 1}`;
+        images.push({
+          id: `${idPrefix}slide-${slideNum}-img-${images.length + 1}`,
+          src: blobUrl,
+          alt: `Ảnh slide ${i + 1} (${fileName})`,
+        });
+      }
+
+      // 3. Read real speaker notes from rel target or fallback path
       let speakerNote: string | undefined;
       const notesZipObj =
         (notesPath ? findZipFileInsensitive(zip, notesPath) : null) ??
@@ -1031,7 +2038,7 @@ async function parsePptxFile(file: File): Promise<ParseFileResult> {
         }
       }
 
-      // 5. Derive clean title, subtitle, and bullets from real blocks
+      // 4. Derive clean title, subtitle, and bullets from real blocks
       const titleBlock = blocks.find((b) => b.role === 'title');
       const subtitleBlock = blocks.find((b) => b.role === 'subtitle');
 
@@ -1065,9 +2072,8 @@ async function parsePptxFile(file: File): Promise<ParseFileResult> {
       }
 
       // Infer white background when slide inherits default light Slide Master (no explicit <p:bg>)
-      // while text blocks carry dark colors, so dark text never sinks into the dark stage.
-      let backgroundColor = explicitBackgroundColor;
-      if (!backgroundColor) {
+      // while text blocks carry dark colors, so dark text never sinks into a dark stage.
+      if (!backgroundColor && !backgroundGradient && !backgroundImageSrc) {
         const luminances: number[] = [];
         for (const block of blocks) {
           const hexMatch = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec(block.color ?? '');
@@ -1093,7 +2099,7 @@ async function parsePptxFile(file: File): Promise<ParseFileResult> {
       }
 
       slidesPreview.push({
-        id: `uploaded-slide-${slideNum}-${Date.now()}`,
+        id: `${idPrefix}slide-${slideNum}-${Date.now()}`,
         index: i + 1,
         title: slideTitle,
         subtitle,
@@ -1101,8 +2107,12 @@ async function parsePptxFile(file: File): Promise<ParseFileResult> {
         blocks,
         images,
         speakerNote,
-        accentColor: '#4F46E5',
+        accentColor: theme.colors.accent1 || '#4F46E5',
         backgroundColor,
+        backgroundGradient,
+        backgroundImageSrc,
+        slideWidthRatio: slideAspectRatio,
+        isMasterPositioned: true,
       });
     }
 
@@ -1119,12 +2129,34 @@ async function parsePptxFile(file: File): Promise<ParseFileResult> {
     const firstSlideTextParts = firstSlide
       ? [firstSlide.title, firstSlide.subtitle ?? '', ...firstSlide.bullets].filter(Boolean)
       : [];
-    const title = stripFileExtension(file.name);
-    const fileSize = formatFileSize(file.size);
     const contentPreview =
       firstSlideTextParts.length > 0
         ? truncatePreview(firstSlideTextParts.join(' · '), 260)
-        : `Tệp trình chiếu gồm ${slidesPreview.length} slide (${fileSize}).`;
+        : `Tệp trình chiếu gồm ${slidesPreview.length} slide.`;
+
+    return {
+      slidesPreview,
+      slideAspectRatio,
+      outline,
+      contentPreview,
+      createdObjectUrls,
+    };
+  } catch (err) {
+    for (const url of createdObjectUrls) {
+      URL.revokeObjectURL(url);
+    }
+    throw err;
+  }
+}
+
+async function parsePptxFile(file: File): Promise<ParseFileResult> {
+  const rawBuffer = await file.arrayBuffer();
+  try {
+    const parsed = await parsePptxArrayBuffer(rawBuffer.slice(0));
+    const title = stripFileExtension(file.name);
+    const fileSize = formatFileSize(file.size);
+    const contentPreview =
+      parsed.contentPreview || `Tệp trình chiếu gồm ${parsed.slidesPreview.length} slide (${fileSize}).`;
 
     const document: DocumentItem = {
       id: createDocumentId('pptx'),
@@ -1135,22 +2167,30 @@ async function parsePptxFile(file: File): Promise<ParseFileResult> {
       isShared: false,
       folder: 'Tải lên gần đây',
       fileSize,
-      pageCount: slidesPreview.length,
+      pageCount: parsed.slidesPreview.length,
       thumbnail: createThumbnailDataUri('pptx', title, '#4F46E5'),
-      slidesPreview,
-      outline,
+      slidesPreview: parsed.slidesPreview,
+      outline: parsed.outline,
       contentPreview,
+      rawArrayBuffer: rawBuffer.slice(0),
+      slideAspectRatio: parsed.slideAspectRatio,
       isUploaded: true,
       sourceFile: file,
     };
 
     return {
       document,
-      createdObjectUrls,
+      createdObjectUrls: parsed.createdObjectUrls,
     };
   } catch (err) {
-    for (const url of createdObjectUrls) {
-      URL.revokeObjectURL(url);
+    if (
+      err instanceof Error &&
+      err.message.includes('Không tìm thấy trang slide hợp lệ')
+    ) {
+      return {
+        error: err.message,
+        createdObjectUrls: [],
+      };
     }
     throw err;
   }

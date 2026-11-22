@@ -14,6 +14,8 @@ import {
   Bold,
   Calculator,
   Check,
+  ChevronDown,
+  ChevronUp,
   Download,
   FileSpreadsheet,
   Filter,
@@ -32,12 +34,18 @@ import type {
   ModalType,
   SpreadsheetSheet,
 } from '../../types/document';
+import { createThumbnailDataUri } from '../../data/mockDocuments';
 import {
   columnIndexToLetter,
   evaluateSheetMatrix,
   formatCellRef,
 } from '../../utils/formulaEvaluator';
 import { exportExcelToXlsx } from '../../utils/fileExporter';
+import type {
+  CollaboratorPresence,
+  DocRealtimePatch,
+} from '../../services/realtimeCollab';
+import { CustomVerticalScrollbar } from '../ui/CustomVerticalScrollbar';
 import { WorkspaceTopBar } from './WorkspaceTopBar';
 
 export interface ExcelWorkspaceProps {
@@ -50,6 +58,16 @@ export interface ExcelWorkspaceProps {
   onSaveDocument: (updatedDoc: DocumentItem) => void;
   isModalOpen?: boolean;
   autoSaveEnabled?: boolean;
+  collaborators?: CollaboratorPresence[];
+  selfSessionId?: string;
+  collabPermission?: 'owner' | 'edit' | 'view';
+  onPresenceUpdate?: (
+    patch: Partial<Omit<CollaboratorPresence, 'sessionId' | 'color'>>
+  ) => void;
+  onBroadcastPatch?: (
+    patch: Omit<DocRealtimePatch, 'senderSessionId' | 'sentAt'>
+  ) => void;
+  incomingRemotePatch?: DocRealtimePatch | null;
 }
 
 interface CellCoord {
@@ -320,7 +338,15 @@ export function ExcelWorkspace({
   onSaveDocument,
   isModalOpen = false,
   autoSaveEnabled = false,
+  collaborators,
+  selfSessionId,
+  collabPermission = 'owner',
+  onPresenceUpdate,
+  onBroadcastPatch,
+  incomingRemotePatch = null,
 }: ExcelWorkspaceProps) {
+  const isReadOnly = collabPermission === 'view';
+
   const [sheets, setSheets] = useState<SpreadsheetSheet[]>(() =>
     initializeSheets(document)
   );
@@ -335,7 +361,11 @@ export function ExcelWorkspace({
   const [editDraft, setEditDraft] = useState('');
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  const [isMobileToolbarExpanded, setIsMobileToolbarExpanded] = useState(false);
 
+  const sheetsRef = useRef<SpreadsheetSheet[]>(sheets);
+  sheetsRef.current = sheets;
+  const lastAppliedPatchAtRef = useRef<number>(0);
   const isDraggingRef = useRef(false);
   const cancelBlurCommitRef = useRef(false);
   const saveTimerRef = useRef<number | null>(null);
@@ -344,7 +374,10 @@ export function ExcelWorkspace({
   const formulaInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    setSheets(initializeSheets(document));
+    const initialized = initializeSheets(document);
+    sheetsRef.current = initialized;
+    lastAppliedPatchAtRef.current = 0;
+    setSheets(initialized);
     setActiveSheetIdx(0);
     setSearchQuery('');
     setSortConfig(null);
@@ -353,7 +386,76 @@ export function ExcelWorkspace({
     setEditDraft('');
     setHasUnsavedChanges(false);
     setJustSaved(false);
+    setIsMobileToolbarExpanded(false);
   }, [document.id]);
+
+  // Apply incoming realtime excel_cell_patch without disrupting local selection or active editing on other cells
+  useEffect(() => {
+    if (
+      !incomingRemotePatch ||
+      incomingRemotePatch.kind !== 'excel_cell_patch'
+    ) {
+      return;
+    }
+    if (
+      selfSessionId &&
+      incomingRemotePatch.senderSessionId === selfSessionId
+    ) {
+      return;
+    }
+    if (incomingRemotePatch.sentAt <= lastAppliedPatchAtRef.current) {
+      return;
+    }
+    lastAppliedPatchAtRef.current = incomingRemotePatch.sentAt;
+
+    setSheets((prev) => {
+      let next: SpreadsheetSheet[];
+      if (
+        Array.isArray(incomingRemotePatch.sheets) &&
+        incomingRemotePatch.sheets.length > 0
+      ) {
+        next = incomingRemotePatch.sheets.map((sheet, idx) =>
+          normalizeSheetForEditor(sheet, idx)
+        );
+      } else {
+        const targetIdx = prev.findIndex(
+          (sheet) => sheet.id === incomingRemotePatch.sheetId
+        );
+        if (targetIdx === -1) {
+          return prev;
+        }
+        next = prev.map((sheet, idx) => {
+          if (idx !== targetIdx) {
+            return sheet;
+          }
+          const { rowIndex, colIndex, value } = incomingRemotePatch;
+          if (rowIndex < 0 || colIndex < 0) {
+            return sheet;
+          }
+          const neededCols = Math.max(sheet.columns.length, colIndex + 1);
+          const neededRows = Math.max(sheet.rows.length, rowIndex + 1);
+          const nextRows = Array.from({ length: neededRows }, (_, r) => {
+            const existingRow = sheet.rows[r] ?? [];
+            const padded = Array.from(
+              { length: neededCols },
+              (__, c) => existingRow[c] ?? ''
+            );
+            if (r === rowIndex) {
+              padded[colIndex] = value;
+            }
+            return padded;
+          });
+          return {
+            ...sheet,
+            columns: createLetterColumns(neededCols),
+            rows: nextRows,
+          };
+        });
+      }
+      sheetsRef.current = next;
+      return next;
+    });
+  }, [incomingRemotePatch, selfSessionId]);
 
   useEffect(() => {
     const handleMouseUp = () => {
@@ -717,42 +819,151 @@ export function ExcelWorkspace({
     [document]
   );
 
+  const broadcastExcelPatch = useCallback(
+    (
+      sheetId: string,
+      rowIndex: number,
+      colIndex: number,
+      value: string | number,
+      nextSheets: SpreadsheetSheet[]
+    ) => {
+      if (isReadOnly || !onBroadcastPatch) {
+        return;
+      }
+      onBroadcastPatch({
+        kind: 'excel_cell_patch',
+        sheetId,
+        rowIndex,
+        colIndex,
+        value,
+        sheets: nextSheets,
+      });
+    },
+    [isReadOnly, onBroadcastPatch]
+  );
+
+  // Broadcast active cell coordinate & typing status via Presence
+  useEffect(() => {
+    if (
+      !onPresenceUpdate ||
+      anchorOriginalRow === null ||
+      anchorCol === null
+    ) {
+      return;
+    }
+    const cellCoord = formatCellRef(anchorOriginalRow, anchorCol);
+    const isTyping =
+      !isReadOnly &&
+      editingCell !== null &&
+      editingCell.originalRow === anchorOriginalRow &&
+      editingCell.col === anchorCol;
+    onPresenceUpdate({
+      cellCoord,
+      sheetId: activeSheet.id,
+      cursorLabel: `Đang ở ô ${cellCoord}`,
+      isTyping,
+    });
+  }, [
+    activeSheet.id,
+    anchorCol,
+    anchorOriginalRow,
+    editingCell,
+    isReadOnly,
+    onPresenceUpdate,
+  ]);
+
+  const peerPresenceByCellCoord = useMemo(() => {
+    const map = new Map<string, CollaboratorPresence[]>();
+    if (!collaborators || collaborators.length === 0) {
+      return map;
+    }
+    for (const peer of collaborators) {
+      if (peer.sessionId === selfSessionId || !peer.cellCoord) {
+        continue;
+      }
+      if (peer.sheetId && peer.sheetId !== activeSheet.id) {
+        continue;
+      }
+      const coordKey = peer.cellCoord.toUpperCase();
+      const existing = map.get(coordKey);
+      if (existing) {
+        existing.push(peer);
+      } else {
+        map.set(coordKey, [peer]);
+      }
+    }
+    return map;
+  }, [activeSheet.id, collaborators, selfSessionId]);
+
   const updateActiveSheet = useCallback(
-    (updater: (sheet: SpreadsheetSheet) => SpreadsheetSheet) => {
-      setSheets((prev) =>
-        prev.map((sheet, idx) =>
-          idx === safeSheetIdx ? updater(sheet) : sheet
-        )
+    (
+      updater: (sheet: SpreadsheetSheet) => SpreadsheetSheet,
+      patchMeta?: {
+        rowIndex: number;
+        colIndex: number;
+        value: string | number;
+      }
+    ) => {
+      if (isReadOnly) {
+        return;
+      }
+      const prevSheets = sheetsRef.current;
+      const currentSheet = prevSheets[safeSheetIdx];
+      if (!currentSheet) {
+        return;
+      }
+      const updatedSheet = updater(currentSheet);
+      if (updatedSheet === currentSheet) {
+        return;
+      }
+      const nextSheets = prevSheets.map((sheet, idx) =>
+        idx === safeSheetIdx ? updatedSheet : sheet
       );
+      sheetsRef.current = nextSheets;
+      setSheets(nextSheets);
       setHasUnsavedChanges(true);
       setJustSaved(false);
+
+      broadcastExcelPatch(
+        updatedSheet.id,
+        patchMeta?.rowIndex ?? 0,
+        patchMeta?.colIndex ?? 0,
+        patchMeta?.value ?? updatedSheet.rows[0]?.[0] ?? '',
+        nextSheets
+      );
     },
-    [safeSheetIdx]
+    [broadcastExcelPatch, isReadOnly, safeSheetIdx]
   );
 
   const commitCellValue = useCallback(
     (originalRow: number, col: number, draft: string) => {
+      if (isReadOnly) {
+        return;
+      }
       const normalized = normalizeCommittedValue(draft);
       const existing = activeSheet.rows[originalRow]?.[col] ?? '';
       if (existing === normalized) {
         return;
       }
-      updateActiveSheet((sheet) => {
-        if (originalRow < 0 || originalRow >= sheet.rows.length) {
-          return sheet;
-        }
-        const nextRows = sheet.rows.map((row, rIdx) => {
-          if (rIdx !== originalRow) {
-            return row;
+      updateActiveSheet(
+        (sheet) => {
+          if (originalRow < 0 || originalRow >= sheet.rows.length) {
+            return sheet;
           }
-          const copy = [...row];
-          copy[col] = normalized;
-          return copy;
-        });
-        return { ...sheet, rows: nextRows };
-      });
+          const nextRows = sheet.rows.map((row, rIdx) => {
+            if (rIdx !== originalRow) {
+              return row;
+            }
+            const copy = [...row];
+            copy[col] = normalized;
+            return copy;
+          });
+          return { ...sheet, rows: nextRows };
+        },
+        { rowIndex: originalRow, colIndex: col, value: normalized }
+      );
     },
-    [activeSheet.rows, updateActiveSheet]
+    [activeSheet.rows, isReadOnly, updateActiveSheet]
   );
 
   const startCellEditing = useCallback(
@@ -762,6 +973,9 @@ export function ExcelWorkspace({
       source: 'cell' | 'formula',
       initialOverride?: string
     ) => {
+      if (isReadOnly) {
+        return;
+      }
       cancelBlurCommitRef.current = false;
       const rawVal = activeSheet.rows[originalRow]?.[col];
       setEditingCell({ originalRow, col, source });
@@ -773,7 +987,7 @@ export function ExcelWorkspace({
             : String(rawVal)
       );
     },
-    [activeSheet.rows]
+    [activeSheet.rows, isReadOnly]
   );
 
   const cancelEditing = useCallback(() => {
@@ -828,10 +1042,14 @@ export function ExcelWorkspace({
   );
 
   const handleSave = useCallback(() => {
+    if (isReadOnly) {
+      return;
+    }
     let latestSheets = sheets;
     if (editingCell) {
       const { originalRow, col } = editingCell;
       const normalized = normalizeCommittedValue(editDraft);
+      const existingVal = sheets[safeSheetIdx]?.rows[originalRow]?.[col] ?? '';
       latestSheets = sheets.map((sheet, idx) => {
         if (idx !== safeSheetIdx) {
           return sheet;
@@ -846,10 +1064,20 @@ export function ExcelWorkspace({
         });
         return { ...sheet, rows: nextRows };
       });
+      sheetsRef.current = latestSheets;
       setSheets(latestSheets);
       cancelBlurCommitRef.current = true;
       setEditingCell(null);
       setEditDraft('');
+      if (existingVal !== normalized && latestSheets[safeSheetIdx]) {
+        broadcastExcelPatch(
+          latestSheets[safeSheetIdx].id,
+          originalRow,
+          col,
+          normalized,
+          latestSheets
+        );
+      }
     }
 
     onSaveDocument(buildLiveDocument(latestSheets));
@@ -864,17 +1092,80 @@ export function ExcelWorkspace({
       saveTimerRef.current = null;
     }, 2400);
   }, [
+    broadcastExcelPatch,
     buildLiveDocument,
     editDraft,
     editingCell,
+    isReadOnly,
     onSaveDocument,
     safeSheetIdx,
     sheets,
   ]);
 
+  const handleRenameTitle = useCallback(
+    (newTitle: string) => {
+      if (isReadOnly) {
+        return;
+      }
+      let latestSheets = sheets;
+      if (editingCell) {
+        const { originalRow, col } = editingCell;
+        const normalized = normalizeCommittedValue(editDraft);
+        latestSheets = sheets.map((sheet, idx) => {
+          if (idx !== safeSheetIdx) {
+            return sheet;
+          }
+          const nextRows = sheet.rows.map((row, rIdx) => {
+            if (rIdx !== originalRow) {
+              return row;
+            }
+            const copy = [...row];
+            copy[col] = normalized;
+            return copy;
+          });
+          return { ...sheet, rows: nextRows };
+        });
+        setSheets(latestSheets);
+        cancelBlurCommitRef.current = true;
+        setEditingCell(null);
+        setEditDraft('');
+      }
+
+      const liveDoc = buildLiveDocument(latestSheets);
+      const renamedDoc: DocumentItem = {
+        ...liveDoc,
+        title: newTitle,
+        thumbnail: createThumbnailDataUri(document.type, newTitle, '#15803D'),
+        originalFileName: `${newTitle}.${document.type}`,
+        updatedAt: 'Vừa chỉnh sửa',
+      };
+      onSaveDocument(renamedDoc);
+      setHasUnsavedChanges(false);
+      setJustSaved(true);
+
+      if (saveTimerRef.current !== null) {
+        window.clearTimeout(saveTimerRef.current);
+      }
+      saveTimerRef.current = window.setTimeout(() => {
+        setJustSaved(false);
+        saveTimerRef.current = null;
+      }, 2400);
+    },
+    [
+      buildLiveDocument,
+      document.type,
+      editDraft,
+      editingCell,
+      isReadOnly,
+      onSaveDocument,
+      safeSheetIdx,
+      sheets,
+    ]
+  );
+
   useEffect(() => {
     const handleWindowKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (isModalOpen) {
+      if (isModalOpen || isReadOnly) {
         return;
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
@@ -886,10 +1177,15 @@ export function ExcelWorkspace({
     return () => {
       window.removeEventListener('keydown', handleWindowKeyDown);
     };
-  }, [handleSave, isModalOpen]);
+  }, [handleSave, isModalOpen, isReadOnly]);
 
   useEffect(() => {
-    if (!autoSaveEnabled || !hasUnsavedChanges || editingCell !== null) {
+    if (
+      isReadOnly ||
+      !autoSaveEnabled ||
+      !hasUnsavedChanges ||
+      editingCell !== null
+    ) {
       return;
     }
     const timer = window.setTimeout(() => {
@@ -898,7 +1194,7 @@ export function ExcelWorkspace({
     return () => {
       window.clearTimeout(timer);
     };
-  }, [autoSaveEnabled, editingCell, handleSave, hasUnsavedChanges]);
+  }, [autoSaveEnabled, editingCell, handleSave, hasUnsavedChanges, isReadOnly]);
 
   const handleExportXlsx = () => {
     let exportSheets = sheets;
@@ -937,14 +1233,18 @@ export function ExcelWorkspace({
   };
 
   const handleAddSheet = () => {
+    if (isReadOnly) {
+      return;
+    }
     if (editingCell) {
       commitCellValue(editingCell.originalRow, editingCell.col, editDraft);
       cancelBlurCommitRef.current = true;
       setEditingCell(null);
       setEditDraft('');
     }
-    const existingNames = new Set(sheets.map((s) => s.name.toLowerCase()));
-    let nextNum = sheets.length + 1;
+    const currentSheets = sheetsRef.current;
+    const existingNames = new Set(currentSheets.map((s) => s.name.toLowerCase()));
+    let nextNum = currentSheets.length + 1;
     while (existingNames.has(`sheet ${nextNum}`)) {
       nextNum += 1;
     }
@@ -952,17 +1252,23 @@ export function ExcelWorkspace({
       `sheet-${Date.now()}-${nextNum}`,
       `Sheet ${nextNum}`
     );
-    const nextIndex = sheets.length;
-    setSheets((prev) => [...prev, newSheet]);
+    const nextIndex = currentSheets.length;
+    const nextSheets = [...currentSheets, newSheet];
+    sheetsRef.current = nextSheets;
+    setSheets(nextSheets);
     setActiveSheetIdx(nextIndex);
     setSearchQuery('');
     setSortConfig(null);
     setSelection({ start: { row: 0, col: 0 }, end: { row: 0, col: 0 } });
     setHasUnsavedChanges(true);
     setJustSaved(false);
+    broadcastExcelPatch(newSheet.id, 0, 0, '', nextSheets);
   };
 
   const handleAddRow = () => {
+    if (isReadOnly) {
+      return;
+    }
     if (editingCell) {
       commitCellValue(editingCell.originalRow, editingCell.col, editDraft);
       cancelBlurCommitRef.current = true;
@@ -970,10 +1276,16 @@ export function ExcelWorkspace({
       setEditDraft('');
     }
     const newRowIndex = activeSheet.rows.length;
-    updateActiveSheet((sheet) => ({
-      ...sheet,
-      rows: [...sheet.rows, Array.from({ length: sheet.columns.length }, () => '')],
-    }));
+    updateActiveSheet(
+      (sheet) => ({
+        ...sheet,
+        rows: [
+          ...sheet.rows,
+          Array.from({ length: sheet.columns.length }, () => ''),
+        ],
+      }),
+      { rowIndex: newRowIndex, colIndex: 0, value: '' }
+    );
     if (searchQuery.trim()) {
       setSearchQuery('');
     }
@@ -987,6 +1299,9 @@ export function ExcelWorkspace({
   };
 
   const handleAddColumn = () => {
+    if (isReadOnly) {
+      return;
+    }
     if (editingCell) {
       commitCellValue(editingCell.originalRow, editingCell.col, editDraft);
       cancelBlurCommitRef.current = true;
@@ -994,11 +1309,14 @@ export function ExcelWorkspace({
       setEditDraft('');
     }
     const newColIndex = columnCount;
-    updateActiveSheet((sheet) => ({
-      ...sheet,
-      columns: createLetterColumns(sheet.columns.length + 1),
-      rows: sheet.rows.map((row) => [...row, '']),
-    }));
+    updateActiveSheet(
+      (sheet) => ({
+        ...sheet,
+        columns: createLetterColumns(sheet.columns.length + 1),
+        rows: sheet.rows.map((row) => [...row, '']),
+      }),
+      { rowIndex: 0, colIndex: newColIndex, value: '' }
+    );
     setSelection({
       start: { row: 0, col: newColIndex },
       end: { row: 0, col: newColIndex },
@@ -1006,7 +1324,7 @@ export function ExcelWorkspace({
   };
 
   const handleDeleteSelectedRows = () => {
-    if (!canDeleteSelectedRows) {
+    if (isReadOnly || !canDeleteSelectedRows) {
       return;
     }
     if (editingCell) {
@@ -1032,7 +1350,7 @@ export function ExcelWorkspace({
   };
 
   const handleToggleBold = () => {
-    if (!normalizedRange) {
+    if (isReadOnly || !normalizedRange) {
       return;
     }
     const targetBold = !anchorStyle.bold;
@@ -1055,7 +1373,7 @@ export function ExcelWorkspace({
   };
 
   const handleSetAlign = (align: 'left' | 'center' | 'right') => {
-    if (!normalizedRange) {
+    if (isReadOnly || !normalizedRange) {
       return;
     }
     updateActiveSheet((sheet) => {
@@ -1226,6 +1544,9 @@ export function ExcelWorkspace({
   };
 
   const handleCellDoubleClick = (visRowIdx: number, colIdx: number) => {
+    if (isReadOnly) {
+      return;
+    }
     const origRow = visibleRows[visRowIdx]?.originalIndex;
     if (origRow === undefined) {
       return;
@@ -1238,7 +1559,7 @@ export function ExcelWorkspace({
   };
 
   const handleClearSelectedCells = () => {
-    if (!normalizedRange) {
+    if (isReadOnly || !normalizedRange) {
       return;
     }
     updateActiveSheet((sheet) => {
@@ -1269,6 +1590,9 @@ export function ExcelWorkspace({
     }
 
     if (event.key === 'Enter' || event.key === 'F2') {
+      if (isReadOnly) {
+        return;
+      }
       event.preventDefault();
       if (anchorOriginalRow !== null && anchorCol !== null) {
         startCellEditing(anchorOriginalRow, anchorCol, 'cell');
@@ -1277,12 +1601,16 @@ export function ExcelWorkspace({
     }
 
     if (event.key === 'Backspace' || event.key === 'Delete') {
+      if (isReadOnly) {
+        return;
+      }
       event.preventDefault();
       handleClearSelectedCells();
       return;
     }
 
     if (
+      !isReadOnly &&
       !event.ctrlKey &&
       !event.metaKey &&
       !event.altKey &&
@@ -1337,8 +1665,22 @@ export function ExcelWorkspace({
     });
   };
 
+  const handleQuickInsertFormula = (formulaPrefix: string) => {
+    if (isReadOnly || anchorOriginalRow === null || anchorCol === null) {
+      return;
+    }
+    startCellEditing(anchorOriginalRow, anchorCol, 'formula', formulaPrefix);
+    window.requestAnimationFrame(() => {
+      if (formulaInputRef.current) {
+        formulaInputRef.current.focus();
+        const len = formulaInputRef.current.value.length;
+        formulaInputRef.current.setSelectionRange(len, len);
+      }
+    });
+  };
+
   const handleFormulaFocus = () => {
-    if (anchorOriginalRow === null || anchorCol === null) {
+    if (isReadOnly || anchorOriginalRow === null || anchorCol === null) {
       return;
     }
     if (
@@ -1360,6 +1702,9 @@ export function ExcelWorkspace({
   };
 
   const handleFormulaChange = (event: ChangeEvent<HTMLInputElement>) => {
+    if (isReadOnly) {
+      return;
+    }
     const nextValue = event.target.value;
     if (!editingCell && anchorOriginalRow !== null && anchorCol !== null) {
       startCellEditing(anchorOriginalRow, anchorCol, 'formula', nextValue);
@@ -1444,37 +1789,39 @@ export function ExcelWorkspace({
         </button>
       )}
 
-      <button
-        type="button"
-        onClick={handleSave}
-        title="Lưu thay đổi (Ctrl+S)"
-        className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all whitespace-nowrap shrink-0 ${
-          justSaved
-            ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
-            : hasUnsavedChanges
-              ? 'bg-[#15803D] hover:bg-[#166534] border-[#15803D] text-white shadow-sm'
-              : 'bg-[#F5F7F5] hover:bg-[#E9EFE9] border-[#D8E1D8] text-slate-700'
-        }`}
-      >
-        {justSaved ? (
-          <>
-            <Check className="w-3.5 h-3.5 shrink-0" />
-            <span>Đã lưu</span>
-          </>
-        ) : (
-          <>
-            <Save className="w-3.5 h-3.5 shrink-0" />
-            <span className="hidden sm:inline">Lưu thay đổi</span>
-            <span className="sm:hidden">Lưu</span>
-            {hasUnsavedChanges && (
-              <span
-                className="w-1.5 h-1.5 rounded-full bg-amber-300 shrink-0"
-                aria-hidden="true"
-              />
-            )}
-          </>
-        )}
-      </button>
+      {!isReadOnly && (
+        <button
+          type="button"
+          onClick={handleSave}
+          title="Lưu thay đổi (Ctrl+S)"
+          className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all whitespace-nowrap shrink-0 ${
+            justSaved
+              ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
+              : hasUnsavedChanges
+                ? 'bg-[#15803D] hover:bg-[#166534] border-[#15803D] text-white shadow-sm'
+                : 'bg-[#F5F7F5] hover:bg-[#E9EFE9] border-[#D8E1D8] text-slate-700'
+          }`}
+        >
+          {justSaved ? (
+            <>
+              <Check className="w-3.5 h-3.5 shrink-0" />
+              <span>Đã lưu</span>
+            </>
+          ) : (
+            <>
+              <Save className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden sm:inline">Lưu thay đổi</span>
+              <span className="sm:hidden">Lưu</span>
+              {hasUnsavedChanges && (
+                <span
+                  className="w-1.5 h-1.5 rounded-full bg-amber-300 shrink-0"
+                  aria-hidden="true"
+                />
+              )}
+            </>
+          )}
+        </button>
+      )}
 
       <button
         type="button"
@@ -1496,18 +1843,24 @@ export function ExcelWorkspace({
         theme="light"
         onBackHome={onBackHome}
         onShare={() => onOpenModal('share', buildLiveDocument(sheets))}
+        onRenameTitle={isReadOnly ? undefined : handleRenameTitle}
+        collaborators={collaborators}
+        selfSessionId={selfSessionId}
+        collabPermission={collabPermission}
         toolbar={topBarToolbar}
       />
 
-      {/* Thanh công cụ chỉnh sửa cấu trúc & định dạng ô */}
-      <div className="shrink-0 bg-[#F8FAF8] border-b border-[#E3E7E3] px-3 sm:px-4 py-1.5">
+      {/* Thanh công cụ chỉnh sửa cấu trúc & định dạng ô (Desktop md+) */}
+      <div className="hidden md:block shrink-0 bg-[#F8FAF8] border-b border-[#E3E7E3] px-3 sm:px-4 py-1.5">
         <div className="flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
           <div className="flex items-center gap-1.5 shrink-0">
             {/* Thêm / Xóa dòng & cột */}
             <button
               type="button"
+              onMouseDown={(event) => event.preventDefault()}
               onClick={handleAddRow}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-[#ECFDF3] border border-[#DCE3DC] hover:border-[#15803D]/40 text-xs font-medium text-slate-700 hover:text-[#15803D] transition-colors whitespace-nowrap shrink-0"
+              disabled={isReadOnly}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-[#ECFDF3] border border-[#DCE3DC] hover:border-[#15803D]/40 text-xs font-medium text-slate-700 hover:text-[#15803D] disabled:opacity-40 disabled:pointer-events-none transition-colors whitespace-nowrap shrink-0"
             >
               <Plus className="w-3.5 h-3.5 shrink-0" />
               <span>Thêm dòng</span>
@@ -1515,8 +1868,10 @@ export function ExcelWorkspace({
 
             <button
               type="button"
+              onMouseDown={(event) => event.preventDefault()}
               onClick={handleAddColumn}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-[#ECFDF3] border border-[#DCE3DC] hover:border-[#15803D]/40 text-xs font-medium text-slate-700 hover:text-[#15803D] transition-colors whitespace-nowrap shrink-0"
+              disabled={isReadOnly}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-[#ECFDF3] border border-[#DCE3DC] hover:border-[#15803D]/40 text-xs font-medium text-slate-700 hover:text-[#15803D] disabled:opacity-40 disabled:pointer-events-none transition-colors whitespace-nowrap shrink-0"
             >
               <Plus className="w-3.5 h-3.5 shrink-0" />
               <span>Thêm cột</span>
@@ -1524,12 +1879,15 @@ export function ExcelWorkspace({
 
             <button
               type="button"
+              onMouseDown={(event) => event.preventDefault()}
               onClick={handleDeleteSelectedRows}
-              disabled={!canDeleteSelectedRows}
+              disabled={isReadOnly || !canDeleteSelectedRows}
               title={
-                canDeleteSelectedRows
-                  ? 'Xóa các dòng đang chọn'
-                  : 'Cần giữ lại ít nhất 1 dòng trong bảng tính'
+                isReadOnly
+                  ? 'Chế độ chỉ xem'
+                  : canDeleteSelectedRows
+                    ? 'Xóa các dòng đang chọn'
+                    : 'Cần giữ lại ít nhất 1 dòng trong bảng tính'
               }
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-rose-50 border border-[#DCE3DC] hover:border-rose-200 text-xs font-medium text-slate-700 hover:text-rose-600 disabled:opacity-40 disabled:hover:bg-white disabled:hover:text-slate-700 disabled:hover:border-[#DCE3DC] transition-colors whitespace-nowrap shrink-0"
             >
@@ -1544,7 +1902,7 @@ export function ExcelWorkspace({
               type="button"
               onMouseDown={(event) => event.preventDefault()}
               onClick={handleToggleBold}
-              disabled={!normalizedRange}
+              disabled={isReadOnly || !normalizedRange}
               aria-pressed={anchorStyle.bold === true}
               title="In đậm ô/vùng đang chọn"
               className={`inline-flex items-center justify-center w-7 h-7 rounded-lg border text-xs transition-colors shrink-0 disabled:opacity-40 ${
@@ -1565,7 +1923,7 @@ export function ExcelWorkspace({
                 type="button"
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => handleSetAlign('left')}
-                disabled={!normalizedRange}
+                disabled={isReadOnly || !normalizedRange}
                 aria-label="Căn trái"
                 title="Căn trái"
                 className={`p-1 rounded-md transition-colors disabled:opacity-40 ${
@@ -1580,7 +1938,7 @@ export function ExcelWorkspace({
                 type="button"
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => handleSetAlign('center')}
-                disabled={!normalizedRange}
+                disabled={isReadOnly || !normalizedRange}
                 aria-label="Căn giữa"
                 title="Căn giữa"
                 className={`p-1 rounded-md transition-colors disabled:opacity-40 ${
@@ -1595,7 +1953,7 @@ export function ExcelWorkspace({
                 type="button"
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => handleSetAlign('right')}
-                disabled={!normalizedRange}
+                disabled={isReadOnly || !normalizedRange}
                 aria-label="Căn phải"
                 title="Căn phải"
                 className={`p-1 rounded-md transition-colors disabled:opacity-40 ${
@@ -1613,6 +1971,7 @@ export function ExcelWorkspace({
                 <span className="h-4 w-px bg-[#D7DFD7] mx-0.5 shrink-0" aria-hidden="true" />
                 <button
                   type="button"
+                  onMouseDown={(event) => event.preventDefault()}
                   onClick={handleQuickSelectNumericColumn}
                   title="Chọn nhanh cột số liệu để xem SUM / AVG"
                   className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#15803D]/10 hover:bg-[#15803D]/15 border border-[#15803D]/25 text-[#15803D] text-xs font-semibold transition-colors whitespace-nowrap shrink-0"
@@ -1659,12 +2018,17 @@ export function ExcelWorkspace({
               ref={formulaInputRef}
               type="text"
               value={formulaInputValue}
+              readOnly={isReadOnly}
               disabled={anchorOriginalRow === null || anchorCol === null}
               onFocus={handleFormulaFocus}
               onChange={handleFormulaChange}
               onKeyDown={handleFormulaKeyDown}
               onBlur={handleFormulaBlur}
-              placeholder="Nhập giá trị hoặc công thức (vd: =SUM(D2:D9))..."
+              placeholder={
+                isReadOnly
+                  ? 'Chế độ chỉ xem — chọn ô để xem giá trị hoặc công thức'
+                  : 'Nhập giá trị hoặc công thức (vd: =SUM(D2:D9))...'
+              }
               aria-label="Thanh công thức fx"
               className="w-full py-0.5 bg-transparent text-xs sm:text-[13px] font-medium text-slate-800 placeholder:text-slate-400 focus:outline-none disabled:opacity-50"
             />
@@ -1700,12 +2064,13 @@ export function ExcelWorkspace({
       </div>
 
       {/* Lưới bảng tính ở giữa */}
-      <div
-        ref={gridContainerRef}
-        tabIndex={0}
-        onKeyDown={handleGridKeyDown}
-        className="flex-1 min-h-0 overflow-auto bg-white select-none focus:outline-none"
-      >
+      <div className="relative flex-1 min-h-0 flex overflow-hidden">
+        <div
+          ref={gridContainerRef}
+          tabIndex={0}
+          onKeyDown={handleGridKeyDown}
+          className="w-full h-full overflow-auto scrollbar-none pr-4 bg-white select-none focus:outline-none"
+        >
         <table className="w-max min-w-full border-separate border-spacing-0 text-[13px]">
           <thead>
             <tr className="h-8">
@@ -1901,6 +2266,21 @@ export function ExcelWorkspace({
                         editingCell.originalRow === origRowIdx &&
                         editingCell.col === colIdx;
 
+                      const cellCoord = formatCellRef(origRowIdx, colIdx);
+                      const cellPeers = peerPresenceByCellCoord.get(cellCoord);
+                      const primaryPeer = cellPeers?.[0];
+                      const peerBadgeText = primaryPeer
+                        ? cellPeers && cellPeers.length > 1
+                          ? `${primaryPeer.displayName} +${cellPeers.length - 1}`
+                          : primaryPeer.displayName
+                        : null;
+                      const peerBadgePositionClass =
+                        visRowIdx === 0
+                          ? visibleRows.length > 1
+                            ? 'top-full left-0'
+                            : 'top-0 right-0'
+                          : 'bottom-full left-0';
+
                       let perimeterShadow: string | undefined;
                       if (
                         isSelected &&
@@ -1974,6 +2354,29 @@ export function ExcelWorkspace({
                                   : 'bg-white group-hover:bg-[#FAFDF9]'
                           }`}
                         >
+                          {primaryPeer && (
+                            <>
+                              <span
+                                aria-hidden="true"
+                                style={{
+                                  boxShadow: `inset 0 0 0 2px ${primaryPeer.color}`,
+                                }}
+                                className="absolute inset-0 pointer-events-none z-10"
+                              />
+                              {peerBadgeText && (
+                                <span
+                                  style={{
+                                    backgroundColor: primaryPeer.color,
+                                  }}
+                                  className={`absolute ${peerBadgePositionClass} z-20 pointer-events-none px-1.5 py-0.5 rounded-sm shadow-sm text-[10px] font-semibold leading-none text-white whitespace-nowrap max-w-[140px] truncate`}
+                                >
+                                  {peerBadgeText}
+                                  {primaryPeer.isTyping ? '…' : ''}
+                                </span>
+                              )}
+                            </>
+                          )}
+
                           {isEditingThisCell ? (
                             <input
                               ref={cellInputRef}
@@ -1984,7 +2387,7 @@ export function ExcelWorkspace({
                               }
                               onKeyDown={handleInlineInputKeyDown}
                               onBlur={handleInlineInputBlur}
-                              aria-label={`Chỉnh sửa ô ${formatCellRef(origRowIdx, colIdx)}`}
+                              aria-label={`Chỉnh sửa ô ${cellCoord}`}
                               className={`w-full h-9 px-3 bg-white text-[13px] text-slate-900 focus:outline-none select-text ${alignClass} ${
                                 style?.bold ? 'font-bold' : 'font-normal'
                               }`}
@@ -2009,10 +2412,17 @@ export function ExcelWorkspace({
             )}
           </tbody>
         </table>
+        </div>
+
+        <CustomVerticalScrollbar
+          scrollContainerRef={gridContainerRef}
+          theme="light"
+          getDragLabel={({ percent }) => `${Math.round(percent)}%`}
+        />
       </div>
 
       {/* Thanh đáy cố định: Sheet tabs + Thêm Sheet + Tính nhanh SUM / AVG / COUNT */}
-      <div className="shrink-0 border-t border-[#DDE3DD] bg-[#F3F6F3] pb-safe">
+      <div className="shrink-0 border-t border-[#DDE3DD] bg-[#F3F6F3] pb-14 md:pb-safe">
         <div className="px-3 sm:px-4 py-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
           {/* Trái: Tabs chuyển trang tính + nút Thêm Sheet */}
           <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar min-w-0">
@@ -2029,6 +2439,7 @@ export function ExcelWorkspace({
                     type="button"
                     role="tab"
                     aria-selected={isActive}
+                    onMouseDown={(event) => event.preventDefault()}
                     onClick={() => handleSelectSheet(idx)}
                     className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs whitespace-nowrap shrink-0 transition-all ${
                       isActive
@@ -2049,9 +2460,15 @@ export function ExcelWorkspace({
 
             <button
               type="button"
+              onMouseDown={(event) => event.preventDefault()}
               onClick={handleAddSheet}
-              title="Thêm trang tính mới (10 dòng × 6 cột)"
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/80 hover:bg-white border border-dashed border-[#B8C7B8] hover:border-[#15803D] text-xs font-semibold text-slate-600 hover:text-[#15803D] whitespace-nowrap shrink-0 transition-colors"
+              disabled={isReadOnly}
+              title={
+                isReadOnly
+                  ? 'Chế độ chỉ xem'
+                  : 'Thêm trang tính mới (10 dòng × 6 cột)'
+              }
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/80 hover:bg-white border border-dashed border-[#B8C7B8] hover:border-[#15803D] text-xs font-semibold text-slate-600 hover:text-[#15803D] disabled:opacity-40 disabled:pointer-events-none whitespace-nowrap shrink-0 transition-colors"
             >
               <Plus className="w-3.5 h-3.5 shrink-0" />
               <span>Thêm Sheet</span>
@@ -2105,6 +2522,7 @@ export function ExcelWorkspace({
                 {numericColumnIndices.length > 0 && visibleRows.length > 0 && (
                   <button
                     type="button"
+                    onMouseDown={(event) => event.preventDefault()}
                     onClick={handleQuickSelectNumericColumn}
                     className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white hover:bg-[#ECFDF3] border border-dashed border-[#15803D]/40 text-[#15803D] font-medium whitespace-nowrap shrink-0 transition-colors"
                   >
@@ -2120,6 +2538,407 @@ export function ExcelWorkspace({
           </div>
         </div>
       </div>
+
+      {/* Thanh công cụ Mobile (< md): 1 hàng thu gọn ở đáy hoặc Bảng công cụ chi tiết mở rộng */}
+      {!isMobileToolbarExpanded ? (
+        <div className="fixed bottom-0 inset-x-0 z-40 bg-slate-100 border-t border-slate-200 h-12 flex items-center text-slate-800 md:hidden">
+          <div className="overflow-x-auto no-scrollbar flex items-center gap-1 px-2 flex-1 min-w-0">
+            <button
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={handleToggleBold}
+              disabled={isReadOnly || !normalizedRange}
+              aria-pressed={anchorStyle.bold === true}
+              title="In đậm ô"
+              className={`inline-flex items-center justify-center h-8 w-8 rounded-lg border text-xs font-bold shrink-0 transition-colors disabled:opacity-40 ${
+                anchorStyle.bold
+                  ? 'bg-[#DCFCE7] border-[#15803D] text-[#15803D]'
+                  : 'bg-white border-slate-200 text-slate-700'
+              }`}
+            >
+              <Bold className="w-3.5 h-3.5" />
+            </button>
+
+            <button
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => handleSetAlign('left')}
+              disabled={isReadOnly || !normalizedRange}
+              aria-label="Căn trái"
+              title="Căn trái"
+              className={`inline-flex items-center justify-center h-8 w-8 rounded-lg border shrink-0 transition-colors disabled:opacity-40 ${
+                anchorEffectiveAlign === 'left'
+                  ? 'bg-[#DCFCE7] border-[#15803D] text-[#15803D]'
+                  : 'bg-white border-slate-200 text-slate-700'
+              }`}
+            >
+              <AlignLeft className="w-3.5 h-3.5" />
+            </button>
+
+            <button
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => handleSetAlign('center')}
+              disabled={isReadOnly || !normalizedRange}
+              aria-label="Căn giữa"
+              title="Căn giữa"
+              className={`inline-flex items-center justify-center h-8 w-8 rounded-lg border shrink-0 transition-colors disabled:opacity-40 ${
+                anchorEffectiveAlign === 'center'
+                  ? 'bg-[#DCFCE7] border-[#15803D] text-[#15803D]'
+                  : 'bg-white border-slate-200 text-slate-700'
+              }`}
+            >
+              <AlignCenter className="w-3.5 h-3.5" />
+            </button>
+
+            <button
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => handleSetAlign('right')}
+              disabled={isReadOnly || !normalizedRange}
+              aria-label="Căn phải"
+              title="Căn phải"
+              className={`inline-flex items-center justify-center h-8 w-8 rounded-lg border shrink-0 transition-colors disabled:opacity-40 ${
+                anchorEffectiveAlign === 'right'
+                  ? 'bg-[#DCFCE7] border-[#15803D] text-[#15803D]'
+                  : 'bg-white border-slate-200 text-slate-700'
+              }`}
+            >
+              <AlignRight className="w-3.5 h-3.5" />
+            </button>
+
+            <button
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={handleAddRow}
+              disabled={isReadOnly}
+              className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-white border border-slate-200 text-xs font-medium text-slate-700 disabled:opacity-40 whitespace-nowrap shrink-0"
+            >
+              <Plus className="w-3.5 h-3.5 text-[#15803D] shrink-0" />
+              <span>Dòng</span>
+            </button>
+
+            <button
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={handleAddColumn}
+              disabled={isReadOnly}
+              className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-white border border-slate-200 text-xs font-medium text-slate-700 disabled:opacity-40 whitespace-nowrap shrink-0"
+            >
+              <Plus className="w-3.5 h-3.5 text-[#15803D] shrink-0" />
+              <span>Cột</span>
+            </button>
+
+            <button
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={handleDeleteSelectedRows}
+              disabled={isReadOnly || !canDeleteSelectedRows}
+              className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-white border border-slate-200 text-xs font-medium text-rose-600 disabled:opacity-40 whitespace-nowrap shrink-0"
+            >
+              <Trash2 className="w-3.5 h-3.5 shrink-0" />
+              <span>Xóa dòng</span>
+            </button>
+
+            <button
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={handleAddSheet}
+              disabled={isReadOnly}
+              className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-white border border-slate-200 text-xs font-medium text-slate-700 disabled:opacity-40 whitespace-nowrap shrink-0"
+            >
+              <Plus className="w-3.5 h-3.5 text-[#15803D] shrink-0" />
+              <span>Sheet</span>
+            </button>
+
+            <button
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={handleQuickSelectNumericColumn}
+              disabled={
+                numericColumnIndices.length === 0 || visibleRows.length === 0
+              }
+              className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-[#DCFCE7] border border-[#15803D]/30 text-xs font-semibold text-[#15803D] disabled:opacity-40 whitespace-nowrap shrink-0"
+            >
+              <Sigma className="w-3.5 h-3.5 shrink-0" />
+              <span>Chọn cột số</span>
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => setIsMobileToolbarExpanded(true)}
+            aria-label="Mở rộng bảng công cụ chi tiết"
+            title="Mở rộng bảng công cụ chi tiết"
+            className="h-full px-3.5 border-l border-slate-300 flex items-center justify-center text-slate-700 hover:bg-slate-200/70 active:bg-slate-200 shrink-0 transition-colors"
+          >
+            <ChevronUp className="w-4 h-4" />
+          </button>
+        </div>
+      ) : (
+        <div className="fixed bottom-0 inset-x-0 z-40 h-[44vh] bg-white border-t border-slate-200 rounded-t-2xl shadow-2xl flex flex-col text-slate-900 md:hidden">
+          {/* Hàng tiêu đề bảng */}
+          <div className="shrink-0 flex items-center justify-between gap-2 px-3.5 py-2.5 border-b border-slate-200 bg-slate-50 rounded-t-2xl">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-[#DCFCE7] border border-[#15803D]/25 text-xs font-bold text-[#15803D] tabular-nums shrink-0">
+                {rangeLabel}
+              </span>
+              <span className="text-xs font-semibold text-slate-700 truncate">
+                {activeSheet.name}
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => setIsMobileToolbarExpanded(false)}
+              aria-label="Thu gọn bảng công cụ"
+              title="Thu gọn bảng công cụ"
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-200/80 hover:bg-slate-300/70 text-xs font-semibold text-slate-700 shrink-0 transition-colors"
+            >
+              <span>Thu gọn</span>
+              <ChevronDown className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Nội dung bảng công cụ mở rộng */}
+          <div className="flex-1 min-h-0 overflow-y-auto px-3.5 py-3 space-y-3 pb-safe">
+            {/* Hàng 1 — Định dạng ô */}
+            <div className="space-y-1.5">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                Định dạng ô
+              </p>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={handleToggleBold}
+                  disabled={isReadOnly || !normalizedRange}
+                  aria-pressed={anchorStyle.bold === true}
+                  className={`inline-flex items-center gap-1.5 h-9 px-3 rounded-xl border text-xs font-semibold transition-colors disabled:opacity-40 ${
+                    anchorStyle.bold
+                      ? 'bg-[#DCFCE7] border-[#15803D] text-[#15803D]'
+                      : 'bg-slate-50 border-slate-200 text-slate-700'
+                  }`}
+                >
+                  <Bold className="w-3.5 h-3.5" />
+                  <span>In đậm</span>
+                </button>
+
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => handleSetAlign('left')}
+                  disabled={isReadOnly || !normalizedRange}
+                  className={`inline-flex items-center gap-1 h-9 px-2.5 rounded-xl border text-xs font-medium transition-colors disabled:opacity-40 ${
+                    anchorEffectiveAlign === 'left'
+                      ? 'bg-[#DCFCE7] border-[#15803D] text-[#15803D] font-semibold'
+                      : 'bg-slate-50 border-slate-200 text-slate-700'
+                  }`}
+                >
+                  <AlignLeft className="w-3.5 h-3.5" />
+                  <span>Căn trái</span>
+                </button>
+
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => handleSetAlign('center')}
+                  disabled={isReadOnly || !normalizedRange}
+                  className={`inline-flex items-center gap-1 h-9 px-2.5 rounded-xl border text-xs font-medium transition-colors disabled:opacity-40 ${
+                    anchorEffectiveAlign === 'center'
+                      ? 'bg-[#DCFCE7] border-[#15803D] text-[#15803D] font-semibold'
+                      : 'bg-slate-50 border-slate-200 text-slate-700'
+                  }`}
+                >
+                  <AlignCenter className="w-3.5 h-3.5" />
+                  <span>Căn giữa</span>
+                </button>
+
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => handleSetAlign('right')}
+                  disabled={isReadOnly || !normalizedRange}
+                  className={`inline-flex items-center gap-1 h-9 px-2.5 rounded-xl border text-xs font-medium transition-colors disabled:opacity-40 ${
+                    anchorEffectiveAlign === 'right'
+                      ? 'bg-[#DCFCE7] border-[#15803D] text-[#15803D] font-semibold'
+                      : 'bg-slate-50 border-slate-200 text-slate-700'
+                  }`}
+                >
+                  <AlignRight className="w-3.5 h-3.5" />
+                  <span>Căn phải</span>
+                </button>
+
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={handleClearSelectedCells}
+                  disabled={isReadOnly || !normalizedRange}
+                  className="inline-flex items-center gap-1 h-9 px-3 rounded-xl bg-rose-50 border border-rose-200 text-xs font-semibold text-rose-700 disabled:opacity-40 transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Xóa nội dung ô</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Hàng 2 — Cấu trúc Dòng & Cột */}
+            <div className="space-y-1.5">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                Cấu trúc Dòng &amp; Cột
+              </p>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={handleAddRow}
+                  disabled={isReadOnly}
+                  className="inline-flex items-center gap-1 h-9 px-3 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-700 disabled:opacity-40"
+                >
+                  <Plus className="w-3.5 h-3.5 text-[#15803D]" />
+                  <span>Thêm dòng</span>
+                </button>
+
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={handleAddColumn}
+                  disabled={isReadOnly}
+                  className="inline-flex items-center gap-1 h-9 px-3 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-700 disabled:opacity-40"
+                >
+                  <Plus className="w-3.5 h-3.5 text-[#15803D]" />
+                  <span>Thêm cột</span>
+                </button>
+
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={handleDeleteSelectedRows}
+                  disabled={isReadOnly || !canDeleteSelectedRows}
+                  className="inline-flex items-center gap-1 h-9 px-3 rounded-xl bg-rose-50 border border-rose-200 text-xs font-semibold text-rose-700 disabled:opacity-40"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Xóa dòng chọn</span>
+                </button>
+
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={handleSelectAllVisible}
+                  className="inline-flex items-center gap-1 h-9 px-3 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-700"
+                >
+                  <Table2 className="w-3.5 h-3.5 text-[#15803D]" />
+                  <span>Chọn toàn bộ bảng</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Hàng 3 — Công thức & Thống kê nhanh */}
+            <div className="space-y-1.5">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                Công thức &amp; Thống kê nhanh
+              </p>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => handleQuickInsertFormula('=SUM(')}
+                  disabled={
+                    isReadOnly || anchorOriginalRow === null || anchorCol === null
+                  }
+                  className="inline-flex items-center gap-1 h-9 px-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-bold text-[#15803D] disabled:opacity-40"
+                >
+                  <span>=SUM()</span>
+                </button>
+
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => handleQuickInsertFormula('=AVERAGE(')}
+                  disabled={
+                    isReadOnly || anchorOriginalRow === null || anchorCol === null
+                  }
+                  className="inline-flex items-center gap-1 h-9 px-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-bold text-[#15803D] disabled:opacity-40"
+                >
+                  <span>=AVERAGE()</span>
+                </button>
+
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={handleQuickSelectNumericColumn}
+                  disabled={
+                    numericColumnIndices.length === 0 ||
+                    visibleRows.length === 0
+                  }
+                  className="inline-flex items-center gap-1 h-9 px-3 rounded-xl bg-[#DCFCE7] border border-[#15803D]/30 text-xs font-semibold text-[#15803D] disabled:opacity-40"
+                >
+                  <Sigma className="w-3.5 h-3.5" />
+                  <span>Chọn cột số</span>
+                </button>
+
+                <span className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-xs font-semibold text-slate-700 tabular-nums">
+                  <strong className="text-[#15803D]">SUM:</strong>{' '}
+                  {formatNumber(selectionStats.sum)}
+                </span>
+
+                <span className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-xs font-semibold text-slate-700 tabular-nums">
+                  <strong className="text-slate-500">AVG:</strong>{' '}
+                  {selectionStats.avg !== null
+                    ? formatNumber(selectionStats.avg)
+                    : '—'}
+                </span>
+
+                <span className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-xs font-semibold text-slate-700 tabular-nums">
+                  <strong className="text-slate-500">COUNT:</strong>{' '}
+                  {selectionStats.nonEmptyCount}
+                </span>
+              </div>
+            </div>
+
+            {/* Hàng 4 — Trang tính (Sheets) */}
+            <div className="space-y-1.5">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                Trang tính (Sheets)
+              </p>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {sheets.map((sheet, idx) => {
+                  const isActive = idx === safeSheetIdx;
+                  return (
+                    <button
+                      key={`mobile-sheet-${sheet.id}`}
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => handleSelectSheet(idx)}
+                      className={`inline-flex items-center gap-1.5 h-9 px-3 rounded-xl border text-xs transition-colors ${
+                        isActive
+                          ? 'bg-[#DCFCE7] border-[#15803D] text-[#15803D] font-bold'
+                          : 'bg-slate-50 border-slate-200 text-slate-700 font-medium'
+                      }`}
+                    >
+                      <FileSpreadsheet className="w-3.5 h-3.5 shrink-0" />
+                      <span>{sheet.name}</span>
+                    </button>
+                  );
+                })}
+
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={handleAddSheet}
+                  disabled={isReadOnly}
+                  className="inline-flex items-center gap-1 h-9 px-3 rounded-xl bg-white border border-dashed border-[#15803D]/50 text-xs font-semibold text-[#15803D] disabled:opacity-40"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Thêm Sheet</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

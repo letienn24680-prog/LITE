@@ -18,42 +18,87 @@
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
   }
-  /* Custom slim scrollbar — light surface (#FAF8F5) default */
+  /* Unified custom scrollbar — light surface (#F1F1EF) default */
   * {
     scrollbar-width: thin;
-    scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+    scrollbar-color: #c4c9d1 #f1f1ef;
   }
 
   *::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 10px;
+    height: 8px;
   }
 
   *::-webkit-scrollbar-track {
-    background: transparent;
+    background: #f1f1ef;
   }
 
   *::-webkit-scrollbar-thumb {
-    background-color: rgba(148, 163, 184, 0.42);
+    background-color: #c4c9d1;
     border-radius: 9999px;
-    border: 1px solid transparent;
-    background-clip: content-box;
+    border: 2px solid #f1f1ef;
     transition: background-color 150ms ease;
   }
 
   *::-webkit-scrollbar-thumb:hover {
-    background-color: rgba(100, 116, 139, 0.65);
+    background-color: #9ca3af;
+  }
+
+  *::-webkit-scrollbar-thumb:active {
+    background-color: #6b7280;
+  }
+
+  *::-webkit-scrollbar-button {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+
+  *::-webkit-scrollbar-button:single-button:vertical:decrement {
+    display: block;
+    width: 10px;
+    height: 14px;
+    background-color: #f1f1ef;
+    background-repeat: no-repeat;
+    background-position: center;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%239CA3AF' d='M5 1L9 5.5H1L5 1Z'/%3E%3C/svg%3E");
+  }
+
+  *::-webkit-scrollbar-button:single-button:vertical:decrement:hover,
+  *::-webkit-scrollbar-button:single-button:vertical:decrement:active {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%234B5563' d='M5 1L9 5.5H1L5 1Z'/%3E%3C/svg%3E");
+  }
+
+  *::-webkit-scrollbar-button:single-button:vertical:increment {
+    display: block;
+    width: 10px;
+    height: 14px;
+    background-color: #f1f1ef;
+    background-repeat: no-repeat;
+    background-position: center;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%239CA3AF' d='M5 5.5L1 1H9L5 5.5Z'/%3E%3C/svg%3E");
+  }
+
+  *::-webkit-scrollbar-button:single-button:vertical:increment:hover,
+  *::-webkit-scrollbar-button:single-button:vertical:increment:active {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%234B5563' d='M5 5.5L1 1H9L5 5.5Z'/%3E%3C/svg%3E");
   }
 }
 
 @layer utilities {
-  .no-scrollbar {
+  .no-scrollbar,
+  .scrollbar-none {
     -ms-overflow-style: none;
     scrollbar-width: none;
   }
 
-  .no-scrollbar::-webkit-scrollbar {
+  .no-scrollbar::-webkit-scrollbar,
+  .scrollbar-none::-webkit-scrollbar,
+  .no-scrollbar::-webkit-scrollbar-button,
+  .scrollbar-none::-webkit-scrollbar-button {
     display: none;
+    width: 0;
+    height: 0;
   }
 
   .pb-safe {
@@ -71,6 +116,15 @@
   scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
 }
 
+.scrollbar-dark::-webkit-scrollbar-track,
+[class*='#1E2430']::-webkit-scrollbar-track,
+[class*='#1E2430'] *::-webkit-scrollbar-track,
+[class*='#181D27']::-webkit-scrollbar-track,
+[class*='#273041']::-webkit-scrollbar-track,
+[class*='#1B2230']::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 .scrollbar-dark::-webkit-scrollbar-thumb,
 [class*='#1E2430']::-webkit-scrollbar-thumb,
 [class*='#1E2430'] *::-webkit-scrollbar-thumb,
@@ -78,6 +132,24 @@
 [class*='#273041']::-webkit-scrollbar-thumb,
 [class*='#1B2230']::-webkit-scrollbar-thumb {
   background-color: rgba(255, 255, 255, 0.2);
+  border-color: transparent;
+}
+
+.scrollbar-dark::-webkit-scrollbar-button:single-button:vertical:decrement,
+.scrollbar-dark::-webkit-scrollbar-button:single-button:vertical:increment,
+[class*='#1E2430']::-webkit-scrollbar-button:single-button:vertical:decrement,
+[class*='#1E2430']::-webkit-scrollbar-button:single-button:vertical:increment,
+[class*='#1E2430'] *::-webkit-scrollbar-button:single-button:vertical:decrement,
+[class*='#1E2430'] *::-webkit-scrollbar-button:single-button:vertical:increment,
+[class*='#181D27']::-webkit-scrollbar-button:single-button:vertical:decrement,
+[class*='#181D27']::-webkit-scrollbar-button:single-button:vertical:increment,
+[class*='#273041']::-webkit-scrollbar-button:single-button:vertical:decrement,
+[class*='#273041']::-webkit-scrollbar-button:single-button:vertical:increment,
+[class*='#1B2230']::-webkit-scrollbar-button:single-button:vertical:decrement,
+[class*='#1B2230']::-webkit-scrollbar-button:single-button:vertical:increment {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .scrollbar-dark::-webkit-scrollbar-thumb:hover,
@@ -106,4 +178,64 @@
 [class*='#F7EFE5']::-webkit-scrollbar-thumb:hover,
 [class*='#F7EFE5'] *::-webkit-scrollbar-thumb:hover {
   background-color: rgba(120, 106, 92, 0.55);
+}
+
+/* Word Workspace Page Layout Modes: Print Layout vs Mobile Reflow View */
+.word-layout-print {
+  transform-origin: top center;
+}
+
+.word-layout-print .lite-docx-wrapper {
+  align-items: center;
+}
+
+.word-layout-print .lite-docx-wrapper section.lite-docx {
+  width: 794px;
+  max-width: 794px;
+}
+
+.word-layout-mobile {
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.word-layout-mobile .lite-docx-wrapper,
+.word-layout-mobile section.lite-docx,
+.word-layout-mobile .lite-word-editor-surface {
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  min-height: auto !important;
+  padding: 16px 18px !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+  border-radius: 12px !important;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.word-layout-mobile p,
+.word-layout-mobile li,
+.word-layout-mobile h1,
+.word-layout-mobile h2,
+.word-layout-mobile h3,
+.word-layout-mobile span {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.word-layout-mobile img {
+  max-width: 100% !important;
+  height: auto !important;
+}
+
+.word-layout-mobile table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100% !important;
+  -webkit-overflow-scrolling: touch;
 }

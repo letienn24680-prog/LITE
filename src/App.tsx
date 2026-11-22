@@ -3,6 +3,10 @@ import { SidebarRail } from './components/layout/SidebarRail';
 import { MobileTopHeader } from './components/layout/MobileTopHeader';
 import { MobileBottomNav } from './components/layout/MobileBottomNav';
 import { DocumentLibrary } from './components/workspace/DocumentLibrary';
+import {
+  LocationPanel,
+  type LocationSourceKey,
+} from './components/workspace/LocationPanel';
 import { SlideWorkspace } from './components/workspaces/SlideWorkspace';
 import { WordWorkspace } from './components/workspaces/WordWorkspace';
 import { ExcelWorkspace } from './components/workspaces/ExcelWorkspace';
@@ -12,13 +16,20 @@ import { AuthModal } from './components/modals/AuthModal';
 import { SettingsModal } from './components/modals/SettingsModal';
 import { HelpModal } from './components/modals/HelpModal';
 import { CloudActionModal } from './components/modals/CloudActionModal';
+import { GoogleDriveBrowserModal } from './components/modals/GoogleDriveBrowserModal';
+import { ShareCollabModal } from './components/modals/ShareCollabModal';
 import { MobileRemoteView } from './components/remote/MobileRemoteView';
 import { SharedDocumentView } from './components/share/SharedDocumentView';
-import { LEGACY_MOCK_DOCUMENT_IDS } from './data/mockDocuments';
+import {
+  createNewEditableDocument,
+  LEGACY_MOCK_DOCUMENT_IDS,
+  type CreateEditableDocumentParams,
+} from './data/mockDocuments';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
 import {
   buildCloudUserSummary,
   deleteCloudDocument,
+  downloadCloudFileArrayBuffer,
   fetchUserDocuments,
   getCloudFileObjectUrl,
   syncLocalDocumentsToCloud,
@@ -31,7 +42,23 @@ import {
   uploadFileViaR2PresignedUrl,
 } from './services/r2Storage';
 import { removeLocalSharesForDocumentIds } from './services/shareService';
-import { parseUploadedFile } from './utils/fileParser';
+import {
+  getClientSessionId,
+  joinDocumentRealtimeRoom,
+  loadSharedWithMeDocuments,
+  resolveSharedDocument,
+  type CollabPermission,
+  type CollaboratorPresence,
+  type DocRealtimePatch,
+  type RealtimeRoomHandle,
+} from './services/realtimeCollab';
+import {
+  clearStoredGoogleDriveToken,
+  getStoredGoogleDriveToken,
+  setStoredGoogleDriveToken,
+  type GoogleDriveFileItem,
+} from './services/googleDrive';
+import { parsePptxArrayBuffer, parseUploadedFile } from './utils/fileParser';
 import type {
   CloudUserSummary,
   DocumentItem,
@@ -39,6 +66,7 @@ import type {
   ModalType,
   ShareAccessLevel,
   SidebarNavKey,
+  SlidePreviewItem,
   SyncStatus,
   UserSettings,
   UtilityModalType,
@@ -100,6 +128,15 @@ function parseDocIdFromHash(hash: string): string | null {
   return decoded.length > 0 ? decoded : null;
 }
 
+function parseCollabShareTokenFromSearch(search: string): string | null {
+  const raw = new URLSearchParams(search).get('share');
+  if (!raw) {
+    return null;
+  }
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function isValidWordTheme(value: unknown): value is WordPaperTheme {
   return value === 'light' || value === 'sepia' || value === 'dark';
 }
@@ -159,17 +196,24 @@ function isValidStoredDocument(value: unknown): value is DocumentItem {
 
 function sanitizeDocumentForStorage(doc: DocumentItem): DocumentItem {
   const safeSlides = doc.slidesPreview.map((slide) => {
-    if (!slide.images || slide.images.length === 0) {
+    const hasImages = Boolean(slide.images && slide.images.length > 0);
+    const hasBlobBg = Boolean(slide.backgroundImageSrc?.startsWith('blob:'));
+    if (!hasImages && !hasBlobBg) {
       return slide;
     }
-    const persistableImages = slide.images.filter(
-      (img) => !img.src.startsWith('blob:')
-    );
     const nextSlide = { ...slide };
-    if (persistableImages.length > 0) {
-      nextSlide.images = persistableImages;
-    } else {
-      delete nextSlide.images;
+    if (nextSlide.images && nextSlide.images.length > 0) {
+      const persistableImages = nextSlide.images.filter(
+        (img) => !img.src.startsWith('blob:')
+      );
+      if (persistableImages.length > 0) {
+        nextSlide.images = persistableImages;
+      } else {
+        delete nextSlide.images;
+      }
+    }
+    if (nextSlide.backgroundImageSrc?.startsWith('blob:')) {
+      delete nextSlide.backgroundImageSrc;
     }
     return nextSlide;
   });
@@ -179,6 +223,7 @@ function sanitizeDocumentForStorage(doc: DocumentItem): DocumentItem {
     slidesPreview: safeSlides,
   };
   delete nextDoc.sourceFile;
+  delete nextDoc.rawArrayBuffer;
   if (nextDoc.objectUrl?.startsWith('blob:')) {
     delete nextDoc.objectUrl;
   }
@@ -256,9 +301,14 @@ function preserveInMemoryRuntimeFields(
   if (!existing) {
     return incoming;
   }
+  const rawArrayBuffer = existing.rawArrayBuffer ?? incoming.rawArrayBuffer;
+  const slideAspectRatio =
+    existing.slideAspectRatio ?? incoming.slideAspectRatio;
   return {
     ...incoming,
     ...(existing.sourceFile ? { sourceFile: existing.sourceFile } : {}),
+    ...(rawArrayBuffer ? { rawArrayBuffer } : {}),
+    ...(typeof slideAspectRatio === 'number' ? { slideAspectRatio } : {}),
     ...(existing.fileUrl && !incoming.fileUrl
       ? { fileUrl: existing.fileUrl }
       : {}),
@@ -269,6 +319,91 @@ function preserveInMemoryRuntimeFields(
       ? { r2ObjectKey: existing.r2ObjectKey }
       : {}),
   };
+}
+
+function needsCloudFileHydration(doc: DocumentItem): boolean {
+  if (!doc.r2ObjectKey && !doc.storagePath) {
+    return false;
+  }
+  if (doc.type === 'pdf') {
+    return !doc.fileUrl && !doc.objectUrl;
+  }
+  if (doc.type === 'docx' || doc.type === 'pptx') {
+    return !doc.rawArrayBuffer;
+  }
+  return false;
+}
+
+function mergeHydratedPptxSlides(
+  currentSlides: SlidePreviewItem[],
+  hydratedSlides: SlidePreviewItem[]
+): SlidePreviewItem[] {
+  if (currentSlides.length === 0) {
+    return hydratedSlides;
+  }
+  return currentSlides.map((currentSlide, idx) => {
+    const hydratedSlide = hydratedSlides[idx];
+    if (!hydratedSlide) {
+      return currentSlide;
+    }
+
+    const mergedBlocks =
+      currentSlide.blocks && currentSlide.blocks.length > 0
+        ? currentSlide.blocks.map((block, bIdx) => {
+            const hydratedBlock = hydratedSlide.blocks?.[bIdx];
+            if (!hydratedBlock) {
+              return block;
+            }
+            return {
+              ...hydratedBlock,
+              ...block,
+              xPct: block.xPct ?? hydratedBlock.xPct,
+              yPct: block.yPct ?? hydratedBlock.yPct,
+              wPct: block.wPct ?? hydratedBlock.wPct,
+              hPct: block.hPct ?? hydratedBlock.hPct,
+              fillColor: block.fillColor ?? hydratedBlock.fillColor,
+              borderColor: block.borderColor ?? hydratedBlock.borderColor,
+              fontFamily: block.fontFamily ?? hydratedBlock.fontFamily,
+              valign: block.valign ?? hydratedBlock.valign,
+              kind: block.kind ?? hydratedBlock.kind,
+              tableRows: block.tableRows ?? hydratedBlock.tableRows,
+            };
+          })
+        : hydratedSlide.blocks;
+
+    const existingCustomImages = (currentSlide.images ?? []).filter(
+      (img) => !img.src.startsWith('blob:')
+    );
+    const hydratedImages = hydratedSlide.images ?? [];
+    const mergedImages =
+      hydratedImages.length > 0
+        ? [...hydratedImages, ...existingCustomImages]
+        : currentSlide.images;
+
+    return {
+      ...hydratedSlide,
+      ...currentSlide,
+      title: currentSlide.title || hydratedSlide.title,
+      subtitle: currentSlide.subtitle ?? hydratedSlide.subtitle,
+      bullets:
+        currentSlide.bullets.length > 0
+          ? currentSlide.bullets
+          : hydratedSlide.bullets,
+      speakerNote: currentSlide.speakerNote ?? hydratedSlide.speakerNote,
+      backgroundColor:
+        currentSlide.backgroundColor ?? hydratedSlide.backgroundColor,
+      backgroundGradient:
+        currentSlide.backgroundGradient ?? hydratedSlide.backgroundGradient,
+      backgroundImageSrc:
+        currentSlide.backgroundImageSrc ?? hydratedSlide.backgroundImageSrc,
+      slideWidthRatio:
+        currentSlide.slideWidthRatio ?? hydratedSlide.slideWidthRatio,
+      isMasterPositioned:
+        currentSlide.isMasterPositioned ?? hydratedSlide.isMasterPositioned,
+      blocks: mergedBlocks,
+      images: mergedImages,
+    };
+  });
 }
 
 function isUnsyncedLocalCandidate(doc: DocumentItem): boolean {
@@ -292,6 +427,21 @@ export function App() {
     }
     return parseShareTokenFromHash(window.location.hash);
   });
+  const [collabShareQueryToken, setCollabShareQueryToken] = useState<
+    string | null
+  >(() => parseCollabShareTokenFromSearch(window.location.search));
+  const [collabSharedDoc, setCollabSharedDoc] = useState<DocumentItem | null>(
+    null
+  );
+  const [isResolvingCollabShare, setIsResolvingCollabShare] = useState<boolean>(
+    () => Boolean(parseCollabShareTokenFromSearch(window.location.search))
+  );
+  const [collabShareError, setCollabShareError] = useState<string | null>(null);
+  const [collabCollaborators, setCollabCollaborators] = useState<
+    CollaboratorPresence[]
+  >([]);
+  const [latestRemotePatch, setLatestRemotePatch] =
+    useState<DocRealtimePatch | null>(null);
   const [activeWorkspaceDocId, setActiveWorkspaceDocId] = useState<
     string | null
   >(() => {
@@ -315,6 +465,12 @@ export function App() {
     return documents[0]?.id ?? null;
   });
   const [activeNav, setActiveNav] = useState<SidebarNavKey>('home');
+  const [activeLocation, setActiveLocation] = useState<LocationSourceKey>('all');
+  const [isLocationPanelOpen, setIsLocationPanelOpen] = useState<boolean>(false);
+  const [isDriveModalOpen, setIsDriveModalOpen] = useState<boolean>(false);
+  const [hasGoogleToken, setHasGoogleToken] = useState<boolean>(() =>
+    Boolean(getStoredGoogleDriveToken())
+  );
   const [activeFilter, setActiveFilter] = useState<FilterKey>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [activeModal, setActiveModal] = useState<ModalType>(null);
@@ -346,6 +502,9 @@ export function App() {
   );
 
   const createdObjectUrlsRef = useRef<string[]>([]);
+  const deviceFileInputRef = useRef<HTMLInputElement | null>(null);
+  const activeNavRef = useRef<SidebarNavKey>(activeNav);
+  activeNavRef.current = activeNav;
   const documentsRef = useRef<DocumentItem[]>(documents);
   documentsRef.current = documents;
 
@@ -358,6 +517,11 @@ export function App() {
   const autoHydrateAttemptedRef = useRef<Set<string>>(new Set());
   const saveQueueByDocRef = useRef<Map<string, Promise<void>>>(new Map());
   const saveSeqByDocRef = useRef<Map<string, number>>(new Map());
+  const realtimeRoomRef = useRef<RealtimeRoomHandle | null>(null);
+  const selfSessionId = useMemo(() => getClientSessionId(), []);
+  const collabSharedDocRef = useRef<DocumentItem | null>(collabSharedDoc);
+  collabSharedDocRef.current = collabSharedDoc;
+  const activeCollabPermissionRef = useRef<'owner' | 'edit' | 'view'>('owner');
 
   useEffect(() => {
     return () => {
@@ -368,9 +532,19 @@ export function App() {
     };
   }, []);
 
-  // Priority Hash Routing: #remote/<roomCode> -> #share/<shareToken> -> #doc/<id>
+  // Priority Hash & Query Routing: ?share=<token> -> #remote/<roomCode> -> #share/<shareToken> -> #doc/<id>
   useEffect(() => {
-    const syncFromLocationHash = () => {
+    const syncFromLocation = () => {
+      const nextQueryShare = parseCollabShareTokenFromSearch(
+        window.location.search
+      );
+      setCollabShareQueryToken(nextQueryShare);
+      if (!nextQueryShare) {
+        setCollabSharedDoc(null);
+        setCollabShareError(null);
+        setIsResolvingCollabShare(false);
+      }
+
       const currentHash = window.location.hash;
       const parsedRemote = parseRemoteRoomFromHash(currentHash);
       if (parsedRemote) {
@@ -397,6 +571,10 @@ export function App() {
       setRemoteRoomCode(null);
       setSharedToken(null);
 
+      if (nextQueryShare) {
+        return;
+      }
+
       const hashId = parseDocIdFromHash(currentHash);
       if (hashId && documentsRef.current.some((doc) => doc.id === hashId)) {
         setActiveWorkspaceDocId(hashId);
@@ -410,13 +588,102 @@ export function App() {
       }
     };
 
-    window.addEventListener('hashchange', syncFromLocationHash);
-    window.addEventListener('popstate', syncFromLocationHash);
+    window.addEventListener('hashchange', syncFromLocation);
+    window.addEventListener('popstate', syncFromLocation);
     return () => {
-      window.removeEventListener('hashchange', syncFromLocationHash);
-      window.removeEventListener('popstate', syncFromLocationHash);
+      window.removeEventListener('hashchange', syncFromLocation);
+      window.removeEventListener('popstate', syncFromLocation);
     };
   }, []);
+
+  // Resolve ?share=<token> collaboration invite link (works for both guests and signed-in users)
+  useEffect(() => {
+    if (!collabShareQueryToken) {
+      setIsResolvingCollabShare(false);
+      setCollabShareError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setIsResolvingCollabShare(true);
+    setCollabShareError(null);
+
+    void resolveSharedDocument(
+      collabShareQueryToken,
+      currentUserRef.current?.id
+    )
+      .then((resolved) => {
+        if (cancelled) {
+          return;
+        }
+
+        if (resolved.status === 'ready' && resolved.document) {
+          const sharedDoc: DocumentItem = {
+            ...resolved.document,
+            collabPermission: resolved.permission,
+            sharedOwnerId: resolved.ownerId,
+            shareToken: resolved.shareToken,
+            isShared: true,
+          };
+
+          setCollabSharedDoc(sharedDoc);
+          setActiveWorkspaceDocId(sharedDoc.id);
+          setLastActiveDocId(sharedDoc.id);
+          setActiveModal(null);
+          setModalDocOverride(null);
+
+          if (currentUserRef.current) {
+            setDocuments((prev) => {
+              const existingIdx = prev.findIndex((d) => d.id === sharedDoc.id);
+              const nextDocs =
+                existingIdx >= 0
+                  ? prev.map((d) =>
+                      d.id === sharedDoc.id
+                        ? { ...d, ...sharedDoc, isShared: true }
+                        : d
+                    )
+                  : [sharedDoc, ...prev];
+              persistDocumentsToStorage(nextDocs);
+              return nextDocs;
+            });
+          }
+        } else {
+          setCollabSharedDoc(null);
+          const errorByStatus: Record<string, string> = {
+            revoked: 'Liên kết chia sẻ này đã bị chủ sở hữu thu hồi.',
+            private: 'Tài liệu này đang ở chế độ Hạn chế (Riêng tư).',
+            not_found: 'Liên kết chia sẻ không tồn tại hoặc đã hết hạn.',
+            error:
+              resolved.errorMessage ||
+              'Không thể mở liên kết chia sẻ lúc này.',
+          };
+          setCollabShareError(
+            errorByStatus[resolved.status] ??
+              'Không thể mở liên kết chia sẻ lúc này.'
+          );
+        }
+      })
+      .catch((error: unknown) => {
+        if (cancelled) {
+          return;
+        }
+        setCollabSharedDoc(null);
+        setCollabShareError(
+          error instanceof Error
+            ? error.message
+            : 'Không thể mở liên kết chia sẻ lúc này.'
+        );
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsResolvingCollabShare(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [collabShareQueryToken]);
 
   const syncSessionForUser = useCallback(async (user: CloudUserSummary) => {
     if (
@@ -430,7 +697,10 @@ export function App() {
     setSyncStatus('syncing');
 
     try {
-      const fetchedCloudDocs = await fetchUserDocuments(user.id);
+      const [fetchedCloudDocs, sharedWithMeDocs] = await Promise.all([
+        fetchUserDocuments(user.id),
+        loadSharedWithMeDocuments(user.id).catch(() => [] as DocumentItem[]),
+      ]);
       if (currentUserRef.current?.id !== user.id) {
         return;
       }
@@ -459,6 +729,37 @@ export function App() {
         );
       const cloudIds = new Set<string>(cloudDocs.map((doc) => doc.id));
 
+      const sharedDocs = sharedWithMeDocs
+        .filter(
+          (sharedDoc) =>
+            !LEGACY_MOCK_ID_SET.has(sharedDoc.id) && !cloudIds.has(sharedDoc.id)
+        )
+        .map((sharedDoc) =>
+          preserveInMemoryRuntimeFields(
+            { ...sharedDoc, isShared: true },
+            existingById.get(sharedDoc.id)
+          )
+        );
+      sharedDocs.forEach((doc) => {
+        cloudIds.add(doc.id);
+      });
+
+      const activeCollabDoc = collabSharedDocRef.current;
+      if (
+        activeCollabDoc &&
+        !LEGACY_MOCK_ID_SET.has(activeCollabDoc.id) &&
+        !cloudIds.has(activeCollabDoc.id)
+      ) {
+        sharedDocs.unshift({ ...activeCollabDoc, isShared: true });
+        cloudIds.add(activeCollabDoc.id);
+        if (activeCollabDoc.shareToken) {
+          void resolveSharedDocument(
+            activeCollabDoc.shareToken,
+            user.id
+          ).catch(() => undefined);
+        }
+      }
+
       // Keep unsynced local candidates (excluding legacy mocks) untouched in memory while asking user to migrate
       const localCandidates = documentsRef.current.filter(
         (doc) =>
@@ -467,14 +768,15 @@ export function App() {
           !cloudIds.has(doc.id)
       );
 
-      const mergedDocs = [...cloudDocs, ...localCandidates];
+      const mergedDocs = [...cloudDocs, ...sharedDocs, ...localCandidates];
       setDocuments(mergedDocs);
       persistDocumentsToStorage(mergedDocs);
 
       const currentHash = window.location.hash;
       const isSpecialRoute =
         Boolean(parseRemoteRoomFromHash(currentHash)) ||
-        Boolean(parseShareTokenFromHash(currentHash));
+        Boolean(parseShareTokenFromHash(currentHash)) ||
+        Boolean(parseCollabShareTokenFromSearch(window.location.search));
 
       if (!isSpecialRoute) {
         const hashId = parseDocIdFromHash(currentHash);
@@ -552,6 +854,8 @@ export function App() {
         setLastSyncedAt(null);
         setSyncStatus('idle');
         if (hadUser) {
+          clearStoredGoogleDriveToken();
+          setHasGoogleToken(false);
           autoHydrateAttemptedRef.current.clear();
           const localOnly = documentsRef.current.filter(
             (doc) =>
@@ -584,6 +888,10 @@ export function App() {
     void supabase.auth
       .getSession()
       .then(({ data }) => {
+        if (data.session?.provider_token) {
+          setStoredGoogleDriveToken(data.session.provider_token);
+          setHasGoogleToken(true);
+        }
         handleSessionUser(data.session?.user ?? null);
       })
       .catch(() => {
@@ -593,7 +901,14 @@ export function App() {
       });
 
     const { data: authSubscription } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
+      (event, session) => {
+        if (session?.provider_token) {
+          setStoredGoogleDriveToken(session.provider_token);
+          setHasGoogleToken(true);
+        } else if (event === 'SIGNED_OUT' || !session) {
+          clearStoredGoogleDriveToken();
+          setHasGoogleToken(false);
+        }
         handleSessionUser(session?.user ?? null);
       }
     );
@@ -618,59 +933,176 @@ export function App() {
     setHydratingPdfDocId(doc.id);
 
     try {
-      let resolvedObjectUrl: string | null = null;
+      if (doc.type === 'pdf') {
+        let resolvedObjectUrl: string | null = null;
 
-      if (doc.r2ObjectKey && isR2ApiConfigured) {
-        try {
-          const sessionRes = supabase ? await supabase.auth.getSession() : null;
-          const accessToken = sessionRes?.data.session?.access_token ?? null;
-          const { downloadUrl } = await getR2PresignedDownloadUrl({
-            objectKey: doc.r2ObjectKey,
-            accessToken,
-          });
-          const fileResponse = await fetch(downloadUrl);
-          if (!fileResponse.ok) {
-            throw new Error(
-              `Không thể tải tệp PDF từ R2 (HTTP ${fileResponse.status}).`
-            );
-          }
-          const pdfBlob = await fileResponse.blob();
-          resolvedObjectUrl = URL.createObjectURL(pdfBlob);
-        } catch (r2Error) {
-          if (!doc.storagePath || !isSupabaseConfigured) {
-            throw r2Error;
+        if (doc.r2ObjectKey && isR2ApiConfigured) {
+          try {
+            const sessionRes = supabase
+              ? await supabase.auth.getSession()
+              : null;
+            const accessToken = sessionRes?.data.session?.access_token ?? null;
+            const { downloadUrl } = await getR2PresignedDownloadUrl({
+              objectKey: doc.r2ObjectKey,
+              accessToken,
+            });
+            const fileResponse = await fetch(downloadUrl);
+            if (!fileResponse.ok) {
+              throw new Error(
+                `Không thể tải tệp PDF từ R2 (HTTP ${fileResponse.status}).`
+              );
+            }
+            const pdfBlob = await fileResponse.blob();
+            resolvedObjectUrl = URL.createObjectURL(pdfBlob);
+          } catch (r2Error) {
+            if (!doc.storagePath || !isSupabaseConfigured) {
+              throw r2Error;
+            }
           }
         }
-      }
 
-      if (!resolvedObjectUrl && doc.storagePath && isSupabaseConfigured) {
-        const { objectUrl } = await getCloudFileObjectUrl(doc.storagePath);
-        resolvedObjectUrl = objectUrl;
-      }
+        if (!resolvedObjectUrl && doc.storagePath && isSupabaseConfigured) {
+          const { objectUrl } = await getCloudFileObjectUrl(doc.storagePath);
+          resolvedObjectUrl = objectUrl;
+        }
 
-      if (!resolvedObjectUrl) {
-        return;
-      }
+        if (!resolvedObjectUrl) {
+          return;
+        }
 
-      createdObjectUrlsRef.current.push(resolvedObjectUrl);
-      const finalObjectUrl = resolvedObjectUrl;
+        createdObjectUrlsRef.current.push(resolvedObjectUrl);
+        const finalObjectUrl = resolvedObjectUrl;
 
-      setDocuments((prev) =>
-        prev.map((item) =>
-          item.id === doc.id
+        setDocuments((prev) =>
+          prev.map((item) =>
+            item.id === doc.id
+              ? {
+                  ...item,
+                  fileUrl: finalObjectUrl,
+                  objectUrl: finalObjectUrl,
+                }
+              : item
+          )
+        );
+        setCollabSharedDoc((prev) =>
+          prev && prev.id === doc.id
             ? {
-                ...item,
+                ...prev,
                 fileUrl: finalObjectUrl,
                 objectUrl: finalObjectUrl,
               }
-            : item
-        )
-      );
+            : prev
+        );
+        return;
+      }
+
+      if (doc.type === 'docx' || doc.type === 'pptx') {
+        let resolvedBuffer: ArrayBuffer | null = null;
+
+        if (doc.r2ObjectKey && isR2ApiConfigured) {
+          try {
+            const sessionRes = supabase
+              ? await supabase.auth.getSession()
+              : null;
+            const accessToken = sessionRes?.data.session?.access_token ?? null;
+            const { downloadUrl } = await getR2PresignedDownloadUrl({
+              objectKey: doc.r2ObjectKey,
+              accessToken,
+            });
+            const fileResponse = await fetch(downloadUrl);
+            if (!fileResponse.ok) {
+              throw new Error(
+                `Không thể tải tệp gốc từ R2 (HTTP ${fileResponse.status}).`
+              );
+            }
+            resolvedBuffer = await fileResponse.arrayBuffer();
+          } catch (r2Error) {
+            if (!doc.storagePath || !isSupabaseConfigured) {
+              throw r2Error;
+            }
+          }
+        }
+
+        if (!resolvedBuffer && doc.storagePath && isSupabaseConfigured) {
+          resolvedBuffer = await downloadCloudFileArrayBuffer(doc.storagePath);
+        }
+
+        if (!resolvedBuffer) {
+          return;
+        }
+
+        const buffer = resolvedBuffer;
+
+        if (doc.type === 'docx') {
+          setDocuments((prev) =>
+            prev.map((item) =>
+              item.id === doc.id
+                ? {
+                    ...item,
+                    rawArrayBuffer: buffer,
+                  }
+                : item
+            )
+          );
+          setCollabSharedDoc((prev) =>
+            prev && prev.id === doc.id
+              ? {
+                  ...prev,
+                  rawArrayBuffer: buffer,
+                }
+              : prev
+          );
+          return;
+        }
+
+        // doc.type === 'pptx'
+        const parsedPptx = await parsePptxArrayBuffer(buffer.slice(0), {
+          docIdPrefix: doc.id,
+        });
+        if (parsedPptx.createdObjectUrls.length > 0) {
+          createdObjectUrlsRef.current.push(...parsedPptx.createdObjectUrls);
+        }
+
+        setDocuments((prev) =>
+          prev.map((item) => {
+            if (item.id !== doc.id) {
+              return item;
+            }
+            return {
+              ...item,
+              rawArrayBuffer: buffer,
+              slideAspectRatio: parsedPptx.slideAspectRatio,
+              slidesPreview: mergeHydratedPptxSlides(
+                item.slidesPreview,
+                parsedPptx.slidesPreview
+              ),
+              outline:
+                item.outline.length > 0 ? item.outline : parsedPptx.outline,
+            };
+          })
+        );
+        setCollabSharedDoc((prev) => {
+          if (!prev || prev.id !== doc.id) {
+            return prev;
+          }
+          return {
+            ...prev,
+            rawArrayBuffer: buffer,
+            slideAspectRatio: parsedPptx.slideAspectRatio,
+            slidesPreview: mergeHydratedPptxSlides(
+              prev.slidesPreview,
+              parsedPptx.slidesPreview
+            ),
+            outline:
+              prev.outline.length > 0 ? prev.outline : parsedPptx.outline,
+          };
+        });
+      }
     } catch (error) {
       const message =
         error instanceof Error
           ? error.message
-          : 'Không thể tải tệp PDF từ đám mây.';
+          : 'Không thể tải tệp gốc từ đám mây.';
       setUploadNotice(message);
     } finally {
       if (hydratingPdfDocIdRef.current === doc.id) {
@@ -689,19 +1121,34 @@ export function App() {
   }, []);
 
   const handleSelectNav = useCallback((nav: SidebarNavKey) => {
-    setActiveNav(nav);
-    if (nav === 'home' || nav === 'shared') {
-      setActiveFilter('all');
-    } else if (nav === 'slide') {
-      setActiveFilter('pptx');
-    } else if (nav === 'word') {
-      setActiveFilter('docx');
-    } else if (nav === 'excel') {
-      setActiveFilter('xlsx');
-    } else if (nav === 'pdf') {
-      setActiveFilter('pdf');
+    if (nav === 'folders') {
+      setIsLocationPanelOpen((prev) =>
+        activeNavRef.current === 'folders' ? !prev : true
+      );
+      setActiveNav('folders');
+      return;
     }
-    // For 'folders', keep activeFilter intact while showing folder grouping
+
+    setIsLocationPanelOpen(false);
+    setActiveNav(nav);
+    if (nav === 'home') {
+      setActiveFilter('all');
+      setActiveLocation('all');
+    } else if (nav === 'shared') {
+      setActiveFilter('all');
+      setActiveLocation('shared');
+    } else {
+      setActiveLocation((prevLoc) => (prevLoc === 'shared' ? 'all' : prevLoc));
+      if (nav === 'slide') {
+        setActiveFilter('pptx');
+      } else if (nav === 'word') {
+        setActiveFilter('docx');
+      } else if (nav === 'excel') {
+        setActiveFilter('xlsx');
+      } else if (nav === 'pdf') {
+        setActiveFilter('pdf');
+      }
+    }
   }, []);
 
   const handleFilterChange = useCallback((filter: FilterKey) => {
@@ -755,12 +1202,7 @@ export function App() {
         );
       }
 
-      if (
-        doc.type === 'pdf' &&
-        (doc.r2ObjectKey || doc.storagePath) &&
-        !doc.fileUrl &&
-        !doc.objectUrl
-      ) {
+      if (needsCloudFileHydration(doc)) {
         autoHydrateAttemptedRef.current.add(doc.id);
         void hydrateCloudPdfDocument(doc);
       }
@@ -771,16 +1213,19 @@ export function App() {
   const handleBackHome = useCallback(() => {
     setRemoteRoomCode(null);
     setSharedToken(null);
+    setCollabShareQueryToken(null);
+    setCollabSharedDoc(null);
+    setCollabShareError(null);
+    setIsResolvingCollabShare(false);
     setActiveWorkspaceDocId(null);
     setActiveModal(null);
     setModalDocOverride(null);
 
-    if (window.location.hash) {
-      window.history.pushState(
-        null,
-        '',
-        `${window.location.pathname}${window.location.search}`
-      );
+    const url = new URL(window.location.href);
+    const hasShareParam = url.searchParams.has('share');
+    if (hasShareParam || window.location.hash) {
+      url.searchParams.delete('share');
+      window.history.pushState(null, '', `${url.pathname}${url.search}`);
     }
   }, []);
 
@@ -888,26 +1333,58 @@ export function App() {
 
   const handleSaveDocument = useCallback(
     (updatedDoc: DocumentItem) => {
+      if (activeCollabPermissionRef.current === 'view') {
+        return;
+      }
+
+      const previousDoc =
+        documentsRef.current.find((doc) => doc.id === updatedDoc.id) ??
+        (collabSharedDocRef.current?.id === updatedDoc.id
+          ? collabSharedDocRef.current
+          : undefined);
+
       const savedDoc: DocumentItem = {
         ...updatedDoc,
         updatedAt: 'Vừa lưu',
         lastSavedAt: new Date().toISOString(),
       };
 
-      const nextDocs = documentsRef.current.map((doc) =>
-        doc.id === savedDoc.id ? savedDoc : doc
-      );
-      setDocuments(nextDocs);
-
-      const storageResult = persistDocumentsToStorage(nextDocs);
-      if (storageResult.quotaExceeded) {
-        setUploadNotice(
-          `Đã lưu tạm "${savedDoc.title}" trong phiên hiện tại, nhưng bộ nhớ trình duyệt đã đầy nên không thể lưu vĩnh viễn toàn bộ dữ liệu lớn.`
-        );
+      if (previousDoc && previousDoc.title !== savedDoc.title) {
+        realtimeRoomRef.current?.broadcastPatch({
+          kind: 'title_patch',
+          title: savedDoc.title,
+        });
       }
 
+      const existsInDocs = documentsRef.current.some(
+        (doc) => doc.id === savedDoc.id
+      );
+      if (existsInDocs) {
+        const nextDocs = documentsRef.current.map((doc) =>
+          doc.id === savedDoc.id ? savedDoc : doc
+        );
+        setDocuments(nextDocs);
+
+        const storageResult = persistDocumentsToStorage(nextDocs);
+        if (storageResult.quotaExceeded) {
+          setUploadNotice(
+            `Đã lưu tạm "${savedDoc.title}" trong phiên hiện tại, nhưng bộ nhớ trình duyệt đã đầy nên không thể lưu vĩnh viễn toàn bộ dữ liệu lớn.`
+          );
+        }
+      }
+
+      if (collabSharedDocRef.current?.id === savedDoc.id) {
+        setCollabSharedDoc(savedDoc);
+      }
+
+      realtimeRoomRef.current?.schedulePersist(savedDoc);
+
       const activeUser = currentUserRef.current;
-      if (activeUser && isSupabaseConfigured) {
+      if (
+        activeUser &&
+        isSupabaseConfigured &&
+        activeCollabPermissionRef.current === 'owner'
+      ) {
         void enqueueCloudUpsert(activeUser.id, savedDoc, {
           file: savedDoc.sourceFile ?? null,
           touchUpdatedAt: true,
@@ -915,6 +1392,43 @@ export function App() {
       }
     },
     [enqueueCloudUpsert]
+  );
+
+  const handleShareStateChanged = useCallback(
+    (info: {
+      documentId: string;
+      permission: CollabPermission;
+      shareToken?: string;
+      isShared: boolean;
+    }) => {
+      const shareAccess: ShareAccessLevel =
+        info.permission === 'private' ? 'private' : 'link';
+
+      const nextDocs = documentsRef.current.map((doc) =>
+        doc.id === info.documentId
+          ? {
+              ...doc,
+              isShared: info.isShared,
+              shareToken: info.shareToken ?? doc.shareToken,
+              shareAccess,
+            }
+          : doc
+      );
+      setDocuments(nextDocs);
+      persistDocumentsToStorage(nextDocs);
+
+      setCollabSharedDoc((prev) =>
+        prev && prev.id === info.documentId
+          ? {
+              ...prev,
+              isShared: info.isShared,
+              shareToken: info.shareToken ?? prev.shareToken,
+              shareAccess,
+            }
+          : prev
+      );
+    },
+    []
   );
 
   const handleShareConfigUpdated = useCallback(
@@ -1051,6 +1565,9 @@ export function App() {
             revokedUrls.add(doc.objectUrl);
           }
           doc.slidesPreview.forEach((slide) => {
+            if (slide.backgroundImageSrc?.startsWith('blob:')) {
+              revokedUrls.add(slide.backgroundImageSrc);
+            }
             slide.images?.forEach((img) => {
               if (img.src.startsWith('blob:')) {
                 revokedUrls.add(img.src);
@@ -1160,6 +1677,37 @@ export function App() {
     []
   );
 
+  const handleCreateDocument = useCallback(
+    (params: CreateEditableDocumentParams) => {
+      const newDoc = createNewEditableDocument(params);
+      const nextDocs = [newDoc, ...documentsRef.current];
+      documentsRef.current = nextDocs;
+      setDocuments(nextDocs);
+      persistDocumentsToStorage(nextDocs);
+
+      setRemoteRoomCode(null);
+      setSharedToken(null);
+      setLastActiveDocId(newDoc.id);
+      setActiveWorkspaceDocId(newDoc.id);
+      setActiveModal(null);
+      setModalDocOverride(null);
+
+      const targetHash = `#doc/${encodeURIComponent(newDoc.id)}`;
+      if (window.location.hash !== targetHash) {
+        window.location.hash = targetHash;
+      }
+
+      const activeUser = currentUserRef.current;
+      if (activeUser && isSupabaseConfigured) {
+        void enqueueCloudUpsert(activeUser.id, newDoc, {
+          file: null,
+          touchUpdatedAt: true,
+        });
+      }
+    },
+    [enqueueCloudUpsert]
+  );
+
   const handleUploadFiles = useCallback(async (files: FileList | File[]) => {
     const fileArray = Array.from(files);
     if (fileArray.length === 0) {
@@ -1226,6 +1774,9 @@ export function App() {
           }
           return 'all';
         });
+        setActiveLocation((prevLoc) =>
+          prevLoc === 'shared' || prevLoc === 'cloud' ? 'all' : prevLoc
+        );
       }
 
       // Cloud sync immediately after local parsing when signed in (R2 Presigned URL -> Supabase fallback)
@@ -1444,7 +1995,12 @@ export function App() {
         failedCount = result.failedCount;
       }
 
-      const fetchedCloudDocs = await fetchUserDocuments(activeUser.id);
+      const [fetchedCloudDocs, sharedWithMeDocs] = await Promise.all([
+        fetchUserDocuments(activeUser.id),
+        loadSharedWithMeDocuments(activeUser.id).catch(
+          () => [] as DocumentItem[]
+        ),
+      ]);
       if (currentUserRef.current?.id !== activeUser.id) {
         return;
       }
@@ -1473,12 +2029,28 @@ export function App() {
           )
         );
       const cloudIds = new Set<string>(cloudDocs.map((doc) => doc.id));
+
+      const sharedDocs = sharedWithMeDocs
+        .filter(
+          (sharedDoc) =>
+            !LEGACY_MOCK_ID_SET.has(sharedDoc.id) && !cloudIds.has(sharedDoc.id)
+        )
+        .map((sharedDoc) =>
+          preserveInMemoryRuntimeFields(
+            { ...sharedDoc, isShared: true },
+            existingById.get(sharedDoc.id)
+          )
+        );
+      sharedDocs.forEach((doc) => {
+        cloudIds.add(doc.id);
+      });
+
       const remainingLocal =
         failedCount > 0
           ? localCandidates.filter((doc) => !cloudIds.has(doc.id))
           : [];
 
-      const mergedDocs = [...cloudDocs, ...remainingLocal];
+      const mergedDocs = [...cloudDocs, ...sharedDocs, ...remainingLocal];
       setDocuments(mergedDocs);
       persistDocumentsToStorage(mergedDocs);
       setPendingMigrationDocs([]);
@@ -1517,6 +2089,8 @@ export function App() {
     } catch {
       // Proceed to clear local session state even if network signOut fails
     } finally {
+      clearStoredGoogleDriveToken();
+      setHasGoogleToken(false);
       currentUserRef.current = null;
       lastLoadedUserIdRef.current = null;
       inFlightSyncUserIdRef.current = null;
@@ -1564,6 +2138,13 @@ export function App() {
       setActiveModal(modal);
     },
     []
+  );
+
+  const handleShareDocument = useCallback(
+    (doc: DocumentItem) => {
+      handleOpenModal('share', doc);
+    },
+    [handleOpenModal]
   );
 
   const handleSwitchModal = useCallback((modal: Exclude<ModalType, null>) => {
@@ -1622,11 +2203,124 @@ export function App() {
     handleSelectNav('home');
   }, [handleSelectNav]);
 
+  const handleConnectGoogleDrive = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) {
+      setActiveUtilityModal('auth');
+      return;
+    }
+
+    const oauthOptions = {
+      redirectTo: window.location.origin,
+      scopes:
+        'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly',
+      queryParams: {
+        access_type: 'offline',
+        prompt: 'consent',
+      },
+    };
+
+    try {
+      if (currentUserRef.current) {
+        const { error: linkError } = await supabase.auth.linkIdentity({
+          provider: 'google',
+          options: oauthOptions,
+        });
+        if (!linkError) {
+          return;
+        }
+      }
+
+      const { error: signInError } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: oauthOptions,
+      });
+      if (signInError) {
+        setUploadNotice(
+          `Không thể kết nối Google Drive: ${signInError.message}`
+        );
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Không thể khởi tạo kết nối Google Drive.';
+      setUploadNotice(message);
+    }
+  }, []);
+
+  const handleOpenDriveFile = useCallback(
+    async (file: File, driveItem: GoogleDriveFileItem) => {
+      const result = await parseUploadedFile(file);
+      if (result.createdObjectUrls.length > 0) {
+        createdObjectUrlsRef.current.push(...result.createdObjectUrls);
+      }
+
+      if (!result.document || result.error) {
+        setUploadNotice(
+          result.error ??
+            `Không thể đọc tệp "${driveItem.name}" từ Google Drive.`
+        );
+        setIsDriveModalOpen(false);
+        return;
+      }
+
+      const parsedDoc: DocumentItem = {
+        ...result.document,
+        folder: 'Google Drive',
+        originalFileName:
+          result.document.originalFileName ?? driveItem.name ?? file.name,
+      };
+
+      const nextDocs = [parsedDoc, ...documentsRef.current];
+      documentsRef.current = nextDocs;
+      setDocuments(nextDocs);
+      persistDocumentsToStorage(nextDocs);
+
+      const activeUser = currentUserRef.current;
+      if (activeUser && isSupabaseConfigured) {
+        void enqueueCloudUpsert(activeUser.id, parsedDoc, {
+          file: parsedDoc.sourceFile ?? null,
+          touchUpdatedAt: true,
+        });
+      }
+
+      setIsDriveModalOpen(false);
+      handleOpenDocument(parsedDoc);
+    },
+    [enqueueCloudUpsert, handleOpenDocument]
+  );
+
+  const locationCounts = useMemo(
+    () => ({
+      recent: documents.filter((d) =>
+        Boolean(d.lastAccessedAt || d.lastSavedAt || d.updatedAt)
+      ).length,
+      shared: documents.filter((d) => Boolean(d.isShared)).length,
+      cloud: documents.filter((d) => Boolean(d.isSyncedToCloud)).length,
+      device: documents.filter(
+        (d) => !d.isSyncedToCloud || Boolean(d.isUploaded)
+      ).length,
+    }),
+    [documents]
+  );
+
   const filteredDocuments = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
 
     const matched = documents.filter((doc) => {
-      if (activeNav === 'shared' && !doc.isShared) {
+      if ((activeNav === 'shared' || activeLocation === 'shared') && !doc.isShared) {
+        return false;
+      }
+
+      if (activeLocation === 'cloud' && !doc.isSyncedToCloud) {
+        return false;
+      }
+
+      if (
+        activeLocation === 'device' &&
+        doc.isSyncedToCloud &&
+        !doc.isUploaded
+      ) {
         return false;
       }
 
@@ -1664,6 +2358,20 @@ export function App() {
       return true;
     });
 
+    if (activeLocation === 'recent') {
+      return [...matched].sort((a, b) => {
+        const timeA = Math.max(
+          Date.parse(a.lastAccessedAt ?? '') || 0,
+          Date.parse(a.lastSavedAt ?? '') || 0
+        );
+        const timeB = Math.max(
+          Date.parse(b.lastAccessedAt ?? '') || 0,
+          Date.parse(b.lastSavedAt ?? '') || 0
+        );
+        return timeB - timeA;
+      });
+    }
+
     if (activeNav === 'folders') {
       return [...matched].sort((a, b) =>
         (a.folder ?? 'Chưa phân loại').localeCompare(
@@ -1674,23 +2382,136 @@ export function App() {
     }
 
     return matched;
-  }, [documents, activeNav, activeFilter, searchQuery]);
+  }, [documents, activeNav, activeLocation, activeFilter, searchQuery]);
 
   const activeWorkspaceDoc = useMemo(() => {
+    if (collabSharedDoc && collabSharedDoc.id === activeWorkspaceDocId) {
+      return collabSharedDoc;
+    }
     if (!activeWorkspaceDocId) {
       return null;
     }
     return documents.find((doc) => doc.id === activeWorkspaceDocId) ?? null;
-  }, [documents, activeWorkspaceDocId]);
+  }, [collabSharedDoc, documents, activeWorkspaceDocId]);
 
-  // Auto-hydrate cloud PDF once if opened directly via URL hash after reload
+  const activeCollabPermission: 'owner' | 'edit' | 'view' =
+    activeWorkspaceDoc?.collabPermission ?? 'owner';
+  activeCollabPermissionRef.current = activeCollabPermission;
+
+  const activeWorkspaceDocIdForRoom = activeWorkspaceDoc?.id ?? null;
+  const activeWorkspaceOwnerIdForRoom =
+    activeWorkspaceDoc?.sharedOwnerId ||
+    activeWorkspaceDoc?.userId ||
+    currentUser?.id ||
+    'local-owner';
+  const activeWorkspaceShareTokenForRoom = activeWorkspaceDoc?.shareToken;
+
+  // Join Supabase Realtime Collaboration Room (Presence + Broadcast + Postgres Changes)
+  useEffect(() => {
+    realtimeRoomRef.current?.leave();
+    realtimeRoomRef.current = null;
+    setCollabCollaborators([]);
+    setLatestRemotePatch(null);
+
+    if (!activeWorkspaceDocIdForRoom) {
+      return;
+    }
+
+    const displayName =
+      currentUser?.displayName ||
+      (currentUser?.email ? currentUser.email.split('@')[0] : '') ||
+      `Khách ${selfSessionId.slice(-4).toUpperCase()}`;
+
+    const roomHandle = joinDocumentRealtimeRoom({
+      ownerId: activeWorkspaceOwnerIdForRoom,
+      documentId: activeWorkspaceDocIdForRoom,
+      shareToken: activeWorkspaceShareTokenForRoom,
+      canEdit: activeCollabPermission !== 'view',
+      identity: {
+        sessionId: selfSessionId,
+        userId: currentUser?.id,
+        displayName,
+        email: currentUser?.email,
+      },
+      callbacks: {
+        onPresenceChange: (list) => {
+          setCollabCollaborators(list);
+        },
+        onRemotePatch: (patch) => {
+          setLatestRemotePatch(patch);
+          if (patch.kind === 'title_patch') {
+            setDocuments((prev) =>
+              prev.map((doc) =>
+                doc.id === activeWorkspaceDocIdForRoom
+                  ? { ...doc, title: patch.title }
+                  : doc
+              )
+            );
+            setCollabSharedDoc((prev) =>
+              prev && prev.id === activeWorkspaceDocIdForRoom
+                ? { ...prev, title: patch.title }
+                : prev
+            );
+          }
+        },
+        onDatabaseDocumentUpdate: (updatedDocPartial) => {
+          setDocuments((prev) =>
+            prev.map((doc) =>
+              doc.id === activeWorkspaceDocIdForRoom
+                ? { ...doc, ...updatedDocPartial }
+                : doc
+            )
+          );
+          setCollabSharedDoc((prev) =>
+            prev && prev.id === activeWorkspaceDocIdForRoom
+              ? { ...prev, ...updatedDocPartial }
+              : prev
+          );
+        },
+      },
+    });
+
+    realtimeRoomRef.current = roomHandle;
+
+    return () => {
+      roomHandle.leave();
+      if (realtimeRoomRef.current === roomHandle) {
+        realtimeRoomRef.current = null;
+      }
+    };
+  }, [
+    activeWorkspaceDocIdForRoom,
+    activeWorkspaceOwnerIdForRoom,
+    activeWorkspaceShareTokenForRoom,
+    activeCollabPermission,
+    currentUser?.id,
+    currentUser?.displayName,
+    currentUser?.email,
+    selfSessionId,
+  ]);
+
+  const handleCollabPresenceUpdate = useCallback(
+    (patch: Partial<Omit<CollaboratorPresence, 'sessionId' | 'color'>>) => {
+      realtimeRoomRef.current?.updatePresence(patch);
+    },
+    []
+  );
+
+  const handleCollabBroadcastPatch = useCallback(
+    (patch: Omit<DocRealtimePatch, 'senderSessionId' | 'sentAt'>) => {
+      if (activeCollabPermissionRef.current === 'view') {
+        return;
+      }
+      realtimeRoomRef.current?.broadcastPatch(patch);
+    },
+    []
+  );
+
+  // Auto-hydrate cloud file (PDF / DOCX / PPTX) once if opened directly via URL hash after reload
   useEffect(() => {
     if (
       !activeWorkspaceDoc ||
-      activeWorkspaceDoc.type !== 'pdf' ||
-      (!activeWorkspaceDoc.r2ObjectKey && !activeWorkspaceDoc.storagePath) ||
-      activeWorkspaceDoc.fileUrl ||
-      activeWorkspaceDoc.objectUrl ||
+      !needsCloudFileHydration(activeWorkspaceDoc) ||
       autoHydrateAttemptedRef.current.has(activeWorkspaceDoc.id)
     ) {
       return;
@@ -1721,7 +2542,8 @@ export function App() {
     [documents]
   );
 
-  const isAnyModalOpen = activeModal !== null || activeUtilityModal !== null;
+  const isAnyModalOpen =
+    activeModal !== null || activeUtilityModal !== null || isDriveModalOpen;
 
   const cloudActionModalMode: 'logoutConfirm' | 'migrateLocal' | null =
     activeUtilityModal === 'logoutConfirm' ||
@@ -1749,6 +2571,48 @@ export function App() {
     );
   }
 
+  // Priority Route 3: ?share=<token> Realtime Collaboration Link Loading / Error View
+  if (collabShareQueryToken && !activeWorkspaceDoc) {
+    if (isResolvingCollabShare) {
+      return (
+        <div className="min-h-[100dvh] w-full flex items-center justify-center bg-[#FAF8F5] px-4">
+          <div className="w-full max-w-md rounded-2xl border border-[#EAE6DF] bg-white p-7 text-center shadow-sm">
+            <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600" />
+            <h2 className="text-base font-semibold text-slate-900">
+              Đang mở tài liệu được chia sẻ...
+            </h2>
+            <p className="mt-1.5 text-sm text-slate-500">
+              Đang đồng bộ nội dung và kết nối phòng cộng tác thời gian thực.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    if (collabShareError) {
+      return (
+        <div className="min-h-[100dvh] w-full flex items-center justify-center bg-[#FAF8F5] px-4">
+          <div className="w-full max-w-md rounded-2xl border border-[#EAE6DF] bg-white p-7 text-center shadow-sm">
+            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-rose-50 text-rose-600 border border-rose-100 text-lg font-bold">
+              !
+            </div>
+            <h2 className="text-base font-semibold text-slate-900">
+              Không thể truy cập liên kết chia sẻ
+            </h2>
+            <p className="mt-2 text-sm text-slate-600">{collabShareError}</p>
+            <button
+              type="button"
+              onClick={handleBackHome}
+              className="mt-5 inline-flex items-center justify-center rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 transition-colors"
+            >
+              Quay về Trang chủ LITE
+            </button>
+          </div>
+        </div>
+      );
+    }
+  }
+
   return (
     <>
       {activeWorkspaceDoc ? (
@@ -1757,6 +2621,16 @@ export function App() {
             document={activeWorkspaceDoc}
             isModalOpen={isAnyModalOpen}
             autoSaveEnabled={userSettings.autoSyncOnEdit}
+            isHydratingCloudFile={hydratingPdfDocId === activeWorkspaceDoc.id}
+            collaborators={collabCollaborators}
+            selfSessionId={selfSessionId}
+            collabPermission={activeCollabPermission}
+            onPresenceUpdate={handleCollabPresenceUpdate}
+            onBroadcastPatch={handleCollabBroadcastPatch}
+            incomingRemotePatch={latestRemotePatch}
+            onRetryCloudDownload={() => {
+              void hydrateCloudPdfDocument(activeWorkspaceDoc);
+            }}
             onBackHome={handleBackHome}
             onSaveDocument={handleSaveDocument}
             onOpenModal={handleOpenModal}
@@ -1767,6 +2641,16 @@ export function App() {
             isModalOpen={isAnyModalOpen}
             defaultPaperTheme={userSettings.defaultWordTheme}
             autoSaveEnabled={userSettings.autoSyncOnEdit}
+            isHydratingCloudFile={hydratingPdfDocId === activeWorkspaceDoc.id}
+            collaborators={collabCollaborators}
+            selfSessionId={selfSessionId}
+            collabPermission={activeCollabPermission}
+            onPresenceUpdate={handleCollabPresenceUpdate}
+            onBroadcastPatch={handleCollabBroadcastPatch}
+            incomingRemotePatch={latestRemotePatch}
+            onRetryCloudDownload={() => {
+              void hydrateCloudPdfDocument(activeWorkspaceDoc);
+            }}
             onBackHome={handleBackHome}
             onSaveDocument={handleSaveDocument}
             onOpenModal={handleOpenModal}
@@ -1776,6 +2660,12 @@ export function App() {
             document={activeWorkspaceDoc}
             isModalOpen={isAnyModalOpen}
             autoSaveEnabled={userSettings.autoSyncOnEdit}
+            collaborators={collabCollaborators}
+            selfSessionId={selfSessionId}
+            collabPermission={activeCollabPermission}
+            onPresenceUpdate={handleCollabPresenceUpdate}
+            onBroadcastPatch={handleCollabBroadcastPatch}
+            incomingRemotePatch={latestRemotePatch}
             onBackHome={handleBackHome}
             onSaveDocument={handleSaveDocument}
             onOpenModal={handleOpenModal}
@@ -1805,6 +2695,29 @@ export function App() {
             onAuthAction={handleAuthAction}
           />
 
+          <LocationPanel
+            isOpen={isLocationPanelOpen}
+            activeLocation={activeLocation}
+            currentUser={currentUser}
+            hasGoogleToken={hasGoogleToken}
+            counts={locationCounts}
+            onSelectLocation={(loc) => {
+              setActiveLocation(loc);
+            }}
+            onPickDeviceFiles={() => {
+              deviceFileInputRef.current?.click();
+            }}
+            onBrowseGoogleDrive={() => {
+              setIsDriveModalOpen(true);
+            }}
+            onAddGoogleAccount={() => {
+              void handleConnectGoogleDrive();
+            }}
+            onCloseMobile={() => {
+              setIsLocationPanelOpen(false);
+            }}
+          />
+
           <div className="flex-1 min-w-0 h-full flex flex-col overflow-hidden">
             <MobileTopHeader
               currentUser={currentUser}
@@ -1828,6 +2741,8 @@ export function App() {
               onSearchChange={setSearchQuery}
               onFilterChange={handleFilterChange}
               onOpenDocument={handleOpenDocument}
+              onCreateDocument={handleCreateDocument}
+              onShareDocument={handleShareDocument}
               onToggleFavorite={handleToggleFavorite}
               onUploadFiles={handleUploadFiles}
               onDeleteDocuments={handleDeleteDocuments}
@@ -1843,11 +2758,21 @@ export function App() {
       )}
 
       <StageActionModal
-        modal={activeModal}
+        modal={activeModal === 'share' ? null : activeModal}
         document={modalDocument}
         onClose={handleCloseModal}
         onSwitchModal={handleSwitchModal}
         onShareConfigUpdated={handleShareConfigUpdated}
+      />
+
+      <ShareCollabModal
+        isOpen={activeModal === 'share'}
+        onClose={handleCloseModal}
+        document={modalDocument}
+        currentUser={currentUser}
+        collaborators={collabCollaborators}
+        selfSessionId={selfSessionId}
+        onShareStateChanged={handleShareStateChanged}
       />
 
       <AuthModal
@@ -1889,6 +2814,33 @@ export function App() {
           void handleConfirmMigrateLocal();
         }}
         onSkipMigrateLocal={handleSkipMigrateLocal}
+      />
+
+      <GoogleDriveBrowserModal
+        isOpen={isDriveModalOpen}
+        hasGoogleToken={hasGoogleToken}
+        onClose={() => {
+          setIsDriveModalOpen(false);
+        }}
+        onConnectGoogle={() => {
+          void handleConnectGoogleDrive();
+        }}
+        onOpenDriveFile={handleOpenDriveFile}
+      />
+
+      <input
+        ref={deviceFileInputRef}
+        type="file"
+        multiple
+        accept=".pptx,.docx,.xlsx,.xls,.csv,.pdf"
+        className="hidden"
+        onChange={(event) => {
+          const files = event.target.files;
+          if (files && files.length > 0) {
+            void handleUploadFiles(files);
+          }
+          event.target.value = '';
+        }}
       />
     </>
   );

@@ -27,7 +27,7 @@ const MOBILE_NAV_ITEMS: readonly MobileNavItemConfig[] = [
   { key: 'word', label: 'Word', icon: FileText },
   { key: 'excel', label: 'Excel', icon: FileSpreadsheet },
   { key: 'pdf', label: 'PDF', icon: BookOpen },
-  { key: 'folders', label: 'Thư mục', icon: Folder },
+  { key: 'folders', label: 'Vị trí', icon: Folder },
   { key: 'shared', label: 'Chia sẻ', icon: Share2 },
 ];
 

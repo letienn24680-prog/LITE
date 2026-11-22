@@ -24,6 +24,7 @@ const DEFAULT_ACCENT_BY_TYPE: Record<DocumentType, string> = {
 export interface CloudParsedContent {
   wordHtml?: string;
   slidesPreview: SlidePreviewItem[];
+  slideAspectRatio?: number;
   sheets?: SpreadsheetSheet[];
   pdfPages?: PdfPageItem[];
   outline: OutlineSection[];
@@ -119,17 +120,24 @@ function isValidIsoTimestamp(value?: string | null): value is string {
 
 function sanitizeSlidesForCloud(slides: SlidePreviewItem[]): SlidePreviewItem[] {
   return slides.map((slide) => {
-    if (!slide.images || slide.images.length === 0) {
+    const hasImages = Boolean(slide.images && slide.images.length > 0);
+    const hasBlobBg = Boolean(slide.backgroundImageSrc?.startsWith('blob:'));
+    if (!hasImages && !hasBlobBg) {
       return slide;
     }
-    const persistableImages = slide.images.filter(
-      (img) => typeof img.src === 'string' && !img.src.startsWith('blob:')
-    );
     const nextSlide: SlidePreviewItem = { ...slide };
-    if (persistableImages.length > 0) {
-      nextSlide.images = persistableImages;
-    } else {
-      delete nextSlide.images;
+    if (hasBlobBg) {
+      delete nextSlide.backgroundImageSrc;
+    }
+    if (slide.images && slide.images.length > 0) {
+      const persistableImages = slide.images.filter(
+        (img) => typeof img.src === 'string' && !img.src.startsWith('blob:')
+      );
+      if (persistableImages.length > 0) {
+        nextSlide.images = persistableImages;
+      } else {
+        delete nextSlide.images;
+      }
     }
     return nextSlide;
   });
@@ -174,6 +182,13 @@ function normalizeParsedContent(raw: unknown): CloudParsedContent {
 
   if (typeof raw.wordHtml === 'string') {
     normalized.wordHtml = raw.wordHtml;
+  }
+  if (
+    typeof raw.slideAspectRatio === 'number' &&
+    Number.isFinite(raw.slideAspectRatio) &&
+    raw.slideAspectRatio > 0
+  ) {
+    normalized.slideAspectRatio = raw.slideAspectRatio;
   }
   if (Array.isArray(raw.sheets)) {
     normalized.sheets = raw.sheets as SpreadsheetSheet[];
@@ -255,6 +270,7 @@ function mapCloudRowToDocumentItem(row: CloudDocumentRow): DocumentItem {
     isShared: Boolean(row.is_shared),
     thumbnail: createThumbnailDataUri(docType, title, accentColor),
     slidesPreview: parsed.slidesPreview,
+    slideAspectRatio: parsed.slideAspectRatio,
     outline: parsed.outline,
     contentPreview: row.content_preview ?? '',
     pageCount: typeof row.page_count === 'number' ? row.page_count : undefined,
@@ -539,6 +555,31 @@ export async function getCloudFileObjectUrl(
 }
 
 /**
+ * Downloads a file from Supabase Storage 'user-files' bucket directly as an ArrayBuffer
+ * (used to hydrate .docx / .pptx raw binary across devices when rawArrayBuffer is not in memory).
+ */
+export async function downloadCloudFileArrayBuffer(
+  storagePath: string
+): Promise<ArrayBuffer> {
+  const cleanPath = storagePath.trim();
+  if (!cleanPath) {
+    throw new Error('Đường dẫn tệp trên đám mây không hợp lệ.');
+  }
+  const client = getConfiguredSupabaseClient();
+  const { data, error } = await client.storage
+    .from(STORAGE_BUCKET)
+    .download(cleanPath);
+
+  if (error || !data) {
+    throw new Error(
+      `Không thể tải dữ liệu tệp gốc từ đám mây${error?.message ? `: ${error.message}` : '.'}`
+    );
+  }
+
+  return await data.arrayBuffer();
+}
+
+/**
  * Downloads a cloud file from Supabase Storage and triggers browser file download.
  */
 export async function downloadCloudFileToDevice(
@@ -602,6 +643,13 @@ export async function upsertCloudDocument(
   };
   if (typeof doc.wordHtml === 'string') {
     parsedContent.wordHtml = doc.wordHtml;
+  }
+  if (
+    typeof doc.slideAspectRatio === 'number' &&
+    Number.isFinite(doc.slideAspectRatio) &&
+    doc.slideAspectRatio > 0
+  ) {
+    parsedContent.slideAspectRatio = doc.slideAspectRatio;
   }
   if (doc.sheets) {
     parsedContent.sheets = doc.sheets;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { PointerEvent as ReactPointerEvent } from 'react';
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import {
   Check,
   ChevronLeft,
@@ -206,6 +206,85 @@ function isInteractiveKeyboardTarget(target: EventTarget | null): boolean {
   );
 }
 
+function getSafeSlideAspectRatio(
+  slide: SlidePreviewItem | null | undefined,
+  doc: DocumentItem
+): number {
+  const candidate = slide?.slideWidthRatio ?? doc.slideAspectRatio ?? 16 / 9;
+  return Number.isFinite(candidate) && candidate > 0.3 && candidate < 4
+    ? candidate
+    : 16 / 9;
+}
+
+function isPositionedSlideItem(slide: SlidePreviewItem): boolean {
+  if (slide.isMasterPositioned) {
+    return true;
+  }
+  const hasPositionedBlock = (slide.blocks ?? []).some(
+    (b) => typeof b.xPct === 'number' && typeof b.yPct === 'number'
+  );
+  const hasPositionedImage = (slide.images ?? []).some(
+    (img) => typeof img.xPct === 'number' && typeof img.yPct === 'number'
+  );
+  return hasPositionedBlock || hasPositionedImage;
+}
+
+function inferPositionedLightBackground(slide: SlidePreviewItem): boolean {
+  if (slide.backgroundColor) {
+    return isLightHexColor(slide.backgroundColor);
+  }
+  if (slide.backgroundGradient || slide.backgroundImageSrc) {
+    return false;
+  }
+  const coloredBlocks = (slide.blocks ?? []).filter((b) => Boolean(b.color));
+  if (coloredBlocks.length === 0) {
+    return true;
+  }
+  const lightTextCount = coloredBlocks.filter((b) =>
+    isLightHexColor(b.color)
+  ).length;
+  return lightTextCount <= coloredBlocks.length / 2;
+}
+
+function buildSlideCanvasBackground(
+  slide: SlidePreviewItem,
+  isPositioned: boolean,
+  hasLightBg: boolean
+): CSSProperties {
+  const style: CSSProperties = {};
+  if (slide.backgroundImageSrc) {
+    style.backgroundImage = slide.backgroundGradient
+      ? `url("${slide.backgroundImageSrc}"), ${slide.backgroundGradient}`
+      : `url("${slide.backgroundImageSrc}")`;
+    style.backgroundSize = 'cover';
+    style.backgroundPosition = 'center';
+    style.backgroundRepeat = 'no-repeat';
+    style.backgroundColor =
+      slide.backgroundColor ?? (isPositioned && hasLightBg ? '#FFFFFF' : '#151B28');
+    return style;
+  }
+
+  if (slide.backgroundGradient) {
+    style.backgroundImage = slide.backgroundGradient;
+    style.backgroundColor =
+      slide.backgroundColor ?? (isPositioned && hasLightBg ? '#FFFFFF' : '#151B28');
+    return style;
+  }
+
+  if (slide.backgroundColor) {
+    style.backgroundColor = slide.backgroundColor;
+    return style;
+  }
+
+  if (isPositioned) {
+    style.backgroundColor = hasLightBg ? '#FFFFFF' : '#151B28';
+    return style;
+  }
+
+  style.backgroundImage = `radial-gradient(circle at 86% 18%, ${slide.accentColor}38 0%, transparent 45%), linear-gradient(145deg, #161D2E 0%, #1F293F 58%, #131926 100%)`;
+  return style;
+}
+
 interface SlideCardCanvasProps {
   doc: DocumentItem;
   slide: SlidePreviewItem;
@@ -221,25 +300,229 @@ function SlideCardCanvas({
   totalSlides,
   compact = false,
 }: SlideCardCanvasProps) {
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const [cardWidthPx, setCardWidthPx] = useState<number>(compact ? 260 : 880);
+
+  useEffect(() => {
+    const el = cardRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+    const updateWidth = () => {
+      const width = el.getBoundingClientRect().width;
+      if (width > 0) {
+        setCardWidthPx(width);
+      }
+    };
+    updateWidth();
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+
+  const isPositioned = isPositionedSlideItem(slide);
+  const fontScale = cardWidthPx > 0 ? cardWidthPx / 960 : compact ? 0.27 : 0.9;
+  const hasCustomLightBg = isPositioned
+    ? inferPositionedLightBackground(slide)
+    : isLightHexColor(slide.backgroundColor);
+  const backgroundStyle = buildSlideCanvasBackground(
+    slide,
+    isPositioned,
+    hasCustomLightBg
+  );
+  const defaultTextColor = hasCustomLightBg ? '#0F172A' : '#FFFFFF';
+
+  if (isPositioned) {
+    const positionedBlocks = (slide.blocks ?? []).filter(
+      (b) =>
+        b.kind === 'table' ||
+        b.text.trim().length > 0 ||
+        Boolean(b.fillColor) ||
+        Boolean(b.borderColor)
+    );
+    const positionedImages = slide.images ?? [];
+
+    return (
+      <div
+        ref={cardRef}
+        className={`w-full h-full relative overflow-hidden select-none ${
+          compact ? 'rounded-xl' : 'rounded-2xl'
+        }`}
+        style={backgroundStyle}
+      >
+        {positionedImages.map((img) => {
+          const hasCoords =
+            typeof img.xPct === 'number' && typeof img.yPct === 'number';
+          return (
+            <div
+              key={img.id}
+              className="overflow-hidden flex items-center justify-center"
+              style={
+                hasCoords
+                  ? {
+                      position: 'absolute',
+                      left: `${img.xPct ?? 0}%`,
+                      top: `${img.yPct ?? 0}%`,
+                      width: `${img.wPct ?? 35}%`,
+                      height: `${img.hPct ?? 35}%`,
+                    }
+                  : {
+                      position: 'absolute',
+                      right: '5%',
+                      bottom: '8%',
+                      width: '36%',
+                      height: '48%',
+                    }
+              }
+            >
+              <img
+                src={img.src}
+                alt={img.alt ?? slide.title}
+                draggable={false}
+                className="w-full h-full object-contain pointer-events-none select-none"
+              />
+            </div>
+          );
+        })}
+
+        {positionedBlocks.map((block) => {
+          const isTable =
+            block.kind === 'table' &&
+            Array.isArray(block.tableRows) &&
+            block.tableRows.length > 0;
+          const baseFontPt = block.fontSize || (isTable ? 12 : 18);
+          const scaledFontPx = Math.max(
+            compact ? 3.5 : 8,
+            baseFontPt * fontScale
+          );
+          const valignJustify =
+            block.valign === 'middle'
+              ? 'center'
+              : block.valign === 'bottom'
+                ? 'flex-end'
+                : 'flex-start';
+          const textColor = block.color ?? defaultTextColor;
+
+          return (
+            <div
+              key={block.id}
+              className="overflow-hidden flex flex-col"
+              style={{
+                position: 'absolute',
+                left: `${block.xPct ?? 5}%`,
+                top: `${block.yPct ?? 5}%`,
+                width: `${block.wPct ?? 90}%`,
+                height: `${block.hPct ?? 16}%`,
+                justifyContent: isTable ? 'flex-start' : valignJustify,
+                backgroundColor: block.fillColor ?? undefined,
+                border: block.borderColor
+                  ? `1px solid ${block.borderColor}`
+                  : undefined,
+                borderRadius:
+                  block.fillColor || block.borderColor ? '0.25rem' : undefined,
+                padding: isTable ? 0 : compact ? '1px 2px' : '2px 5px',
+              }}
+            >
+              {isTable && block.tableRows ? (
+                <table
+                  className="w-full h-full border-collapse table-fixed"
+                  style={{
+                    fontSize: `${scaledFontPx.toFixed(2)}px`,
+                    lineHeight: 1.2,
+                    color: textColor,
+                    fontFamily: block.fontFamily
+                      ? `${block.fontFamily}, sans-serif`
+                      : undefined,
+                  }}
+                >
+                  <tbody>
+                    {block.tableRows.map((row, rIdx) => (
+                      <tr
+                        key={`${block.id}-tr-${rIdx}`}
+                        style={{
+                          backgroundColor:
+                            rIdx === 0
+                              ? hasCustomLightBg
+                                ? 'rgba(15, 23, 42, 0.07)'
+                                : 'rgba(255, 255, 255, 0.1)'
+                              : undefined,
+                        }}
+                      >
+                        {row.map((cell, cIdx) => (
+                          <td
+                            key={`${block.id}-td-${rIdx}-${cIdx}`}
+                            className="break-words align-middle overflow-hidden"
+                            style={{
+                              border: `1px solid ${
+                                block.borderColor ??
+                                (hasCustomLightBg
+                                  ? 'rgba(15, 23, 42, 0.18)'
+                                  : 'rgba(255, 255, 255, 0.22)')
+                              }`,
+                              padding: compact ? '1px 2px' : '3px 6px',
+                              fontWeight: rIdx === 0 || block.bold ? 600 : 400,
+                              textAlign: block.align ?? 'left',
+                            }}
+                          >
+                            {cell}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p
+                  className="w-full whitespace-pre-wrap break-words"
+                  style={{
+                    fontSize: `${scaledFontPx.toFixed(2)}px`,
+                    lineHeight: 1.24,
+                    fontWeight: block.bold ? 700 : 400,
+                    fontStyle: block.italic ? 'italic' : 'normal',
+                    fontFamily: block.fontFamily
+                      ? `${block.fontFamily}, sans-serif`
+                      : undefined,
+                    color: textColor,
+                    textAlign: block.align ?? 'left',
+                  }}
+                >
+                  {block.text}
+                </p>
+              )}
+            </div>
+          );
+        })}
+
+        {compact && (
+          <span
+            className={`absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded-md text-[9px] font-semibold tabular-nums pointer-events-none ${
+              hasCustomLightBg
+                ? 'bg-slate-900/10 text-slate-800'
+                : 'bg-black/45 text-white'
+            }`}
+          >
+            {slideIndex + 1}/{totalSlides}
+          </span>
+        )}
+      </div>
+    );
+  }
+
   const activeBlocks =
     slide.blocks?.filter((b) => b.text.trim().length > 0) ?? [];
   const activeImages = slide.images ?? [];
   const hasRealSlideContent =
     activeBlocks.length > 0 || activeImages.length > 0;
-  const hasCustomLightBg = isLightHexColor(slide.backgroundColor);
 
   return (
     <div
+      ref={cardRef}
       className={`w-full h-full flex flex-col justify-between relative overflow-hidden select-none ${
         compact ? 'p-3.5 gap-2 rounded-xl' : 'p-5 sm:p-8 lg:p-10 gap-3.5 rounded-2xl'
       } ${hasCustomLightBg ? 'text-slate-900' : 'text-white'}`}
-      style={
-        slide.backgroundColor
-          ? { backgroundColor: slide.backgroundColor }
-          : {
-              backgroundImage: `radial-gradient(circle at 86% 18%, ${slide.accentColor}38 0%, transparent 45%), linear-gradient(145deg, #161D2E 0%, #1F293F 58%, #131926 100%)`,
-            }
-      }
+      style={backgroundStyle}
     >
       {/* Top Strip */}
       <div className="flex items-center justify-between gap-2 shrink-0">
@@ -742,6 +1025,23 @@ export function PresenterStageView({
     };
   }, [viewMode, isFullscreen]);
 
+  const currentSlideAspectRatio = getSafeSlideAspectRatio(currentSlide, document);
+  const nextSlideAspectRatio = getSafeSlideAspectRatio(nextSlide, document);
+
+  const fittedSlideBox = useMemo(() => {
+    const availW = Math.max(220, stageViewportSize.width - 36);
+    const availH = Math.max(150, stageViewportSize.height - 36);
+    const maxW = isFullscreen ? availW : Math.min(availW, 1024);
+    if (maxW / availH > currentSlideAspectRatio) {
+      const height = Math.floor(availH);
+      const width = Math.floor(availH * currentSlideAspectRatio);
+      return { width, height };
+    }
+    const width = Math.floor(maxW);
+    const height = Math.floor(maxW / currentSlideAspectRatio);
+    return { width, height };
+  }, [stageViewportSize, currentSlideAspectRatio, isFullscreen]);
+
   // Measure active interactive surface for circular spotlight proportions
   useEffect(() => {
     const el = interactiveSurfaceRef.current;
@@ -763,7 +1063,7 @@ export function PresenterStageView({
     return () => {
       observer.disconnect();
     };
-  }, [viewMode, isRealPdfMode, renderedPdfSize]);
+  }, [viewMode, isRealPdfMode, renderedPdfSize, currentSlideAspectRatio, stageViewportSize]);
 
   // Render active PDF page onto canvas
   useEffect(() => {
@@ -1722,7 +2022,11 @@ export function PresenterStageView({
                 onPointerUp={commitActiveStroke}
                 onPointerCancel={commitActiveStroke}
                 onPointerLeave={handleStagePointerLeave}
-                className={`relative w-full max-w-5xl max-h-full aspect-video rounded-2xl shadow-2xl border border-white/15 overflow-hidden ${
+                style={{
+                  width: `${fittedSlideBox.width}px`,
+                  height: `${fittedSlideBox.height}px`,
+                }}
+                className={`relative max-w-full max-h-full rounded-2xl shadow-2xl border border-white/15 overflow-hidden ${
                   activeTool !== 'pointer' ? 'touch-none' : ''
                 } ${stageCursorClass}`}
               >
@@ -1918,7 +2222,8 @@ export function PresenterStageView({
                   onClick={() =>
                     setSlideIdx((prev) => Math.min(totalSlides - 1, prev + 1))
                   }
-                  className="w-full aspect-video text-left rounded-xl overflow-hidden border border-white/15 hover:border-indigo-400/50 transition-colors"
+                  style={{ aspectRatio: String(nextSlideAspectRatio) }}
+                  className="w-full text-left rounded-xl overflow-hidden border border-white/15 hover:border-indigo-400/50 transition-colors"
                 >
                   <SlideCardCanvas
                     doc={document}
