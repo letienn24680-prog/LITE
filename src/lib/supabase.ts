@@ -81,6 +81,10 @@ export const GOOGLE_DRIVE_DEFAULT_SCOPES =
 export interface GoogleOAuthFlowResult {
   isNativeApp: boolean;
   openedExternally: boolean;
+  directSignedIn?: boolean;
+  promptSuppressed?: boolean;
+  driveConnected?: boolean;
+  noticeMessage?: string;
   error: Error | null;
 }
 
@@ -129,15 +133,83 @@ export async function startGoogleOAuthFlow(
 
   const { isNativeApp, isDesktopApp, isMobileNative, desktopBridge } =
     isNativeAppEnvironment();
-  const redirectTo = isNativeApp
-    ? 'liteapp://auth/callback'
-    : window.location.origin;
+
+  // On standard Web browsers, use Google Identity Services directly (hides *.supabase.co)
+  if (!isNativeApp) {
+    const {
+      requestGoogleDriveAccessTokenDirect,
+      signInWithGoogleDirect,
+    } = await import('../services/googleDirectAuth');
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const activeSession = sessionData.session;
+
+    if (activeSession?.user?.id) {
+      try {
+        await requestGoogleDriveAccessTokenDirect({
+          userId: activeSession.user.id,
+          loginHint: activeSession.user.email ?? undefined,
+          scopes,
+          prompt: 'consent',
+        });
+        return {
+          isNativeApp: false,
+          openedExternally: false,
+          directSignedIn: true,
+          driveConnected: true,
+          error: null,
+        };
+      } catch (err) {
+        return {
+          isNativeApp: false,
+          openedExternally: false,
+          error:
+            err instanceof Error
+              ? err
+              : new Error('Không thể liên kết Google Drive trực tiếp.'),
+        };
+      }
+    }
+
+    try {
+      const directResult = await signInWithGoogleDirect(scopes);
+      if (directResult.status === 'prompt_suppressed') {
+        return {
+          isNativeApp: false,
+          openedExternally: false,
+          promptSuppressed: true,
+          noticeMessage: directResult.suppressedReason,
+          error: null,
+        };
+      }
+      return {
+        isNativeApp: false,
+        openedExternally: false,
+        directSignedIn: true,
+        driveConnected: directResult.driveConnected,
+        noticeMessage: directResult.driveError,
+        error: null,
+      };
+    } catch (err) {
+      return {
+        isNativeApp: false,
+        openedExternally: false,
+        error:
+          err instanceof Error
+            ? err
+            : new Error('Không thể đăng nhập Google trực tiếp.'),
+      };
+    }
+  }
+
+  // Packaged Native Apps (Electron Desktop & Capacitor Android) use system browser + deep link callback
+  const redirectTo = 'liteapp://auth/callback';
 
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
       redirectTo,
-      skipBrowserRedirect: isNativeApp,
+      skipBrowserRedirect: true,
       scopes,
       queryParams: {
         access_type: 'offline',
@@ -148,13 +220,13 @@ export async function startGoogleOAuthFlow(
 
   if (error) {
     return {
-      isNativeApp,
+      isNativeApp: true,
       openedExternally: false,
       error: new Error(error.message),
     };
   }
 
-  if (isNativeApp && data?.url) {
+  if (data?.url) {
     if (isDesktopApp && desktopBridge?.openExternal) {
       await desktopBridge.openExternal(data.url);
       return { isNativeApp: true, openedExternally: true, error: null };
@@ -166,7 +238,7 @@ export async function startGoogleOAuthFlow(
   }
 
   return {
-    isNativeApp,
+    isNativeApp: true,
     openedExternally: false,
     error: null,
   };

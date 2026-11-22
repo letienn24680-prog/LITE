@@ -1,5 +1,6 @@
 export const GOOGLE_TOKEN_STORAGE_KEY = 'lite_google_token';
 export const GOOGLE_TOKEN_STORAGE_KEY_PREFIX = 'lite_gdrive_token_';
+export const GOOGLE_TOKEN_CHANGED_EVENT = 'lite:gdrive-token-changed';
 const GOOGLE_FOLDER_STORAGE_KEY_PREFIX = 'lite_gdrive_folder_';
 const GOOGLE_FILEMAP_STORAGE_KEY_PREFIX = 'lite_gdrive_filemap_';
 const LITE_WORKSPACE_FOLDER_NAME = 'LITE Workspace';
@@ -121,6 +122,21 @@ function removeOtherDriveTokenKeys(keepKey: string | null): void {
   }
 }
 
+function emitGoogleTokenChanged(hasToken: boolean, userId: string | null): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    window.dispatchEvent(
+      new CustomEvent(GOOGLE_TOKEN_CHANGED_EVENT, {
+        detail: { hasToken, userId },
+      })
+    );
+  } catch {
+    // Ignore CustomEvent dispatch errors
+  }
+}
+
 export function setActiveGoogleDriveUser(userId: string | null): void {
   const nextUserId = normalizeUserId(userId);
   activeGoogleDriveUserId = nextUserId;
@@ -129,6 +145,7 @@ export function setActiveGoogleDriveUser(userId: string | null): void {
       ? `${GOOGLE_TOKEN_STORAGE_KEY_PREFIX}${nextUserId}`
       : GOOGLE_TOKEN_STORAGE_KEY;
     removeOtherDriveTokenKeys(keepKey);
+    emitGoogleTokenChanged(Boolean(getStoredGoogleDriveToken(nextUserId)), nextUserId);
   } catch {
     // Ignore storage restrictions
   }
@@ -166,8 +183,10 @@ export function setStoredGoogleDriveToken(
     const trimmed = token?.trim() ?? '';
     if (trimmed.length > 0) {
       window.localStorage.setItem(key, trimmed);
+      emitGoogleTokenChanged(true, normalizedUser ?? activeGoogleDriveUserId);
     } else {
       window.localStorage.removeItem(key);
+      emitGoogleTokenChanged(false, normalizedUser ?? activeGoogleDriveUserId);
     }
   } catch {
     // Ignore storage quota or private mode restrictions
@@ -188,10 +207,12 @@ export function clearStoredGoogleDriveToken(userId?: string | null): void {
       if (activeGoogleDriveUserId === normalizedUser) {
         activeGoogleDriveUserId = null;
       }
+      emitGoogleTokenChanged(false, normalizedUser);
       return;
     }
     activeGoogleDriveUserId = null;
     removeOtherDriveTokenKeys(null);
+    emitGoogleTokenChanged(false, null);
   } catch {
     // Ignore storage restrictions
   }

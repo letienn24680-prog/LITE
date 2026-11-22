@@ -233,6 +233,20 @@ export function WorkspaceTopBar({
         setDriveMessage(
           result.error.message || 'Không thể khởi tạo đăng nhập Google Drive.'
         );
+      } else if (result.directSignedIn && result.driveConnected) {
+        setDriveStatus('idle');
+        setDriveMessage(
+          'Đã kết nối Google Drive trực tiếp! Đang sẵn sàng lưu tệp.'
+        );
+        await handleSaveToGoogleDrive();
+      } else if (result.directSignedIn && result.noticeMessage) {
+        setDriveStatus('error');
+        setDriveMessage(result.noticeMessage);
+      } else if (result.promptSuppressed) {
+        setDriveStatus('auth_required');
+        setDriveMessage(
+          'Hộp thoại đăng nhập nhanh của Google bị trình duyệt ẩn. Vui lòng mở cửa sổ Tài khoản để đăng nhập trực tiếp.'
+        );
       } else if (result.openedExternally) {
         setDriveMessage(
           'Đã mở trình duyệt để kết nối Google Drive. Sau khi xác thực, hệ thống sẽ tự quay lại LITE.'

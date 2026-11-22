@@ -72,6 +72,7 @@ import {
 import {
   clearStoredGoogleDriveToken,
   getStoredGoogleDriveToken,
+  GOOGLE_TOKEN_CHANGED_EVENT,
   setActiveGoogleDriveUser,
   setStoredGoogleDriveToken,
   upsertDocumentToLiteDrive,
@@ -1208,6 +1209,20 @@ export function App() {
       authSubscription.subscription.unsubscribe();
     };
   }, [syncSessionForUser]);
+
+  useEffect(() => {
+    const syncDriveTokenState = () => {
+      const activeUserId = currentUserRef.current?.id;
+      setHasGoogleToken(Boolean(getStoredGoogleDriveToken(activeUserId)));
+    };
+    window.addEventListener(GOOGLE_TOKEN_CHANGED_EVENT, syncDriveTokenState);
+    return () => {
+      window.removeEventListener(
+        GOOGLE_TOKEN_CHANGED_EVENT,
+        syncDriveTokenState
+      );
+    };
+  }, []);
 
 
   useEffect(() => {
@@ -2988,6 +3003,19 @@ export function App() {
         setUploadNotice(
           `Không thể kết nối Google Drive: ${result.error.message}`
         );
+        return;
+      }
+      if (result.promptSuppressed) {
+        setActiveUtilityModal('auth');
+        return;
+      }
+      if (result.directSignedIn && result.driveConnected) {
+        setHasGoogleToken(true);
+        setUploadNotice('Đã kết nối trực tiếp Google Drive cá nhân của bạn.');
+        return;
+      }
+      if (result.directSignedIn && result.noticeMessage) {
+        setUploadNotice(result.noticeMessage);
         return;
       }
       if (result.openedExternally) {

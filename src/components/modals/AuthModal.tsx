@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import {
   AlertCircle,
@@ -16,11 +16,18 @@ import {
   X,
 } from "lucide-react";
 import {
+  isNativeAppEnvironment,
   isSupabaseConfigured,
   startGoogleOAuthFlow,
   supabase,
 } from "../../lib/supabase";
 import { mapAuthErrorToVietnamese } from "../../services/cloudSync";
+import {
+  isGoogleDirectAuthConfigured,
+  loadGoogleIdentityScript,
+  renderGoogleDirectSignInButton,
+  signInWithGoogleDirect,
+} from "../../services/googleDirectAuth";
 
 declare global {
   interface Window {
@@ -61,6 +68,9 @@ export function AuthModal({
   const [isGoogleLoading, setIsGoogleLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [showDirectButtonFallback, setShowDirectButtonFallback] =
+    useState<boolean>(false);
+  const gisButtonContainerRef = useRef<HTMLDivElement | null>(null);
 
   const isBusy = isSubmitting || isGoogleLoading;
 
@@ -74,7 +84,66 @@ export function AuthModal({
     setIsGoogleLoading(false);
     setErrorMessage(externalNotice || null);
     setSuccessMessage(null);
+    setShowDirectButtonFallback(false);
+
+    if (!isNativeAppEnvironment().isNativeApp && isGoogleDirectAuthConfigured()) {
+      void loadGoogleIdentityScript().catch(() => {
+        // Defer error reporting until user clicks Google Sign-In
+      });
+    }
   }, [isOpen, initialMode, externalNotice]);
+
+  useEffect(() => {
+    if (!isOpen || !showDirectButtonFallback || !gisButtonContainerRef.current) {
+      return;
+    }
+    if (isNativeAppEnvironment().isNativeApp || !isGoogleDirectAuthConfigured()) {
+      return;
+    }
+
+    let cancelled = false;
+    void renderGoogleDirectSignInButton(gisButtonContainerRef.current, {
+      onStart: () => {
+        if (cancelled) return;
+        setIsGoogleLoading(true);
+        setErrorMessage(null);
+      },
+      onSuccess: (directRes) => {
+        if (cancelled) return;
+        setIsGoogleLoading(false);
+        setShowDirectButtonFallback(false);
+        if (!directRes.driveConnected && directRes.driveError) {
+          setSuccessMessage(
+            `Đăng nhập Google thành công (${directRes.email ?? "tài khoản của bạn"}). Bạn có thể kết nối lại Google Drive trong mục Vị trí nếu trình duyệt chặn popup.`
+          );
+        }
+        if (onAuthSuccess) {
+          onAuthSuccess();
+        } else {
+          onClose();
+        }
+      },
+      onError: (err) => {
+        if (cancelled) return;
+        setIsGoogleLoading(false);
+        setErrorMessage(mapAuthErrorToVietnamese(err.message));
+      },
+    }).catch((err) => {
+      if (cancelled) return;
+      setIsGoogleLoading(false);
+      setErrorMessage(
+        mapAuthErrorToVietnamese(
+          err instanceof Error
+            ? err.message
+            : "Không thể hiển thị nút đăng nhập Google."
+        )
+      );
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, showDirectButtonFallback, onAuthSuccess, onClose]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -113,8 +182,30 @@ export function AuthModal({
     setIsGoogleLoading(true);
     setErrorMessage(null);
     setSuccessMessage(null);
+    setShowDirectButtonFallback(false);
 
     try {
+      const { isNativeApp } = isNativeAppEnvironment();
+
+      // Trên trình duyệt Web: dùng Google Identity Services trực tiếp (ẩn *.supabase.co)
+      if (!isNativeApp) {
+        const directRes = await signInWithGoogleDirect();
+        if (directRes.status === "prompt_suppressed") {
+          setShowDirectButtonFallback(true);
+          setIsGoogleLoading(false);
+          return;
+        }
+
+        setIsGoogleLoading(false);
+        if (onAuthSuccess) {
+          onAuthSuccess();
+        } else {
+          onClose();
+        }
+        return;
+      }
+
+      // Trên App đóng gói (Electron Desktop / Capacitor Android): mở trình duyệt hệ thống + liteapp://auth/callback
       const result = await startGoogleOAuthFlow();
 
       if (result.error) {
@@ -376,6 +467,18 @@ export function AuthModal({
                     </>
                   )}
                 </button>
+
+                {showDirectButtonFallback && (
+                  <div className="rounded-2xl border border-indigo-100 bg-[#FAF8F5] p-3 space-y-2 text-center">
+                    <p className="text-[11px] font-medium text-slate-600">
+                      Bấm nút Google chính thức bên dưới để chọn tài khoản trực tiếp:
+                    </p>
+                    <div
+                      ref={gisButtonContainerRef}
+                      className="flex justify-center min-h-[42px]"
+                    />
+                  </div>
+                )}
 
                 <div className="relative flex items-center justify-center">
                   <div aria-hidden="true" className="absolute inset-x-0 top-1/2 border-t border-[#EAE5DC]" />
