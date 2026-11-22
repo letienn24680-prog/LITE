@@ -2636,6 +2636,9 @@ export function SlideWorkspace({
       {/* Shared Top Workspace Header */}
       <WorkspaceTopBar
         document={document}
+        collaborators={_collaborators}
+        selfSessionId={selfSessionId}
+        collabPermission={collabPermission}
         theme="dark"
         onBackHome={onBackHome}
         onShare={() => onOpenModal('share', buildLiveDocument())}

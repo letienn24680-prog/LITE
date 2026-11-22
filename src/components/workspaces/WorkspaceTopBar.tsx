@@ -17,6 +17,7 @@ import {
   Share2,
   X,
 } from 'lucide-react';
+import { CollaboratorPresenceBar } from "./CollaboratorPresenceBar";
 import type { DocumentItem, DocumentType } from '../../types/document';
 import { isSupabaseConfigured, supabase } from '../../lib/supabase';
 import { buildDocumentUploadPayload } from '../../utils/fileExporter';
@@ -91,6 +92,9 @@ const FORMAT_VISUALS: Record<DocumentType, FormatVisualConfig> = {
 };
 
 export function WorkspaceTopBar({
+  collaborators,
+  selfSessionId,
+  collabPermission,
   document,
   theme = 'light',
   onBackHome,
@@ -654,6 +658,13 @@ export function WorkspaceTopBar({
             </div>
           )}
         </div>
+
+        <CollaboratorPresenceBar
+          collaborators={collaborators}
+          selfSessionId={selfSessionId}
+          collabPermission={collabPermission}
+          theme={theme}
+        />
 
         <button
           type="button"
