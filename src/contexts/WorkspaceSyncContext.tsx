@@ -15,6 +15,7 @@ export interface WorkspaceSyncContextValue {
   onOpenVersionHistory?: () => void;
   onOpenQuickConverter?: () => void;
   onSaveVersionCheckpoint?: () => Promise<void> | void;
+  onDownloadOriginalFile?: () => Promise<void> | void;
 }
 
 const DEFAULT_WORKSPACE_SYNC_VALUE: WorkspaceSyncContextValue = {

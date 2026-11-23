@@ -22,8 +22,8 @@ import {
   mergePdfFiles,
   parsePageRangeExpression,
   splitPdfFileByRanges,
-  triggerBlobDownload,
 } from '../../utils/quickConverter';
+import { saveFileUniversal } from '../../utils/saveFileUniversal';
 
 export type QuickConverterTab = 'export_pdf' | 'merge_pdf' | 'split_pdf';
 
@@ -207,9 +207,13 @@ export function QuickConverterModal({
     setStatusMessage(null);
     try {
       const result = await downloadDocumentAsPdf(targetExportDoc);
-      setStatusMessage(
-        `Đã xuất và tải xuống "${result.fileName}" (${formatFileBytes(result.blob.size)}).`
-      );
+      if (result.method === 'electron' && !result.savedPath) {
+        setStatusMessage(result.message);
+      } else {
+        setStatusMessage(
+          `${result.message} (${formatFileBytes(result.blob.size)})`
+        );
+      }
     } catch (err: unknown) {
       setErrorMessage(
         err instanceof Error
@@ -271,10 +275,17 @@ export function QuickConverterModal({
         mergeEntries.map((item) => item.file),
         mergeOutputTitle.trim() || 'Tai-lieu-gop'
       );
-      triggerBlobDownload(result.blob, result.fileName);
-      setStatusMessage(
-        `Đã gộp thành công ${result.totalPages} trang vào tệp "${result.fileName}".`
-      );
+      const saveResult = await saveFileUniversal(result.blob, result.fileName, {
+        mimeType: 'application/pdf',
+        shareTitle: result.fileName,
+      });
+      if (saveResult.method === 'electron' && !saveResult.savedPath) {
+        setStatusMessage(saveResult.message);
+      } else {
+        setStatusMessage(
+          `Đã gộp thành công ${result.totalPages} trang. ${saveResult.message}`
+        );
+      }
     } catch (err: unknown) {
       setErrorMessage(
         err instanceof Error
@@ -328,10 +339,17 @@ export function QuickConverterModal({
     setStatusMessage(null);
     try {
       const result = await splitPdfFileByRanges(splitFile, splitRangeInput);
-      triggerBlobDownload(result.blob, result.fileName);
-      setStatusMessage(
-        `Đã tách ${result.pageCount}/${result.totalSourcePages} trang thành tệp "${result.fileName}".`
-      );
+      const saveResult = await saveFileUniversal(result.blob, result.fileName, {
+        mimeType: 'application/pdf',
+        shareTitle: result.fileName,
+      });
+      if (saveResult.method === 'electron' && !saveResult.savedPath) {
+        setStatusMessage(saveResult.message);
+      } else {
+        setStatusMessage(
+          `Đã tách ${result.pageCount}/${result.totalSourcePages} trang. ${saveResult.message}`
+        );
+      }
     } catch (err: unknown) {
       setErrorMessage(
         err instanceof Error
@@ -792,7 +810,7 @@ export function QuickConverterModal({
                 className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs font-medium text-emerald-800"
               >
                 <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" aria-hidden="true" />
-                <span>{statusMessage}</span>
+                <span className="break-words">{statusMessage}</span>
               </div>
             )}
 

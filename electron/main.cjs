@@ -1,4 +1,5 @@
-const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const fs = require("fs/promises");
 const path = require("path");
 
 const PROTOCOL = "liteapp";
@@ -87,6 +88,33 @@ function createWindow() {
 ipcMain.handle("lite-open-external", async (_event, url) => {
   if (typeof url === "string" && (url.startsWith("https://") || url.startsWith("http://"))) {
     await shell.openExternal(url);
+  }
+});
+
+ipcMain.handle("lite-save-file", async (_event, payload) => {
+  const safeName =
+    path.basename(String((payload && payload.fileName) || "document")).replace(
+      /[\\/:*?"<>|\x00-\x1f]+/g,
+      "_"
+    ) || "document";
+
+  const saveResult = await dialog.showSaveDialog(mainWindow || undefined, {
+    title: "Lưu tệp",
+    defaultPath: path.join(app.getPath("downloads"), safeName),
+  });
+
+  if (saveResult.canceled || !saveResult.filePath) {
+    return { canceled: true };
+  }
+
+  const buffer = Buffer.from(String((payload && payload.base64) || ""), "base64");
+  await fs.writeFile(saveResult.filePath, buffer);
+  return { canceled: false, filePath: saveResult.filePath };
+});
+
+ipcMain.handle("lite-show-item-in-folder", (_event, filePath) => {
+  if (typeof filePath === "string" && filePath.trim()) {
+    shell.showItemInFolder(filePath.trim());
   }
 });
 

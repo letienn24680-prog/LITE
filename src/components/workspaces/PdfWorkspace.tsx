@@ -6,7 +6,6 @@ import {
   ChevronRight,
   ChevronUp,
   CloudDownload,
-  Download,
   ExternalLink,
   Eye,
   FileText,
@@ -34,7 +33,11 @@ import {
 } from '../../utils/pdfEngine';
 import type { PdfDocumentProxy } from '../../utils/pdfEngine';
 import { CustomVerticalScrollbar } from '../ui/CustomVerticalScrollbar';
-import { WorkspaceTopBar } from './WorkspaceTopBar';
+import {
+  WorkspaceTopBar,
+  type WorkspaceTopBarExtraMenuItem,
+} from './WorkspaceTopBar';
+import { saveFileUniversal } from '../../utils/saveFileUniversal';
 
 export interface PdfWorkspaceProps {
   document: DocumentItem;
@@ -898,9 +901,9 @@ export function PdfWorkspace({
     const canRetryCloud = Boolean(hasCloudBacking && onRetryCloudDownload);
 
     const missingPdfToolbar = (
-      <div className="flex items-center gap-1.5 sm:gap-2">
+      <div className="flex items-center gap-1.5 whitespace-nowrap shrink-0">
         {isHydratingCloudFile ? (
-          <span className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl bg-indigo-50 border border-indigo-200/80 text-indigo-700 text-xs font-semibold whitespace-nowrap shrink-0">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-indigo-50 border border-indigo-200/80 text-indigo-700 text-xs font-semibold whitespace-nowrap shrink-0">
             <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
             <span className="hidden sm:inline">Đang tải từ đám mây...</span>
             <span className="sm:hidden">Đang tải...</span>
@@ -911,11 +914,12 @@ export function PdfWorkspace({
               <button
                 type="button"
                 onClick={onRetryCloudDownload}
-                className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-sm transition-colors whitespace-nowrap shrink-0"
+                title="Tải lại PDF từ đám mây"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-sm transition-colors whitespace-nowrap shrink-0"
               >
                 <CloudDownload className="w-3.5 h-3.5 shrink-0" />
-                <span className="hidden sm:inline">Tải lại PDF từ đám mây</span>
-                <span className="sm:hidden">Tải đám mây</span>
+                <span className="hidden sm:inline">Tải từ đám mây</span>
+                <span className="sm:hidden">Tải lại</span>
               </button>
             )}
 
@@ -923,20 +927,47 @@ export function PdfWorkspace({
               <button
                 type="button"
                 onClick={handleTriggerReplaceFile}
-                className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                title={canRetryCloud ? 'Mở từ máy' : 'Mở lại tệp PDF'}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
                   canRetryCloud
                     ? 'bg-white hover:bg-[#FAF8F5] border border-[#DDD7CC] text-slate-700 hover:text-pink-700'
                     : 'bg-pink-600 hover:bg-pink-700 text-white shadow-sm'
                 }`}
               >
                 <Upload className="w-3.5 h-3.5 shrink-0" />
-                <span>{canRetryCloud ? 'Mở từ máy' : 'Mở lại tệp PDF'}</span>
+                <span className="hidden sm:inline">
+                  {canRetryCloud ? 'Mở từ máy' : 'Mở lại tệp PDF'}
+                </span>
+                <span className="sm:hidden">Mở PDF</span>
               </button>
             )}
           </>
         )}
       </div>
     );
+
+    const missingPdfExtraMenuItems: WorkspaceTopBarExtraMenuItem[] = [
+      ...(canRetryCloud && !isHydratingCloudFile
+        ? [
+            {
+              id: 'pdf-retry-cloud',
+              label: 'Tải lại PDF từ đám mây',
+              icon: <CloudDownload className="w-4 h-4 text-indigo-500" />,
+              onClick: () => onRetryCloudDownload?.(),
+            },
+          ]
+        : []),
+      ...(onReplacePdfFile
+        ? [
+            {
+              id: 'pdf-replace-file',
+              label: 'Mở lại tệp PDF từ máy',
+              icon: <Upload className="w-4 h-4 text-pink-500" />,
+              onClick: handleTriggerReplaceFile,
+            },
+          ]
+        : []),
+    ];
 
     return (
       <div className="h-[100dvh] w-full flex flex-col bg-[#E8E5DE] text-slate-900 overflow-hidden">
@@ -946,6 +977,11 @@ export function PdfWorkspace({
           onBackHome={onBackHome}
           onShare={() => onOpenModal('share', document)}
           toolbar={missingPdfToolbar}
+          extraMenuItems={
+            missingPdfExtraMenuItems.length > 0
+              ? missingPdfExtraMenuItems
+              : undefined
+          }
         />
 
         <input
@@ -1126,37 +1162,52 @@ export function PdfWorkspace({
         </>
       ) : undefined;
 
+    const handleDownloadRealPdf = async () => {
+      const response = await fetch(realPdfUrl);
+      if (!response.ok) {
+        throw new Error('Không thể tải dữ liệu PDF hiện tại.');
+      }
+      const blob = await response.blob();
+      await saveFileUniversal(blob, downloadName, {
+        mimeType: 'application/pdf',
+        shareTitle: document.title,
+      });
+    };
+
     const realPdfToolbar = (
-      <div className="flex items-center gap-1.5 sm:gap-2">
+      <div className="flex items-center gap-1 sm:gap-1.5 whitespace-nowrap shrink-0">
         {!useBrowserFallback && pdfLoadState === 'ready' && pdfNumPages > 0 && (
           <>
-            {/* Điều khiển số trang Trang X / N */}
+            {/* Cụm trang gọn: ẩn chữ "Trang" trên < 640px */}
             <div className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded-lg bg-[#F4F2ED] border border-[#E2DDD5] shrink-0">
               <button
                 type="button"
                 onClick={handlePrevPage}
                 disabled={!canGoPrev}
                 aria-label="Trang trước"
+                title="Trang trước"
                 className="p-1 rounded-md text-slate-700 hover:bg-white disabled:opacity-35 disabled:hover:bg-transparent transition-colors"
               >
-                <ChevronLeft className="w-4 h-4" />
+                <ChevronLeft className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               </button>
-              <span className="px-1.5 text-xs font-semibold text-slate-700 tabular-nums whitespace-nowrap">
-                Trang {currentPageNumber} / {pdfNumPages}
+              <span className="px-1 sm:px-1.5 text-[11px] sm:text-xs font-semibold text-slate-700 tabular-nums whitespace-nowrap">
+                <span className="hidden sm:inline">Trang </span>
+                {currentPageNumber}/{pdfNumPages}
               </span>
               <button
                 type="button"
                 onClick={handleNextPage}
                 disabled={!canGoNext}
                 aria-label="Trang sau"
+                title="Trang sau"
                 className="p-1 rounded-md text-slate-700 hover:bg-white disabled:opacity-35 disabled:hover:bg-transparent transition-colors"
               >
-                <ChevronRight className="w-4 h-4" />
+                <ChevronRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               </button>
             </div>
 
-            {/* Điều khiển thu phóng Zoom */}
-            <div className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded-lg bg-[#F4F2ED] border border-[#E2DDD5] shrink-0">
+            {/* Điều khiển thu phóng Zoom (hiển thị từ md trở lên; di động dùng trong menu ⋮) */}
+            <div className="hidden md:inline-flex items-center gap-0.5 px-1 py-0.5 rounded-lg bg-[#F4F2ED] border border-[#E2DDD5] shrink-0">
               <button
                 type="button"
                 onClick={handleZoomOut}
@@ -1191,14 +1242,14 @@ export function PdfWorkspace({
               </button>
             </div>
 
-            {/* Nút bật/tắt Tìm trong PDF */}
+            {/* Nút tìm nhanh gọn từ sm trở lên */}
             <button
               type="button"
               onClick={() => setIsSearchOpen((prev) => !prev)}
               aria-pressed={isSearchOpen}
               aria-label="Tìm trong PDF"
               title="Tìm từ khóa trong PDF"
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+              className={`hidden sm:inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
                 isSearchOpen
                   ? 'bg-pink-50 border-pink-300 text-pink-700'
                   : 'bg-[#FAF8F5] hover:bg-[#F2EFEA] border-[#E2DDD5] text-slate-700'
@@ -1209,40 +1260,51 @@ export function PdfWorkspace({
             </button>
           </>
         )}
-
-        {useBrowserFallback && pdfLoadState !== 'error' && (
-          <button
-            type="button"
-            onClick={() => setUseBrowserFallback(false)}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#FAF8F5] hover:bg-[#F2EFEA] border border-[#E2DDD5] text-xs font-semibold text-slate-700 transition-colors whitespace-nowrap shrink-0"
-          >
-            <Eye className="w-3.5 h-3.5 shrink-0" />
-            <span className="hidden sm:inline">Trình đọc PDF.js</span>
-          </button>
-        )}
-
-        {/* Tải xuống PDF */}
-        <a
-          href={realPdfUrl}
-          download={downloadName}
-          title="Tải xuống tệp PDF"
-          className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-white hover:bg-[#F8F6F2] border border-[#DDD7CC] text-xs font-semibold text-slate-700 hover:text-pink-700 transition-colors whitespace-nowrap shrink-0"
-        >
-          <Download className="w-3.5 h-3.5 shrink-0" />
-          <span className="hidden md:inline">Tải xuống PDF</span>
-        </a>
-
-        {/* Trình chiếu */}
-        <button
-          type="button"
-          onClick={() => onOpenModal('present', document)}
-          className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-sm transition-colors whitespace-nowrap shrink-0"
-        >
-          <Presentation className="w-3.5 h-3.5 shrink-0" />
-          <span className="hidden sm:inline">Trình chiếu</span>
-        </button>
       </div>
     );
+
+    const realPdfExtraMenuItems: WorkspaceTopBarExtraMenuItem[] = [
+      ...(!useBrowserFallback && pdfLoadState === 'ready' && pdfNumPages > 0
+        ? [
+            {
+              id: 'pdf-search',
+              label: isSearchOpen ? 'Ẩn thanh tìm kiếm' : 'Tìm từ khóa trong PDF',
+              icon: <Search className="w-4 h-4 text-pink-500" />,
+              onClick: () => setIsSearchOpen((prev) => !prev),
+            },
+            {
+              id: 'pdf-zoom-in',
+              label: `Phóng to (${zoomPercent}%)`,
+              icon: <ZoomIn className="w-4 h-4 text-slate-500" />,
+              disabled: !canZoomIn,
+              onClick: handleZoomIn,
+            },
+            {
+              id: 'pdf-zoom-out',
+              label: 'Thu nhỏ trang PDF',
+              icon: <ZoomOut className="w-4 h-4 text-slate-500" />,
+              disabled: !canZoomOut,
+              onClick: handleZoomOut,
+            },
+          ]
+        : []),
+      ...(useBrowserFallback && pdfLoadState !== 'error'
+        ? [
+            {
+              id: 'pdf-pdfjs-reader',
+              label: 'Mở trình đọc PDF.js',
+              icon: <Eye className="w-4 h-4 text-indigo-500" />,
+              onClick: () => setUseBrowserFallback(false),
+            },
+          ]
+        : []),
+      {
+        id: 'pdf-present',
+        label: 'Trình chiếu toàn màn hình',
+        icon: <Presentation className="w-4 h-4 text-indigo-500" />,
+        onClick: () => onOpenModal('present', document),
+      },
+    ];
 
     const renderRealThumbnails = (isDrawer: boolean) => (
       <div className="p-3 space-y-3">
@@ -1323,6 +1385,8 @@ export function PdfWorkspace({
           onShare={() => onOpenModal('share', document)}
           leftExtra={sidebarToggleLeftExtra}
           toolbar={realPdfToolbar}
+          onDownloadEdited={handleDownloadRealPdf}
+          extraMenuItems={realPdfExtraMenuItems}
         />
 
         {/* Thanh tìm từ khóa trong PDF thật */}
@@ -1772,32 +1836,35 @@ export function PdfWorkspace({
   );
 
   const structuredToolbar = (
-    <div className="flex items-center gap-1.5 sm:gap-2">
+    <div className="flex items-center gap-1 sm:gap-1.5 whitespace-nowrap shrink-0">
       <div className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded-lg bg-[#F4F2ED] border border-[#E2DDD5] shrink-0">
         <button
           type="button"
           onClick={handlePrevPage}
           disabled={!canGoPrev}
           aria-label="Trang trước"
+          title="Trang trước"
           className="p-1 rounded-md text-slate-700 hover:bg-white disabled:opacity-35 disabled:hover:bg-transparent transition-colors"
         >
-          <ChevronLeft className="w-4 h-4" />
+          <ChevronLeft className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
         </button>
-        <span className="px-1.5 text-xs font-semibold text-slate-700 tabular-nums whitespace-nowrap">
-          Trang {currentPageNumber} / {totalPages}
+        <span className="px-1 sm:px-1.5 text-[11px] sm:text-xs font-semibold text-slate-700 tabular-nums whitespace-nowrap">
+          <span className="hidden sm:inline">Trang </span>
+          {currentPageNumber}/{totalPages}
         </span>
         <button
           type="button"
           onClick={handleNextPage}
           disabled={!canGoNext}
           aria-label="Trang sau"
+          title="Trang sau"
           className="p-1 rounded-md text-slate-700 hover:bg-white disabled:opacity-35 disabled:hover:bg-transparent transition-colors"
         >
-          <ChevronRight className="w-4 h-4" />
+          <ChevronRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
         </button>
       </div>
 
-      <div className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded-lg bg-[#F4F2ED] border border-[#E2DDD5] shrink-0">
+      <div className="hidden md:inline-flex items-center gap-0.5 px-1 py-0.5 rounded-lg bg-[#F4F2ED] border border-[#E2DDD5] shrink-0">
         <button
           type="button"
           onClick={handleZoomOut}
@@ -1831,17 +1898,31 @@ export function PdfWorkspace({
           <ZoomIn className="w-4 h-4" />
         </button>
       </div>
-
-      <button
-        type="button"
-        onClick={() => onOpenModal('present', document)}
-        className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-sm transition-colors whitespace-nowrap shrink-0"
-      >
-        <Presentation className="w-3.5 h-3.5 shrink-0" />
-        <span className="hidden sm:inline">Trình chiếu</span>
-      </button>
     </div>
   );
+
+  const structuredExtraMenuItems: WorkspaceTopBarExtraMenuItem[] = [
+    {
+      id: 'pdf-structured-zoom-in',
+      label: `Phóng to (${zoomPercent}%)`,
+      icon: <ZoomIn className="w-4 h-4 text-slate-500" />,
+      disabled: !canZoomIn,
+      onClick: handleZoomIn,
+    },
+    {
+      id: 'pdf-structured-zoom-out',
+      label: 'Thu nhỏ trang PDF',
+      icon: <ZoomOut className="w-4 h-4 text-slate-500" />,
+      disabled: !canZoomOut,
+      onClick: handleZoomOut,
+    },
+    {
+      id: 'pdf-structured-present',
+      label: 'Trình chiếu toàn màn hình',
+      icon: <Presentation className="w-4 h-4 text-indigo-500" />,
+      onClick: () => onOpenModal('present', document),
+    },
+  ];
 
   return (
     <div className="h-[100dvh] w-full flex flex-col bg-[#E8E5DE] text-slate-900 overflow-hidden">
@@ -1852,6 +1933,7 @@ export function PdfWorkspace({
         onShare={() => onOpenModal('share', document)}
         leftExtra={sampleLeftExtra}
         toolbar={structuredToolbar}
+        extraMenuItems={structuredExtraMenuItems}
       />
 
       <div className="flex-1 min-h-0 flex relative overflow-hidden">

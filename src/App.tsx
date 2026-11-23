@@ -48,7 +48,6 @@ import {
   deleteCloudDocument,
   downloadCloudFileArrayBuffer,
   fetchUserDocuments,
-  getCloudFileObjectUrl,
   syncLocalDocumentsToCloud,
   touchDocumentLastAccessed,
   upsertCloudDocument,
@@ -79,16 +78,26 @@ import {
   type GoogleDriveFileItem,
 } from './services/googleDrive';
 import {
+  deleteOriginalFileBinary,
   enqueuePendingUpload,
   flushPendingUploads,
   getPendingUploads,
+  loadOriginalFileBinary,
   saveDocumentVersion,
   saveLocalDraft,
+  saveOriginalFileBinary,
   type DocumentVersionRecord,
   type PendingUploadTarget,
 } from './services/offlineSyncQueue';
-import { buildDocumentUploadPayload } from './utils/fileExporter';
-import { parsePptxArrayBuffer, parseUploadedFile } from './utils/fileParser';
+import {
+  buildDocumentUploadPayload,
+  exportOriginalDocumentBinary,
+} from './utils/fileExporter';
+import {
+  parseExcelArrayBuffer,
+  parsePptxArrayBuffer,
+  parseUploadedFile,
+} from './utils/fileParser';
 import type {
   CloudUserSummary,
   DocumentItem,
@@ -537,14 +546,12 @@ function preserveInMemoryRuntimeFields(
 }
 
 function needsCloudFileHydration(doc: DocumentItem): boolean {
-  if (!doc.r2ObjectKey && !doc.storagePath) {
-    return false;
-  }
+  const hasCloudSource = Boolean(doc.r2ObjectKey || doc.storagePath);
   if (doc.type === 'pdf') {
-    return !doc.fileUrl && !doc.objectUrl;
+    return !doc.fileUrl && !doc.objectUrl && (hasCloudSource || Boolean(doc.isUploaded));
   }
-  if (doc.type === 'docx' || doc.type === 'pptx') {
-    return !doc.rawArrayBuffer;
+  if (doc.type === 'docx' || doc.type === 'xlsx' || doc.type === 'pptx') {
+    return !doc.rawArrayBuffer && (hasCloudSource || Boolean(doc.isUploaded));
   }
   return false;
 }
@@ -1368,10 +1375,18 @@ export function App() {
   const hydrateCloudPdfDocument = useCallback(async (doc: DocumentItem) => {
     const hasR2Source = Boolean(doc.r2ObjectKey) && isR2ApiConfigured;
     const hasSupabaseSource = Boolean(doc.storagePath) && isSupabaseConfigured;
-    if (!hasR2Source && !hasSupabaseSource) {
+    const activeUserId = currentUserRef.current?.id ?? null;
+
+    if (hydratingPdfDocIdRef.current === doc.id) {
       return;
     }
-    if (hydratingPdfDocIdRef.current === doc.id) {
+
+    // 1. Always attempt local IndexedDB originalBinaries first (fast & offline-capable)
+    const cachedBinary = await loadOriginalFileBinary(activeUserId, doc.id).catch(
+      () => null
+    );
+
+    if (!cachedBinary && !hasR2Source && !hasSupabaseSource) {
       return;
     }
 
@@ -1379,45 +1394,58 @@ export function App() {
     setHydratingPdfDocId(doc.id);
 
     try {
-      if (doc.type === 'pdf') {
-        let resolvedObjectUrl: string | null = null;
+      let resolvedBuffer: ArrayBuffer | null =
+        cachedBinary && cachedBinary.buffer.byteLength > 0
+          ? cachedBinary.buffer
+          : null;
 
-        if (doc.r2ObjectKey && isR2ApiConfigured) {
-          try {
-            const sessionRes = supabase
-              ? await supabase.auth.getSession()
-              : null;
-            const accessToken = sessionRes?.data.session?.access_token ?? null;
-            const { downloadUrl } = await getR2PresignedDownloadUrl({
-              objectKey: doc.r2ObjectKey,
-              accessToken,
-            });
-            const fileResponse = await fetch(downloadUrl);
-            if (!fileResponse.ok) {
-              throw new Error(
-                `Không thể tải tệp PDF từ R2 (HTTP ${fileResponse.status}).`
-              );
-            }
-            const pdfBlob = await fileResponse.blob();
-            resolvedObjectUrl = URL.createObjectURL(pdfBlob);
-          } catch (r2Error) {
-            if (!doc.storagePath || !isSupabaseConfigured) {
-              throw r2Error;
-            }
+      if (!resolvedBuffer && doc.r2ObjectKey && isR2ApiConfigured) {
+        try {
+          const sessionRes = supabase
+            ? await supabase.auth.getSession()
+            : null;
+          const accessToken = sessionRes?.data.session?.access_token ?? null;
+          const { downloadUrl } = await getR2PresignedDownloadUrl({
+            objectKey: doc.r2ObjectKey,
+            accessToken,
+          });
+          const fileResponse = await fetch(downloadUrl);
+          if (!fileResponse.ok) {
+            throw new Error(
+              `Không thể tải tệp gốc từ R2 (HTTP ${fileResponse.status}).`
+            );
+          }
+          resolvedBuffer = await fileResponse.arrayBuffer();
+        } catch (r2Error) {
+          if (!doc.storagePath || !isSupabaseConfigured) {
+            throw r2Error;
           }
         }
+      }
 
-        if (!resolvedObjectUrl && doc.storagePath && isSupabaseConfigured) {
-          const { objectUrl } = await getCloudFileObjectUrl(doc.storagePath);
-          resolvedObjectUrl = objectUrl;
-        }
+      if (!resolvedBuffer && doc.storagePath && isSupabaseConfigured) {
+        resolvedBuffer = await downloadCloudFileArrayBuffer(doc.storagePath);
+      }
 
-        if (!resolvedObjectUrl) {
-          return;
-        }
+      if (!resolvedBuffer || resolvedBuffer.byteLength === 0) {
+        return;
+      }
 
-        createdObjectUrlsRef.current.push(resolvedObjectUrl);
-        const finalObjectUrl = resolvedObjectUrl;
+      const buffer = resolvedBuffer;
+      if (!cachedBinary) {
+        void saveOriginalFileBinary(
+          activeUserId,
+          doc.id,
+          buffer,
+          doc.originalFileName || doc.title,
+          doc.originalMimeType || 'application/octet-stream'
+        ).catch(() => undefined);
+      }
+
+      if (doc.type === 'pdf') {
+        const pdfBlob = new Blob([buffer], { type: 'application/pdf' });
+        const finalObjectUrl = URL.createObjectURL(pdfBlob);
+        createdObjectUrlsRef.current.push(finalObjectUrl);
 
         setDocuments((prev) =>
           prev.map((item) =>
@@ -1426,6 +1454,7 @@ export function App() {
                   ...item,
                   fileUrl: finalObjectUrl,
                   objectUrl: finalObjectUrl,
+                  rawArrayBuffer: buffer,
                 }
               : item
           )
@@ -1436,114 +1465,122 @@ export function App() {
                 ...prev,
                 fileUrl: finalObjectUrl,
                 objectUrl: finalObjectUrl,
+                rawArrayBuffer: buffer,
               }
             : prev
         );
         return;
       }
 
-      if (doc.type === 'docx' || doc.type === 'pptx') {
-        let resolvedBuffer: ArrayBuffer | null = null;
-
-        if (doc.r2ObjectKey && isR2ApiConfigured) {
-          try {
-            const sessionRes = supabase
-              ? await supabase.auth.getSession()
-              : null;
-            const accessToken = sessionRes?.data.session?.access_token ?? null;
-            const { downloadUrl } = await getR2PresignedDownloadUrl({
-              objectKey: doc.r2ObjectKey,
-              accessToken,
-            });
-            const fileResponse = await fetch(downloadUrl);
-            if (!fileResponse.ok) {
-              throw new Error(
-                `Không thể tải tệp gốc từ R2 (HTTP ${fileResponse.status}).`
-              );
-            }
-            resolvedBuffer = await fileResponse.arrayBuffer();
-          } catch (r2Error) {
-            if (!doc.storagePath || !isSupabaseConfigured) {
-              throw r2Error;
-            }
-          }
-        }
-
-        if (!resolvedBuffer && doc.storagePath && isSupabaseConfigured) {
-          resolvedBuffer = await downloadCloudFileArrayBuffer(doc.storagePath);
-        }
-
-        if (!resolvedBuffer) {
-          return;
-        }
-
-        const buffer = resolvedBuffer;
-
-        if (doc.type === 'docx') {
-          setDocuments((prev) =>
-            prev.map((item) =>
-              item.id === doc.id
-                ? {
-                    ...item,
-                    rawArrayBuffer: buffer,
-                  }
-                : item
-            )
-          );
-          setCollabSharedDoc((prev) =>
-            prev && prev.id === doc.id
+      if (doc.type === 'docx') {
+        setDocuments((prev) =>
+          prev.map((item) =>
+            item.id === doc.id
               ? {
-                  ...prev,
+                  ...item,
                   rawArrayBuffer: buffer,
                 }
-              : prev
-          );
-          return;
-        }
+              : item
+          )
+        );
+        setCollabSharedDoc((prev) =>
+          prev && prev.id === doc.id
+            ? {
+                ...prev,
+                rawArrayBuffer: buffer,
+              }
+            : prev
+        );
+        return;
+      }
 
-        // doc.type === 'pptx'
-        const parsedPptx = await parsePptxArrayBuffer(buffer.slice(0), {
-          docIdPrefix: doc.id,
-        });
-        if (parsedPptx.createdObjectUrls.length > 0) {
-          createdObjectUrlsRef.current.push(...parsedPptx.createdObjectUrls);
+      if (doc.type === 'xlsx') {
+        let hydratedSheets = doc.sheets;
+        if (!doc.hasLocalEdits) {
+          const lowerName = (doc.originalFileName || '').toLowerCase();
+          const ext = lowerName.endsWith('.csv')
+            ? '.csv'
+            : lowerName.endsWith('.xls')
+              ? '.xls'
+              : '.xlsx';
+          try {
+            const parsedSheets = await parseExcelArrayBuffer(
+              buffer.slice(0),
+              ext
+            );
+            if (parsedSheets.length > 0) {
+              hydratedSheets = parsedSheets;
+            }
+          } catch {
+            // Keep existing sheets metadata if re-parsing fails
+          }
         }
 
         setDocuments((prev) =>
-          prev.map((item) => {
-            if (item.id !== doc.id) {
-              return item;
-            }
-            return {
-              ...item,
-              rawArrayBuffer: buffer,
-              slideAspectRatio: parsedPptx.slideAspectRatio,
-              slidesPreview: mergeHydratedPptxSlides(
-                item.slidesPreview,
-                parsedPptx.slidesPreview
-              ),
-              outline:
-                item.outline.length > 0 ? item.outline : parsedPptx.outline,
-            };
-          })
+          prev.map((item) =>
+            item.id === doc.id
+              ? {
+                  ...item,
+                  rawArrayBuffer: buffer,
+                  sheets: item.hasLocalEdits ? item.sheets : hydratedSheets,
+                }
+              : item
+          )
         );
-        setCollabSharedDoc((prev) => {
-          if (!prev || prev.id !== doc.id) {
-            return prev;
+        setCollabSharedDoc((prev) =>
+          prev && prev.id === doc.id
+            ? {
+                ...prev,
+                rawArrayBuffer: buffer,
+                sheets: prev.hasLocalEdits ? prev.sheets : hydratedSheets,
+              }
+            : prev
+        );
+        return;
+      }
+
+      // doc.type === 'pptx'
+      const parsedPptx = await parsePptxArrayBuffer(buffer.slice(0), {
+        docIdPrefix: doc.id,
+      });
+      if (parsedPptx.createdObjectUrls.length > 0) {
+        createdObjectUrlsRef.current.push(...parsedPptx.createdObjectUrls);
+      }
+
+      setDocuments((prev) =>
+        prev.map((item) => {
+          if (item.id !== doc.id) {
+            return item;
           }
           return {
-            ...prev,
+            ...item,
             rawArrayBuffer: buffer,
             slideAspectRatio: parsedPptx.slideAspectRatio,
             slidesPreview: mergeHydratedPptxSlides(
-              prev.slidesPreview,
+              item.slidesPreview,
               parsedPptx.slidesPreview
             ),
             outline:
-              prev.outline.length > 0 ? prev.outline : parsedPptx.outline,
+              item.outline.length > 0 ? item.outline : parsedPptx.outline,
           };
-        });
-      }
+        })
+      );
+      setCollabSharedDoc((prev) => {
+        if (!prev || prev.id !== doc.id) {
+          return prev;
+        }
+        return {
+          ...prev,
+          rawArrayBuffer: buffer,
+          slideAspectRatio: parsedPptx.slideAspectRatio,
+          slidesPreview: mergeHydratedPptxSlides(
+            prev.slidesPreview,
+            parsedPptx.slidesPreview
+          ),
+          outline:
+            prev.outline.length > 0 ? prev.outline : parsedPptx.outline,
+        };
+      });
     } catch (error) {
       const message =
         error instanceof Error
@@ -1806,7 +1843,22 @@ export function App() {
       setDriveSyncLabel('Đang lưu lên Drive...');
 
       try {
-        const { blob, fileName, mimeType } = await buildDocumentUploadPayload(doc);
+        let docForPayload: DocumentItem = doc;
+        if (!doc.hasLocalEdits && !doc.rawArrayBuffer) {
+          const cached = await loadOriginalFileBinary(userId, doc.id).catch(
+            () => null
+          );
+          if (cached && cached.buffer.byteLength > 0) {
+            docForPayload = {
+              ...doc,
+              rawArrayBuffer: cached.buffer,
+              originalMimeType: doc.originalMimeType ?? cached.mimeType,
+              originalFileName: doc.originalFileName ?? cached.fileName,
+            };
+          }
+        }
+        const { blob, fileName, mimeType } =
+          await buildDocumentUploadPayload(docForPayload);
         await upsertDocumentToLiteDrive(
           doc.id,
           blob,
@@ -1876,13 +1928,27 @@ export function App() {
         }
 
         if (task.target === 'drive' || task.target === 'both') {
-          const docSnap = task.documentSnapshot;
+          let docSnap = task.documentSnapshot;
           if (
             hasGoogleTokenRef.current &&
             (docSnap.type === 'docx' ||
               docSnap.type === 'xlsx' ||
               docSnap.type === 'pptx')
           ) {
+            if (!docSnap.hasLocalEdits && !docSnap.rawArrayBuffer) {
+              const cached = await loadOriginalFileBinary(
+                currentUserRef.current?.id ?? task.userId,
+                docSnap.id
+              ).catch(() => null);
+              if (cached && cached.buffer.byteLength > 0) {
+                docSnap = {
+                  ...docSnap,
+                  rawArrayBuffer: cached.buffer,
+                  originalMimeType: docSnap.originalMimeType ?? cached.mimeType,
+                  originalFileName: docSnap.originalFileName ?? cached.fileName,
+                };
+              }
+            }
             const payload = await buildDocumentUploadPayload(docSnap);
             await upsertDocumentToLiteDrive(
               docSnap.id,
@@ -2220,7 +2286,7 @@ export function App() {
   );
 
   const handleReplacePdfFile = useCallback(
-    (docId: string, file: File) => {
+    async (docId: string, file: File) => {
       const existingDoc = documentsRef.current.find((doc) => doc.id === docId);
       if (!existingDoc) {
         return;
@@ -2230,15 +2296,31 @@ export function App() {
       createdObjectUrlsRef.current.push(newUrl);
       const fileSize = formatFileSize(file.size);
 
+      const nextUrl = newUrl;
+      const fileBuffer = await file.arrayBuffer().catch(() => null);
+
       const updatedPdfDoc: DocumentItem = {
         ...existingDoc,
-        fileUrl: newUrl,
-        objectUrl: newUrl,
+        fileUrl: nextUrl,
+        objectUrl: nextUrl,
         sourceFile: file,
+        rawArrayBuffer: fileBuffer ?? existingDoc.rawArrayBuffer,
+        originalMimeType: file.type || existingDoc.originalMimeType || 'application/pdf',
         originalFileName: file.name,
+        hasLocalEdits: false,
         fileSize,
         updatedAt: 'Vừa nạp lại',
       };
+
+      if (fileBuffer && fileBuffer.byteLength > 0) {
+        void saveOriginalFileBinary(
+          currentUserRef.current?.id ?? null,
+          docId,
+          fileBuffer,
+          file.name,
+          file.type || 'application/pdf'
+        ).catch(() => undefined);
+      }
 
       const nextDocs = documentsRef.current.map((doc) =>
         doc.id === docId ? updatedPdfDoc : doc
@@ -2331,10 +2413,20 @@ export function App() {
           );
         }
 
+        const activeUserForCleanup = currentUserRef.current?.id ?? null;
         deletedIds.forEach((id) => {
+          const driveTimer = driveDebounceTimersRef.current.get(id);
+          if (driveTimer !== undefined) {
+            window.clearTimeout(driveTimer);
+            driveDebounceTimersRef.current.delete(id);
+          }
+          latestDriveDocByIdRef.current.delete(id);
           saveQueueByDocRef.current.delete(id);
           saveSeqByDocRef.current.delete(id);
           autoHydrateAttemptedRef.current.delete(id);
+          void deleteOriginalFileBinary(activeUserForCleanup, id).catch(
+            () => undefined
+          );
         });
 
         const nextDocs = documentsRef.current.filter(
@@ -2477,9 +2569,36 @@ export function App() {
             createdObjectUrlsRef.current.push(...result.createdObjectUrls);
           }
           if (result.document) {
+            let rawBuffer = result.document.rawArrayBuffer;
+            if (
+              !(rawBuffer instanceof ArrayBuffer) ||
+              rawBuffer.byteLength === 0
+            ) {
+              rawBuffer = await file.arrayBuffer().catch(() => undefined);
+            }
+            const originalMimeType =
+              result.document.originalMimeType ||
+              file.type ||
+              'application/octet-stream';
+            const originalFileName =
+              result.document.originalFileName ?? file.name;
+
+            if (rawBuffer && rawBuffer.byteLength > 0) {
+              void saveOriginalFileBinary(
+                currentUserRef.current?.id ?? null,
+                result.document.id,
+                rawBuffer,
+                originalFileName,
+                originalMimeType
+              ).catch(() => undefined);
+            }
+
             acceptedDocs.push({
               ...result.document,
-              originalFileName: result.document.originalFileName ?? file.name,
+              rawArrayBuffer: rawBuffer,
+              originalMimeType,
+              originalFileName,
+              hasLocalEdits: result.document.hasLocalEdits ?? false,
             });
           } else if (result.error) {
             errorMessages.push(result.error);
@@ -3048,11 +3167,34 @@ export function App() {
         return;
       }
 
+      let rawBuffer = result.document.rawArrayBuffer;
+      if (!(rawBuffer instanceof ArrayBuffer) || rawBuffer.byteLength === 0) {
+        rawBuffer = await file.arrayBuffer().catch(() => undefined);
+      }
+      const originalMimeType =
+        result.document.originalMimeType ||
+        file.type ||
+        'application/octet-stream';
+      const originalFileName =
+        result.document.originalFileName ?? driveItem.name ?? file.name;
+
+      if (rawBuffer && rawBuffer.byteLength > 0) {
+        void saveOriginalFileBinary(
+          currentUserRef.current?.id ?? null,
+          result.document.id,
+          rawBuffer,
+          originalFileName,
+          originalMimeType
+        ).catch(() => undefined);
+      }
+
       const parsedDoc: DocumentItem = {
         ...result.document,
         folder: 'Google Drive',
-        originalFileName:
-          result.document.originalFileName ?? driveItem.name ?? file.name,
+        rawArrayBuffer: rawBuffer,
+        originalMimeType,
+        originalFileName,
+        hasLocalEdits: result.document.hasLocalEdits ?? false,
       };
 
       const nextDocs = [parsedDoc, ...documentsRef.current];
@@ -3333,6 +3475,76 @@ export function App() {
     isVersionHistoryOpen ||
     isQuickConverterOpen;
 
+  const handleDownloadOriginalFile = useCallback(async () => {
+    const doc = activeWorkspaceDoc;
+    if (!doc) {
+      return;
+    }
+
+    const activeUserId = currentUserRef.current?.id ?? null;
+    let binaryBuffer: ArrayBuffer | null =
+      doc.rawArrayBuffer && doc.rawArrayBuffer.byteLength > 0
+        ? doc.rawArrayBuffer
+        : null;
+
+    if (!binaryBuffer) {
+      const cached = await loadOriginalFileBinary(activeUserId, doc.id).catch(
+        () => null
+      );
+      if (cached && cached.buffer.byteLength > 0) {
+        binaryBuffer = cached.buffer;
+      }
+    }
+
+    if (!binaryBuffer && (doc.r2ObjectKey || doc.storagePath)) {
+      if (doc.r2ObjectKey && isR2ApiConfigured) {
+        try {
+          const sessionRes = supabase ? await supabase.auth.getSession() : null;
+          const accessToken = sessionRes?.data.session?.access_token ?? null;
+          const { downloadUrl } = await getR2PresignedDownloadUrl({
+            objectKey: doc.r2ObjectKey,
+            accessToken,
+          });
+          const res = await fetch(downloadUrl);
+          if (res.ok) {
+            binaryBuffer = await res.arrayBuffer();
+          }
+        } catch {
+          // Fall through to Supabase Storage
+        }
+      }
+      if (!binaryBuffer && doc.storagePath && isSupabaseConfigured) {
+        try {
+          binaryBuffer = await downloadCloudFileArrayBuffer(doc.storagePath);
+        } catch {
+          // Fall through to exportOriginalDocumentBinary fallback
+        }
+      }
+      if (binaryBuffer && binaryBuffer.byteLength > 0) {
+        void saveOriginalFileBinary(
+          activeUserId,
+          doc.id,
+          binaryBuffer,
+          doc.originalFileName || doc.title,
+          doc.originalMimeType || 'application/octet-stream'
+        ).catch(() => undefined);
+      }
+    }
+
+    try {
+      const result = await exportOriginalDocumentBinary(doc, binaryBuffer);
+      if (result.message) {
+        setUploadNotice(result.message);
+      }
+    } catch (error) {
+      const detail =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Không thể tải xuống bản gốc.';
+      setUploadNotice(detail);
+    }
+  }, [activeWorkspaceDoc]);
+
   const workspaceSyncContextValue = useMemo<WorkspaceSyncContextValue>(
     () => ({
       driveSyncBadge,
@@ -3352,6 +3564,7 @@ export function App() {
         }
         handleSaveDocument(activeWorkspaceDoc, { isManualSave: true });
       },
+      onDownloadOriginalFile: handleDownloadOriginalFile,
     }),
     [
       driveSyncBadge,
@@ -3359,6 +3572,7 @@ export function App() {
       pendingOfflineCount,
       activeWorkspaceDoc,
       handleSaveDocument,
+      handleDownloadOriginalFile,
     ]
   );
 

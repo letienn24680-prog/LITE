@@ -1,8 +1,10 @@
+import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 import mammoth from 'mammoth/mammoth.browser';
 import * as XLSX from 'xlsx';
 import { createThumbnailDataUri } from '../data/mockDocuments';
 import type {
+  CellStyle,
   DocumentItem,
   DocumentType,
   OutlineSection,
@@ -12,6 +14,7 @@ import type {
   SlideTableCellStyle,
   SlideTextBlock,
   SlideTextRun,
+  SpreadsheetMergeRange,
   SpreadsheetSheet,
 } from '../types/document';
 import { columnIndexToLetter } from './formulaEvaluator';
@@ -1616,6 +1619,11 @@ async function parseDocxFile(file: File): Promise<ParseFileResult> {
     contentPreview,
     wordHtml,
     rawArrayBuffer: rawBuffer.slice(0),
+    originalMimeType:
+      file.type ||
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    originalFileName: file.name,
+    hasLocalEdits: false,
     isUploaded: true,
     sourceFile: file,
   };
@@ -1626,25 +1634,514 @@ async function parseDocxFile(file: File): Promise<ParseFileResult> {
   };
 }
 
-async function parseExcelFile(file: File, ext: string): Promise<ParseFileResult> {
-  const arrayBuffer = await file.arrayBuffer();
+// ============================================================================
+// EXCEL PARSER — High-Fidelity ExcelJS (.xlsx) + SheetJS Fallback (.xls/.csv)
+// ============================================================================
+
+const DEFAULT_EXCEL_THEME_INDEX_COLORS: string[] = [
+  '#FFFFFF', // 0: lt1
+  '#000000', // 1: dk1
+  '#E7E6E6', // 2: lt2
+  '#44546A', // 3: dk2
+  '#4472C4', // 4: accent1
+  '#ED7D31', // 5: accent2
+  '#A5A5A5', // 6: accent3
+  '#FFC000', // 7: accent4
+  '#5B9BD5', // 8: accent5
+  '#70AD47', // 9: accent6
+  '#0563C1', // 10: hlink
+  '#954F72', // 11: folHlink
+];
+
+function applyExcelTintToHex(baseHex: string, tint: number): string {
+  const rgb = hexToRgb(baseHex);
+  if (!rgb || !Number.isFinite(tint) || tint === 0) {
+    return baseHex;
+  }
+  const clampedTint = Math.min(1, Math.max(-1, tint));
+  const [h, s, l] = rgbToHsl(rgb[0], rgb[1], rgb[2]);
+  const nextL =
+    clampedTint < 0 ? l * (1 + clampedTint) : l * (1 - clampedTint) + clampedTint;
+  const [r, g, b] = hslToRgb(h, s, Math.min(1, Math.max(0, nextL)));
+  return rgbToHex(r, g, b);
+}
+
+async function extractExcelThemePalette(arrayBuffer: ArrayBuffer): Promise<string[]> {
+  const palette = [...DEFAULT_EXCEL_THEME_INDEX_COLORS];
+  try {
+    const zip = await JSZip.loadAsync(arrayBuffer.slice(0));
+    const themeFile = findZipFileInsensitive(zip, 'xl/theme/theme1.xml');
+    if (!themeFile) {
+      return palette;
+    }
+    const themeXml = await themeFile.async('string');
+    const xmlParser = new DOMParser();
+    const themeDoc = xmlParser.parseFromString(themeXml, 'application/xml');
+    const clrScheme = getElementsByLocalName(themeDoc, 'clrScheme')[0];
+    if (!clrScheme) {
+      return palette;
+    }
+    const orderedSlots = [
+      'lt1',
+      'dk1',
+      'lt2',
+      'dk2',
+      'accent1',
+      'accent2',
+      'accent3',
+      'accent4',
+      'accent5',
+      'accent6',
+      'hlink',
+      'folHlink',
+    ];
+    orderedSlots.forEach((slot, idx) => {
+      const slotEl = getDirectChildrenByLocalName(clrScheme, slot)[0];
+      const resolved = resolveDrawingColor(slotEl, DEFAULT_PPTX_THEME_COLORS);
+      if (resolved) {
+        palette[idx] = resolved;
+      }
+    });
+  } catch {
+    // Keep standard Office theme palette
+  }
+  return palette;
+}
+
+type ExcelColorWithTint = Partial<ExcelJS.Color> & { tint?: number };
+
+function resolveExcelJsColor(
+  color: ExcelColorWithTint | undefined,
+  themePalette: string[]
+): string | undefined {
+  if (!color) {
+    return undefined;
+  }
+  if (typeof color.argb === 'string') {
+    const clean = color.argb.trim().replace(/^#/, '');
+    if (/^[0-9a-fA-F]{8}$/.test(clean)) {
+      const alpha = clean.slice(0, 2).toUpperCase();
+      const rgbHex = clean.slice(2).toUpperCase();
+      if (alpha === '00' && rgbHex === '000000') {
+        return undefined;
+      }
+      return `#${rgbHex}`;
+    }
+    if (/^[0-9a-fA-F]{6}$/.test(clean)) {
+      return `#${clean.toUpperCase()}`;
+    }
+  }
+  if (typeof color.theme === 'number' && Number.isFinite(color.theme)) {
+    const base = themePalette[color.theme];
+    if (!base) {
+      return undefined;
+    }
+    return typeof color.tint === 'number' && color.tint !== 0
+      ? applyExcelTintToHex(base, color.tint)
+      : base;
+  }
+  return undefined;
+}
+
+function formatExcelJsBorderSide(
+  side: Partial<ExcelJS.Border> | undefined,
+  themePalette: string[]
+): string | undefined {
+  if (!side || !side.style) {
+    return undefined;
+  }
+  const style = side.style;
+  let widthAndLine = '1px solid';
+  if (style === 'thick') {
+    widthAndLine = '2.5px solid';
+  } else if (
+    style === 'medium' ||
+    style === 'mediumDashed' ||
+    style === 'mediumDashDot' ||
+    style === 'mediumDashDotDot'
+  ) {
+    widthAndLine = style === 'medium' ? '2px solid' : '2px dashed';
+  } else if (style === 'double') {
+    widthAndLine = '3px double';
+  } else if (style === 'dashed' || style === 'dashDot' || style === 'dashDotDot' || style === 'slantDashDot') {
+    widthAndLine = '1px dashed';
+  } else if (style === 'dotted' || style === 'hair') {
+    widthAndLine = '1px dotted';
+  }
+
+  const defaultBorderColor =
+    style === 'thick' || style === 'medium' ? '#334155' : '#94A3B8';
+  const color =
+    resolveExcelJsColor(side.color as ExcelColorWithTint | undefined, themePalette) ??
+    defaultBorderColor;
+  return `${widthAndLine} ${color}`;
+}
+
+function formatExcelDateValue(date: Date): string {
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+  const dd = String(date.getUTCDate()).padStart(2, '0');
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const yyyy = date.getUTCFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+}
+
+function extractExcelJsCellValue(cell: ExcelJS.Cell): string | number {
+  // Prefer actual Excel formula (handles both normal and shared formulas)
+  const rawVal = cell.value;
+  if (rawVal && typeof rawVal === 'object') {
+    if ('formula' in rawVal && typeof rawVal.formula === 'string' && rawVal.formula.trim()) {
+      const f = rawVal.formula.trim();
+      return f.startsWith('=') ? f : `=${f}`;
+    }
+    if ('sharedFormula' in rawVal) {
+      const resolvedFormula = typeof cell.formula === 'string' ? cell.formula.trim() : '';
+      if (resolvedFormula) {
+        return resolvedFormula.startsWith('=') ? resolvedFormula : `=${resolvedFormula}`;
+      }
+      if ('result' in rawVal && rawVal.result !== undefined && rawVal.result !== null) {
+        const res = rawVal.result;
+        if (typeof res === 'number') return Number.isFinite(res) ? res : '';
+        if (typeof res === 'boolean') return res ? 'TRUE' : 'FALSE';
+        if (res instanceof Date) return formatExcelDateValue(res);
+        if (typeof res === 'object' && 'error' in res) return String(res.error);
+        return String(res);
+      }
+      return '';
+    }
+    if ('richText' in rawVal && Array.isArray(rawVal.richText)) {
+      return rawVal.richText.map((part) => part.text ?? '').join('');
+    }
+    if ('hyperlink' in rawVal) {
+      const hlVal = rawVal as ExcelJS.CellHyperlinkValue;
+      const textVal: unknown = hlVal.text;
+      if (typeof textVal === 'object' && textVal !== null && 'richText' in textVal) {
+        const rt = (textVal as ExcelJS.CellRichTextValue).richText;
+        return Array.isArray(rt) ? rt.map((p) => p.text ?? '').join('') : '';
+      }
+      return String(hlVal.text ?? hlVal.hyperlink ?? '');
+    }
+    if ('error' in rawVal) {
+      return String(rawVal.error ?? '#ERROR!');
+    }
+    if (rawVal instanceof Date) {
+      return formatExcelDateValue(rawVal);
+    }
+  }
+
+  if (typeof rawVal === 'number') {
+    return Number.isFinite(rawVal) ? rawVal : '';
+  }
+  if (typeof rawVal === 'boolean') {
+    return rawVal ? 'TRUE' : 'FALSE';
+  }
+  if (typeof rawVal === 'string') {
+    return rawVal;
+  }
+  return '';
+}
+
+function extractExcelJsCellStyle(
+  cell: ExcelJS.Cell,
+  themePalette: string[]
+): CellStyle | undefined {
+  const style: CellStyle = {};
+  let hasAny = false;
+
+  const font = cell.font;
+  if (font) {
+    if (font.bold) {
+      style.bold = true;
+      hasAny = true;
+    }
+    if (font.italic) {
+      style.italic = true;
+      hasAny = true;
+    }
+    if (font.underline && font.underline !== 'none') {
+      style.underline = true;
+      hasAny = true;
+    }
+    if (typeof font.size === 'number' && Number.isFinite(font.size) && font.size > 0) {
+      style.fontSize = Math.round(font.size);
+      hasAny = true;
+    }
+    if (typeof font.name === 'string' && font.name.trim()) {
+      style.fontFamily = font.name.trim();
+      hasAny = true;
+    }
+    const textColor = resolveExcelJsColor(
+      font.color as ExcelColorWithTint | undefined,
+      themePalette
+    );
+    if (textColor) {
+      style.textColor = textColor;
+      hasAny = true;
+    }
+  }
+
+  const fill = cell.fill;
+  if (fill && fill.type === 'pattern' && fill.pattern && fill.pattern !== 'none') {
+    const bgColor = resolveExcelJsColor(
+      fill.fgColor as ExcelColorWithTint | undefined,
+      themePalette
+    );
+    if (bgColor) {
+      style.bgColor = bgColor;
+      hasAny = true;
+    }
+  }
+
+  const alignment = cell.alignment;
+  if (alignment) {
+    if (alignment.horizontal === 'center' || alignment.horizontal === 'centerContinuous') {
+      style.align = 'center';
+      hasAny = true;
+    } else if (alignment.horizontal === 'right') {
+      style.align = 'right';
+      hasAny = true;
+    } else if (
+      alignment.horizontal === 'left' ||
+      alignment.horizontal === 'justify' ||
+      alignment.horizontal === 'distributed'
+    ) {
+      style.align = 'left';
+      hasAny = true;
+    }
+
+    if (alignment.vertical === 'top') {
+      style.valign = 'top';
+      hasAny = true;
+    } else if (alignment.vertical === 'middle') {
+      style.valign = 'middle';
+      hasAny = true;
+    } else if (alignment.vertical === 'bottom') {
+      style.valign = 'bottom';
+      hasAny = true;
+    }
+
+    if (alignment.wrapText) {
+      style.wrapText = true;
+      hasAny = true;
+    }
+  }
+
+  if (typeof cell.numFmt === 'string' && cell.numFmt.trim() && cell.numFmt !== 'General') {
+    style.numFmt = cell.numFmt.trim();
+    hasAny = true;
+  }
+
+  const border = cell.border;
+  if (border) {
+    const borderTop = formatExcelJsBorderSide(border.top, themePalette);
+    const borderRight = formatExcelJsBorderSide(border.right, themePalette);
+    const borderBottom = formatExcelJsBorderSide(border.bottom, themePalette);
+    const borderLeft = formatExcelJsBorderSide(border.left, themePalette);
+    if (borderTop) {
+      style.borderTop = borderTop;
+      hasAny = true;
+    }
+    if (borderRight) {
+      style.borderRight = borderRight;
+      hasAny = true;
+    }
+    if (borderBottom) {
+      style.borderBottom = borderBottom;
+      hasAny = true;
+    }
+    if (borderLeft) {
+      style.borderLeft = borderLeft;
+      hasAny = true;
+    }
+  }
+
+  return hasAny ? style : undefined;
+}
+
+async function parseXlsxWithExcelJs(arrayBuffer: ArrayBuffer): Promise<SpreadsheetSheet[]> {
+  const [themePalette, wb] = await Promise.all([
+    extractExcelThemePalette(arrayBuffer),
+    (async () => {
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(arrayBuffer.slice(0));
+      return workbook;
+    })(),
+  ]);
+
+  const sheets: SpreadsheetSheet[] = [];
+
+  wb.worksheets.forEach((worksheet, sheetIdx) => {
+    // 1. Parse merged cell ranges (0-based coordinates)
+    const merges: SpreadsheetMergeRange[] = [];
+    const seenMergeKeys = new Set<string>();
+    const slaveCellKeys = new Set<string>();
+
+    const rawMerges = Array.isArray(worksheet.model?.merges) ? worksheet.model.merges : [];
+    for (const rangeStr of rawMerges) {
+      if (typeof rangeStr !== 'string' || !rangeStr.includes(':')) {
+        continue;
+      }
+      try {
+        const decoded = XLSX.utils.decode_range(rangeStr);
+        const s = {
+          r: Math.min(decoded.s.r, decoded.e.r),
+          c: Math.min(decoded.s.c, decoded.e.c),
+        };
+        const e = {
+          r: Math.max(decoded.s.r, decoded.e.r),
+          c: Math.max(decoded.s.c, decoded.e.c),
+        };
+        const key = `${s.r}:${s.c}-${e.r}:${e.c}`;
+        if (seenMergeKeys.has(key)) {
+          continue;
+        }
+        seenMergeKeys.add(key);
+        merges.push({ s, e });
+
+        for (let r = s.r; r <= e.r; r++) {
+          for (let c = s.c; c <= e.c; c++) {
+            if (r !== s.r || c !== s.c) {
+              slaveCellKeys.add(`${r}:${c}`);
+            }
+          }
+        }
+      } catch {
+        // Skip malformed merge range
+      }
+    }
+
+    // 2. Frozen panes
+    let frozenRows: number | undefined;
+    let frozenCols: number | undefined;
+    const primaryView = worksheet.views?.[0];
+    if (primaryView && primaryView.state === 'frozen') {
+      if (typeof primaryView.ySplit === 'number' && primaryView.ySplit > 0) {
+        frozenRows = primaryView.ySplit;
+      }
+      if (typeof primaryView.xSplit === 'number' && primaryView.xSplit > 0) {
+        frozenCols = primaryView.xSplit;
+      }
+    }
+
+    // 3. Determine sheet bounds accurately (including merged ranges & formatted rows)
+    let maxRowCount = Math.max(1, worksheet.rowCount);
+    let maxColCount = Math.max(6, worksheet.columnCount);
+    for (const m of merges) {
+      if (m.e.r + 1 > maxRowCount) maxRowCount = m.e.r + 1;
+      if (m.e.c + 1 > maxColCount) maxColCount = m.e.c + 1;
+    }
+
+    worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+      if (rowNumber > maxRowCount) maxRowCount = rowNumber;
+      row.eachCell({ includeEmpty: false }, (_cell, colNumber) => {
+        if (colNumber > maxColCount) maxColCount = colNumber;
+      });
+    });
+
+    // 4. Column widths & Row heights in px
+    const colWidths: number[] = Array.from({ length: maxColCount }, (_, colIdx) => {
+      const colObj = worksheet.getColumn(colIdx + 1);
+      const widthChars =
+        typeof colObj.width === 'number' && Number.isFinite(colObj.width) && colObj.width > 0
+          ? colObj.width
+          : 12;
+      return Math.min(420, Math.max(48, Math.round(widthChars * 7.5 + 12)));
+    });
+
+    const rowHeights: number[] = Array.from({ length: maxRowCount }, (_, rowIdx) => {
+      const rowObj = worksheet.getRow(rowIdx + 1);
+      const heightPt =
+        typeof rowObj.height === 'number' && Number.isFinite(rowObj.height) && rowObj.height > 0
+          ? rowObj.height
+          : 20;
+      return Math.min(240, Math.max(22, Math.round(heightPt * 1.333 + 4)));
+    });
+
+    // 5. Populate rows & cellStyles
+    const rows: (string | number)[][] = Array.from({ length: maxRowCount }, () =>
+      Array.from({ length: maxColCount }, () => '')
+    );
+    const cellStyles: Record<string, CellStyle> = {};
+
+    worksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+      const rIdx = rowNumber - 1;
+      if (rIdx < 0 || rIdx >= maxRowCount) {
+        return;
+      }
+      row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+        const cIdx = colNumber - 1;
+        if (cIdx < 0 || cIdx >= maxColCount) {
+          return;
+        }
+        const key = `${rIdx}:${cIdx}`;
+        const isSlaveMergeCell =
+          slaveCellKeys.has(key) || (cell.isMerged && cell.master !== cell);
+
+        if (!isSlaveMergeCell) {
+          rows[rIdx][cIdx] = extractExcelJsCellValue(cell);
+        }
+
+        const extractedStyle = extractExcelJsCellStyle(cell, themePalette);
+        if (extractedStyle) {
+          cellStyles[key] = extractedStyle;
+        }
+      });
+    });
+
+    // Propagate outer edges of merged regions (bottom/right border) onto top-left master cell
+    for (const m of merges) {
+      const masterKey = `${m.s.r}:${m.s.c}`;
+      const rightEdgeStyle = cellStyles[`${m.s.r}:${m.e.c}`];
+      const bottomEdgeStyle = cellStyles[`${m.e.r}:${m.s.c}`];
+      if (rightEdgeStyle?.borderRight || bottomEdgeStyle?.borderBottom) {
+        const nextMaster: CellStyle = { ...(cellStyles[masterKey] ?? {}) };
+        if (!nextMaster.borderRight && rightEdgeStyle?.borderRight) {
+          nextMaster.borderRight = rightEdgeStyle.borderRight;
+        }
+        if (!nextMaster.borderBottom && bottomEdgeStyle?.borderBottom) {
+          nextMaster.borderBottom = bottomEdgeStyle.borderBottom;
+        }
+        cellStyles[masterKey] = nextMaster;
+      }
+    }
+
+    const columns = Array.from({ length: maxColCount }, (_, colIdx) =>
+      columnIndexToLetter(colIdx)
+    );
+
+    sheets.push({
+      id: `uploaded-sheet-${sheetIdx + 1}-${Date.now()}`,
+      name: worksheet.name || `Sheet ${sheetIdx + 1}`,
+      columns,
+      rows,
+      cellStyles: Object.keys(cellStyles).length > 0 ? cellStyles : undefined,
+      merges: merges.length > 0 ? merges : undefined,
+      colWidths,
+      rowHeights,
+      frozenRows,
+      frozenCols,
+    });
+  });
+
+  return sheets;
+}
+
+function parseExcelWithSheetJs(arrayBuffer: ArrayBuffer, ext: string): SpreadsheetSheet[] {
   let workbook: XLSX.WorkBook;
 
   if (ext === '.csv') {
     const utf8Text = new TextDecoder('utf-8').decode(arrayBuffer);
     workbook = XLSX.read(utf8Text, { type: 'string' });
   } else {
-    workbook = XLSX.read(arrayBuffer, { type: 'array' });
+    workbook = XLSX.read(arrayBuffer, { type: 'array', cellStyles: true });
   }
 
   if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
-    return {
-      error: 'Không tìm thấy trang tính hợp lệ trong tệp bảng tính này.',
-      createdObjectUrls: [],
-    };
+    return [];
   }
 
-  const sheets: SpreadsheetSheet[] = workbook.SheetNames.map((sheetName, sheetIdx) => {
+  return workbook.SheetNames.map((sheetName, sheetIdx) => {
     const ws = workbook.Sheets[sheetName];
     let rawMatrix: unknown[][] = [];
 
@@ -1710,16 +2207,53 @@ async function parseExcelFile(file: File, ext: string): Promise<ParseFileResult>
       }
     }
 
-    const maxCols = Math.max(6, ...rows.map((r) => r.length));
-    if (rows.length === 0) {
-      rows.push(Array.from({ length: maxCols }, () => ''));
-    } else {
-      for (let r = 0; r < rows.length; r++) {
-        while (rows[r].length < maxCols) {
-          rows[r].push('');
-        }
+    // Extract !merges, !cols, !rows if present
+    const merges: SpreadsheetMergeRange[] = Array.isArray(ws?.['!merges'])
+      ? ws['!merges'].map((m) => ({
+          s: { r: Math.min(m.s.r, m.e.r), c: Math.min(m.s.c, m.e.c) },
+          e: { r: Math.max(m.s.r, m.e.r), c: Math.max(m.s.c, m.e.c) },
+        }))
+      : [];
+
+    let maxRowCount = Math.max(1, rows.length);
+    let maxCols = Math.max(6, ...rows.map((r) => r.length));
+    for (const m of merges) {
+      if (m.e.r + 1 > maxRowCount) maxRowCount = m.e.r + 1;
+      if (m.e.c + 1 > maxCols) maxCols = m.e.c + 1;
+    }
+
+    while (rows.length < maxRowCount) {
+      rows.push([]);
+    }
+    for (let r = 0; r < rows.length; r++) {
+      while (rows[r].length < maxCols) {
+        rows[r].push('');
       }
     }
+
+    const rawCols = Array.isArray(ws?.['!cols']) ? ws['!cols'] : [];
+    const colWidths: number[] = Array.from({ length: maxCols }, (_, colIdx) => {
+      const colInfo = rawCols[colIdx];
+      if (colInfo && typeof colInfo.wpx === 'number' && colInfo.wpx > 0) {
+        return Math.min(420, Math.max(48, Math.round(colInfo.wpx)));
+      }
+      if (colInfo && typeof colInfo.wch === 'number' && colInfo.wch > 0) {
+        return Math.min(420, Math.max(48, Math.round(colInfo.wch * 7.5 + 12)));
+      }
+      return 104;
+    });
+
+    const rawRowsMeta = Array.isArray(ws?.['!rows']) ? ws['!rows'] : [];
+    const rowHeights: number[] = Array.from({ length: rows.length }, (_, rowIdx) => {
+      const rowInfo = rawRowsMeta[rowIdx];
+      if (rowInfo && typeof rowInfo.hpx === 'number' && rowInfo.hpx > 0) {
+        return Math.min(240, Math.max(22, Math.round(rowInfo.hpx)));
+      }
+      if (rowInfo && typeof rowInfo.hpt === 'number' && rowInfo.hpt > 0) {
+        return Math.min(240, Math.max(22, Math.round(rowInfo.hpt * 1.333 + 4)));
+      }
+      return 28;
+    });
 
     const columns = Array.from({ length: maxCols }, (_, colIdx) => columnIndexToLetter(colIdx));
 
@@ -1728,8 +2262,41 @@ async function parseExcelFile(file: File, ext: string): Promise<ParseFileResult>
       name: sheetName || `Sheet ${sheetIdx + 1}`,
       columns,
       rows,
+      merges: merges.length > 0 ? merges : undefined,
+      colWidths,
+      rowHeights,
     };
   });
+}
+
+export async function parseExcelArrayBuffer(
+  arrayBuffer: ArrayBuffer,
+  ext = '.xlsx'
+): Promise<SpreadsheetSheet[]> {
+  const normalizedExt = ext.toLowerCase();
+  if (normalizedExt === '.xlsx') {
+    try {
+      const excelJsSheets = await parseXlsxWithExcelJs(arrayBuffer);
+      if (excelJsSheets.length > 0) {
+        return excelJsSheets;
+      }
+    } catch {
+      // Fall back cleanly to SheetJS if ExcelJS encounters an unsupported legacy/custom XLSX quirk
+    }
+  }
+  return parseExcelWithSheetJs(arrayBuffer, normalizedExt);
+}
+
+async function parseExcelFile(file: File, ext: string): Promise<ParseFileResult> {
+  const arrayBuffer = await file.arrayBuffer();
+  const sheets = await parseExcelArrayBuffer(arrayBuffer, ext);
+
+  if (sheets.length === 0) {
+    return {
+      error: 'Không tìm thấy trang tính hợp lệ trong tệp bảng tính này.',
+      createdObjectUrls: [],
+    };
+  }
 
   const title = stripFileExtension(file.name);
   const fileSize = formatFileSize(file.size);
@@ -1738,6 +2305,12 @@ async function parseExcelFile(file: File, ext: string): Promise<ParseFileResult>
     `Bảng tính gồm ${sheets.length} trang tính: ${sheetSummary}.`,
     260
   );
+  const inferredMime =
+    ext === '.csv'
+      ? 'text/csv'
+      : ext === '.xls'
+      ? 'application/vnd.ms-excel'
+      : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
   const document: DocumentItem = {
     id: createDocumentId('xlsx'),
@@ -1754,6 +2327,10 @@ async function parseExcelFile(file: File, ext: string): Promise<ParseFileResult>
     outline: [],
     sheets,
     contentPreview,
+    rawArrayBuffer: arrayBuffer.slice(0),
+    originalMimeType: file.type || inferredMime,
+    originalFileName: file.name,
+    hasLocalEdits: false,
     isUploaded: true,
     sourceFile: file,
   };
@@ -1967,6 +2544,23 @@ export async function parsePptxArrayBuffer(
     const layoutPlaceholderCache = new Map<string, Map<string, EmuBox>>();
     const mediaBlobCache = new Map<string, string>();
 
+    const MAX_INLINE_DATA_URL_BYTES = 2_600_000; // ~2.5 MB inline Data URL cap for draft durability
+
+    const arrayBufferToDataUrl = (buffer: ArrayBuffer, mime: string): string => {
+      const bytes = new Uint8Array(buffer);
+      const chunkSize = 0x8000;
+      const parts: string[] = [];
+      for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+        const slice = bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length));
+        let chunk = '';
+        for (let idx = 0; idx < slice.length; idx++) {
+          chunk += String.fromCharCode(slice[idx]);
+        }
+        parts.push(chunk);
+      }
+      return `data:${mime};base64,${btoa(parts.join(''))}`;
+    };
+
     const getMediaBlobUrl = async (resolvedPath: string): Promise<string | null> => {
       const lowerKey = resolvedPath.toLowerCase();
       const cached = mediaBlobCache.get(lowerKey);
@@ -1984,6 +2578,18 @@ export async function parsePptxArrayBuffer(
         return null;
       }
       const imgBuffer = await imgZipObj.async('arraybuffer');
+
+      // Prefer stable base64 Data URL for images so slide backgrounds & media survive draft saves/reloads
+      if (imgBuffer.byteLength <= MAX_INLINE_DATA_URL_BYTES && typeof btoa === 'function') {
+        try {
+          const dataUrl = arrayBufferToDataUrl(imgBuffer, mime);
+          mediaBlobCache.set(lowerKey, dataUrl);
+          return dataUrl;
+        } catch {
+          // Fall back to Blob URL below
+        }
+      }
+
       const blob = new Blob([imgBuffer], { type: mime });
       const blobUrl = URL.createObjectURL(blob);
       createdObjectUrls.push(blobUrl);
@@ -2626,6 +3232,11 @@ async function parsePptxFile(file: File): Promise<ParseFileResult> {
       outline: parsed.outline,
       contentPreview,
       rawArrayBuffer: rawBuffer.slice(0),
+      originalMimeType:
+        file.type ||
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      originalFileName: file.name,
+      hasLocalEdits: false,
       slideAspectRatio: parsed.slideAspectRatio,
       isUploaded: true,
       sourceFile: file,
@@ -2651,6 +3262,7 @@ async function parsePptxFile(file: File): Promise<ParseFileResult> {
 
 async function parsePdfFile(file: File): Promise<ParseFileResult> {
   const fileUrl = URL.createObjectURL(file);
+  const rawBuffer = await file.arrayBuffer().catch(() => undefined);
   const title = stripFileExtension(file.name);
   const fileSize = formatFileSize(file.size);
 
@@ -2688,6 +3300,10 @@ async function parsePdfFile(file: File): Promise<ParseFileResult> {
     thumbnail: createThumbnailDataUri('pdf', title, '#DB2777'),
     fileUrl,
     objectUrl: fileUrl,
+    rawArrayBuffer: rawBuffer ? rawBuffer.slice(0) : undefined,
+    originalMimeType: file.type || 'application/pdf',
+    originalFileName: file.name,
+    hasLocalEdits: false,
     pdfPages: [],
     outline,
     slidesPreview: [],

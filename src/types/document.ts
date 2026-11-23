@@ -64,6 +64,42 @@ export interface SlideTableCellStyle {
   align?: "left" | "center" | "right";
 }
 
+export type SlideShapeKind =
+  | 'rect'
+  | 'roundRect'
+  | 'ellipse'
+  | 'triangle'
+  | 'arrowRight'
+  | 'arrowLeft'
+  | 'arrowUp'
+  | 'arrowDown'
+  | 'star'
+  | 'callout'
+  | 'line';
+
+export interface SlideChartSeries {
+  name: string;
+  values: number[];
+  color?: string;
+}
+
+export interface SlideChartData {
+  chartType: 'column' | 'line' | 'pie';
+  title?: string;
+  categories: string[];
+  series: SlideChartSeries[];
+}
+
+export interface SlideAnimationConfig {
+  type: 'none' | 'appear' | 'fadeIn' | 'flyIn' | 'zoomIn';
+  order?: number;
+}
+
+export interface SlideTransitionConfig {
+  type: 'none' | 'fade' | 'push' | 'wipe' | 'split' | 'zoom';
+  durationMs?: number;
+}
+
 export interface SlideTextBlock {
   id: string;
   text: string;
@@ -81,7 +117,15 @@ export interface SlideTextBlock {
   borderColor?: string;
   fontFamily?: string;
   valign?: 'top' | 'middle' | 'bottom';
-  kind?: 'text' | 'table';
+  kind?: 'text' | 'table' | 'shape' | 'chart' | 'media';
+  shapeKind?: SlideShapeKind;
+  chartData?: SlideChartData;
+  mediaSrc?: string;
+  mediaKind?: 'video' | 'audio';
+  linkUrl?: string;
+  groupId?: string;
+  zIndex?: number;
+  animation?: SlideAnimationConfig;
   tableRows?: string[][];
   tableCellStyles?: SlideTableCellStyle[][];
   richParagraphs?: SlideRichParagraph[];
@@ -126,6 +170,8 @@ export interface SlidePreviewItem {
   backgroundImageSrc?: string;
   slideWidthRatio?: number;
   isMasterPositioned?: boolean;
+  hidden?: boolean;
+  transition?: SlideTransitionConfig;
 }
 
 export interface OutlineSection {
@@ -139,7 +185,48 @@ export interface OutlineSection {
 
 export interface CellStyle {
   bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  fontSize?: number;
+  fontFamily?: string;
+  textColor?: string;
+  bgColor?: string;
   align?: 'left' | 'center' | 'right';
+  valign?: 'top' | 'middle' | 'bottom';
+  wrapText?: boolean;
+  numFmt?: string;
+  borderTop?: string;
+  borderRight?: string;
+  borderBottom?: string;
+  borderLeft?: string;
+}
+
+export interface SpreadsheetMergeRange {
+  s: { r: number; c: number };
+  e: { r: number; c: number };
+}
+
+export interface ExcelConditionalFormat {
+  id: string;
+  range: { minRow: number; maxRow: number; minCol: number; maxCol: number };
+  rule: 'gt' | 'lt' | 'eq' | 'duplicate';
+  value?: string;
+  bgColor: string;
+  textColor?: string;
+}
+
+export interface ExcelChartSeries {
+  name: string;
+  values: number[];
+  color: string;
+}
+
+export interface ExcelChartItem {
+  id: string;
+  type: 'column' | 'line' | 'pie';
+  title: string;
+  categories: string[];
+  series: ExcelChartSeries[];
 }
 
 export interface SpreadsheetSheet {
@@ -148,6 +235,26 @@ export interface SpreadsheetSheet {
   columns: string[];
   rows: (string | number)[][];
   cellStyles?: Record<string, CellStyle>;
+  merges?: SpreadsheetMergeRange[];
+  colWidths?: number[];
+  rowHeights?: number[];
+  frozenRows?: number;
+  frozenCols?: number;
+  tabColor?: string;
+  hiddenRows?: number[];
+  hiddenCols?: number[];
+  autoFilterEnabled?: boolean;
+  dataValidations?: Record<string, string[]>;
+  conditionalFormats?: ExcelConditionalFormat[];
+  charts?: ExcelChartItem[];
+}
+
+export interface WordCommentItem {
+  id: string;
+  quote: string;
+  text: string;
+  author: string;
+  createdAt: string;
 }
 
 export interface PdfPageItem {
@@ -279,7 +386,10 @@ export interface DocumentItem {
   shareAccess?: ShareAccessLevel;
   shareAllowDownload?: boolean;
   rawArrayBuffer?: ArrayBuffer;
+  originalMimeType?: string;
+  hasLocalEdits?: boolean;
   slideAspectRatio?: number;
   collabPermission?: 'owner' | 'edit' | 'view';
   sharedOwnerId?: string;
+  wordComments?: WordCommentItem[];
 }

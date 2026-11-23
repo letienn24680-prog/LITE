@@ -1,18 +1,53 @@
 import { createThumbnailDataUri } from '../data/mockDocuments';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
-import { deleteFileFromR2, isR2ApiConfigured } from './r2Storage';
+import {
+  deleteFileFromR2,
+  getR2PresignedDownloadUrl,
+  isR2ApiConfigured,
+  uploadFileViaR2PresignedUrl,
+} from './r2Storage';
 import type {
   CloudUserSummary,
   DocumentItem,
   DocumentType,
+  ExcelChartItem,
+  ExcelChartSeries,
+  ExcelConditionalFormat,
   OutlineSection,
   PdfPageItem,
+  SlideAnimationConfig,
+  SlideChartData,
+  SlideChartSeries,
+  SlideImageItem,
   SlidePreviewItem,
+  SlideShapeKind,
+  SlideTextBlock,
+  SlideTransitionConfig,
+  SpreadsheetMergeRange,
   SpreadsheetSheet,
+  WordCommentItem,
 } from '../types/document';
 
 const STORAGE_BUCKET = 'user-files';
 const DOCUMENTS_TABLE = 'documents';
+const MAX_INLINE_DATA_URI_CHARS_WITH_BINARY = 96_000;
+const MAX_INLINE_DATA_URI_CHARS_NO_BINARY = 350_000;
+const MAX_SLIDE_INLINE_IMAGE_BUDGET_CHARS = 900_000;
+const MAX_JSONB_STRING_CHARS = 65_536;
+
+const CLOUD_MIME_BY_TYPE: Record<DocumentType, string> = {
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pdf: 'application/pdf',
+};
+
+const CLOUD_EXTENSION_BY_TYPE: Record<DocumentType, string> = {
+  pptx: 'pptx',
+  docx: 'docx',
+  xlsx: 'xlsx',
+  pdf: 'pdf',
+};
 
 const DEFAULT_ACCENT_BY_TYPE: Record<DocumentType, string> = {
   pptx: '#4F46E5',
@@ -29,6 +64,7 @@ export interface CloudParsedContent {
   pdfPages?: PdfPageItem[];
   outline: OutlineSection[];
   wordParagraphs?: Record<string, string[]>;
+  wordComments?: WordCommentItem[];
 }
 
 interface CloudDocumentRow {
@@ -118,29 +154,638 @@ function isValidIsoTimestamp(value?: string | null): value is string {
   return !Number.isNaN(timestamp);
 }
 
-function sanitizeSlidesForCloud(slides: SlidePreviewItem[]): SlidePreviewItem[] {
-  return slides.map((slide) => {
-    const hasImages = Boolean(slide.images && slide.images.length > 0);
-    const hasBlobBg = Boolean(slide.backgroundImageSrc?.startsWith('blob:'));
-    if (!hasImages && !hasBlobBg) {
-      return slide;
+function resolveMimeTypeForFileName(
+  fileName: string | undefined,
+  explicitMime: string | undefined,
+  fallbackDocType?: DocumentType
+): string | undefined {
+  const cleanExplicit = explicitMime?.trim();
+  if (cleanExplicit && cleanExplicit.toLowerCase() !== 'application/octet-stream') {
+    return cleanExplicit;
+  }
+  const lowerName = (fileName ?? '').trim().toLowerCase();
+  if (lowerName.endsWith('.pdf')) {
+    return CLOUD_MIME_BY_TYPE.pdf;
+  }
+  if (lowerName.endsWith('.docx') || lowerName.endsWith('.doc')) {
+    return CLOUD_MIME_BY_TYPE.docx;
+  }
+  if (lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls')) {
+    return CLOUD_MIME_BY_TYPE.xlsx;
+  }
+  if (lowerName.endsWith('.pptx') || lowerName.endsWith('.ppt')) {
+    return CLOUD_MIME_BY_TYPE.pptx;
+  }
+  return fallbackDocType ? CLOUD_MIME_BY_TYPE[fallbackDocType] : undefined;
+}
+
+function buildOriginalFileForCloud(doc: DocumentItem): File | null {
+  if (!(doc.rawArrayBuffer instanceof ArrayBuffer) || doc.rawArrayBuffer.byteLength === 0) {
+    return null;
+  }
+  const ext = CLOUD_EXTENSION_BY_TYPE[doc.type];
+  const rawOriginalName = doc.originalFileName?.trim();
+  const baseName = rawOriginalName || doc.title.trim() || 'document';
+  const hasKnownExt = /\.(docx|xlsx|pptx|pdf)$/i.test(baseName);
+  const fileName = hasKnownExt ? baseName : `${baseName}.${ext}`;
+  const mimeType =
+    resolveMimeTypeForFileName(fileName, doc.originalMimeType, doc.type) ??
+    CLOUD_MIME_BY_TYPE[doc.type];
+
+  try {
+    return new File([doc.rawArrayBuffer.slice(0)], fileName, { type: mimeType });
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeJsonSafeValue(
+  value: unknown,
+  maxStringLength = MAX_JSONB_STRING_CHARS,
+  depth = 0
+): unknown {
+  if (depth > 12 || value === undefined || value === null) {
+    return value === null ? null : undefined;
+  }
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : undefined;
+  }
+  if (typeof value === 'string') {
+    if (value.startsWith('blob:') || value.length > maxStringLength) {
+      return undefined;
     }
-    const nextSlide: SlidePreviewItem = { ...slide };
-    if (hasBlobBg) {
-      delete nextSlide.backgroundImageSrc;
-    }
-    if (slide.images && slide.images.length > 0) {
-      const persistableImages = slide.images.filter(
-        (img) => typeof img.src === 'string' && !img.src.startsWith('blob:')
-      );
-      if (persistableImages.length > 0) {
-        nextSlide.images = persistableImages;
-      } else {
-        delete nextSlide.images;
+    return value;
+  }
+  if (
+    value instanceof ArrayBuffer ||
+    ArrayBuffer.isView(value) ||
+    (typeof Blob !== 'undefined' && value instanceof Blob)
+  ) {
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    const cleanedItems: unknown[] = [];
+    for (const item of value) {
+      const cleaned = sanitizeJsonSafeValue(item, maxStringLength, depth + 1);
+      if (cleaned !== undefined) {
+        cleanedItems.push(cleaned);
       }
     }
-    return nextSlide;
+    return cleanedItems;
+  }
+  if (isPlainRecord(value)) {
+    const cleanedRecord: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      if (key === 'rawArrayBuffer' || key === 'sourceFile' || key === 'objectUrl') {
+        continue;
+      }
+      const cleaned = sanitizeJsonSafeValue(entry, maxStringLength, depth + 1);
+      if (cleaned !== undefined) {
+        cleanedRecord[key] = cleaned;
+      }
+    }
+    return cleanedRecord;
+  }
+  return undefined;
+}
+
+function sanitizeSlidesForCloud(
+  slides: SlidePreviewItem[],
+  options?: { hasBinaryBackup?: boolean; stripOversizedDataUris?: boolean }
+): SlidePreviewItem[] {
+  const shouldStripOversizedData = options?.stripOversizedDataUris !== false;
+  const maxInlineDataUriLength = options?.hasBinaryBackup
+    ? MAX_INLINE_DATA_URI_CHARS_WITH_BINARY
+    : MAX_INLINE_DATA_URI_CHARS_NO_BINARY;
+  let remainingInlineBudget = MAX_SLIDE_INLINE_IMAGE_BUDGET_CHARS;
+
+  const isPersistableImageSrc = (src: unknown): src is string => {
+    if (typeof src !== 'string') {
+      return false;
+    }
+    const trimmed = src.trim();
+    if (!trimmed || trimmed.startsWith('blob:')) {
+      return false;
+    }
+    if (trimmed.startsWith('data:')) {
+      if (!shouldStripOversizedData) {
+        return true;
+      }
+      if (
+        trimmed.length > maxInlineDataUriLength ||
+        trimmed.length > remainingInlineBudget
+      ) {
+        return false;
+      }
+      remainingInlineBudget -= trimmed.length;
+    }
+    return true;
+  };
+
+  return slides
+    .filter((slide): slide is SlidePreviewItem => isPlainRecord(slide))
+    .map((slide) => {
+      const cleanedBase = sanitizeJsonSafeValue(slide, MAX_JSONB_STRING_CHARS, 0);
+      const nextSlide: SlidePreviewItem = isPlainRecord(cleanedBase)
+        ? (cleanedBase as unknown as SlidePreviewItem)
+        : { ...slide };
+
+      if (typeof slide.hidden === 'boolean') {
+        nextSlide.hidden = slide.hidden;
+      } else {
+        delete nextSlide.hidden;
+      }
+
+      if (isPlainRecord(slide.transition)) {
+        const rawType = slide.transition.type;
+        if (
+          rawType === 'none' ||
+          rawType === 'fade' ||
+          rawType === 'push' ||
+          rawType === 'wipe' ||
+          rawType === 'split' ||
+          rawType === 'zoom'
+        ) {
+          const cleanTransition: SlideTransitionConfig = { type: rawType };
+          if (
+            typeof slide.transition.durationMs === 'number' &&
+            Number.isFinite(slide.transition.durationMs) &&
+            slide.transition.durationMs >= 0
+          ) {
+            cleanTransition.durationMs = slide.transition.durationMs;
+          }
+          nextSlide.transition = cleanTransition;
+        } else {
+          delete nextSlide.transition;
+        }
+      }
+
+      if (Array.isArray(slide.blocks)) {
+        const sanitizedBlocks: SlideTextBlock[] = [];
+        for (const block of slide.blocks) {
+          if (!isPlainRecord(block)) {
+            continue;
+          }
+          const cleanedBlockRaw = sanitizeJsonSafeValue(
+            block,
+            MAX_JSONB_STRING_CHARS,
+            1
+          );
+          if (!isPlainRecord(cleanedBlockRaw)) {
+            continue;
+          }
+          const safeBlock = cleanedBlockRaw as unknown as SlideTextBlock;
+
+          if (typeof block.shapeKind === 'string') {
+            safeBlock.shapeKind = block.shapeKind as SlideShapeKind;
+          }
+          if (isPlainRecord(block.chartData)) {
+            const chartType = block.chartData.chartType;
+            if (
+              (chartType === 'column' || chartType === 'line' || chartType === 'pie') &&
+              Array.isArray(block.chartData.categories) &&
+              Array.isArray(block.chartData.series)
+            ) {
+              const safeSeries: SlideChartSeries[] = [];
+              for (const s of block.chartData.series) {
+                if (!isPlainRecord(s) || !Array.isArray(s.values)) {
+                  continue;
+                }
+                const seriesItem: SlideChartSeries = {
+                  name: typeof s.name === 'string' ? s.name : '',
+                  values: s.values.filter(
+                    (val): val is number => typeof val === 'number' && Number.isFinite(val)
+                  ),
+                };
+                if (typeof s.color === 'string') {
+                  seriesItem.color = s.color;
+                }
+                safeSeries.push(seriesItem);
+              }
+              const safeChart: SlideChartData = {
+                chartType,
+                categories: block.chartData.categories.map((c) => String(c ?? '')),
+                series: safeSeries,
+              };
+              if (typeof block.chartData.title === 'string') {
+                safeChart.title = block.chartData.title;
+              }
+              safeBlock.chartData = safeChart;
+            } else {
+              delete safeBlock.chartData;
+            }
+          }
+          if (isPlainRecord(block.animation)) {
+            const animType = block.animation.type;
+            if (
+              animType === 'none' ||
+              animType === 'appear' ||
+              animType === 'fadeIn' ||
+              animType === 'flyIn' ||
+              animType === 'zoomIn'
+            ) {
+              const safeAnim: SlideAnimationConfig = { type: animType };
+              if (
+                typeof block.animation.order === 'number' &&
+                Number.isFinite(block.animation.order)
+              ) {
+                safeAnim.order = block.animation.order;
+              }
+              safeBlock.animation = safeAnim;
+            } else {
+              delete safeBlock.animation;
+            }
+          }
+          if (typeof block.groupId === 'string' && block.groupId.trim()) {
+            safeBlock.groupId = block.groupId;
+          }
+          if (typeof block.zIndex === 'number' && Number.isFinite(block.zIndex)) {
+            safeBlock.zIndex = block.zIndex;
+          }
+          if (typeof block.linkUrl === 'string' && !block.linkUrl.startsWith('blob:')) {
+            safeBlock.linkUrl = block.linkUrl;
+          }
+          if (block.mediaKind === 'video' || block.mediaKind === 'audio') {
+            safeBlock.mediaKind = block.mediaKind;
+          }
+          if (
+            typeof block.mediaSrc === 'string' &&
+            !block.mediaSrc.startsWith('blob:') &&
+            !(block.mediaSrc.startsWith('data:') && block.mediaSrc.length > maxInlineDataUriLength)
+          ) {
+            safeBlock.mediaSrc = block.mediaSrc;
+          } else if (block.mediaSrc !== undefined) {
+            delete safeBlock.mediaSrc;
+          }
+
+          sanitizedBlocks.push(safeBlock);
+        }
+        nextSlide.blocks = sanitizedBlocks;
+      }
+
+      if (slide.backgroundImageSrc !== undefined) {
+        if (isPersistableImageSrc(slide.backgroundImageSrc)) {
+          nextSlide.backgroundImageSrc = slide.backgroundImageSrc;
+        } else {
+          delete nextSlide.backgroundImageSrc;
+        }
+      }
+
+      if (Array.isArray(slide.images)) {
+        const persistableImages: SlideImageItem[] = [];
+        for (const img of slide.images) {
+          if (!isPlainRecord(img) || !isPersistableImageSrc(img.src)) {
+            continue;
+          }
+          const cleanedImg = sanitizeJsonSafeValue(img, MAX_JSONB_STRING_CHARS, 1);
+          if (isPlainRecord(cleanedImg)) {
+            const safeImg = cleanedImg as unknown as SlideImageItem;
+            safeImg.src = img.src;
+            persistableImages.push(safeImg);
+          }
+        }
+        if (persistableImages.length > 0) {
+          nextSlide.images = persistableImages;
+        } else {
+          delete nextSlide.images;
+        }
+      }
+
+      return nextSlide;
+    });
+}
+
+function sanitizeSheetsForCloud(rawSheets: unknown): SpreadsheetSheet[] | undefined {
+  if (!Array.isArray(rawSheets)) {
+    return undefined;
+  }
+
+  const cleanedSheets: SpreadsheetSheet[] = [];
+  rawSheets.forEach((entry, index) => {
+    if (!isPlainRecord(entry)) {
+      return;
+    }
+
+    const columns = Array.isArray(entry.columns)
+      ? entry.columns.map((col) => (typeof col === 'string' ? col : String(col ?? '')))
+      : [];
+
+    const rows: SpreadsheetSheet['rows'] = Array.isArray(entry.rows)
+      ? entry.rows.map((row) =>
+          Array.isArray(row)
+            ? row.map((cell) => {
+                if (typeof cell === 'string') {
+                  if (cell.startsWith('blob:')) {
+                    return '' as unknown as SpreadsheetSheet['rows'][number][number];
+                  }
+                  const trimmed =
+                    cell.length > MAX_JSONB_STRING_CHARS
+                      ? cell.slice(0, MAX_JSONB_STRING_CHARS)
+                      : cell;
+                  return trimmed as unknown as SpreadsheetSheet['rows'][number][number];
+                }
+                if (typeof cell === 'number' && Number.isFinite(cell)) {
+                  return cell as unknown as SpreadsheetSheet['rows'][number][number];
+                }
+                if (typeof cell === 'boolean') {
+                  return String(cell) as unknown as SpreadsheetSheet['rows'][number][number];
+                }
+                return '' as unknown as SpreadsheetSheet['rows'][number][number];
+              })
+            : []
+        )
+      : [];
+
+    const cleanedSheet: SpreadsheetSheet = {
+      id:
+        typeof entry.id === 'string' && entry.id.trim()
+          ? entry.id.trim()
+          : `sheet-${index + 1}`,
+      name:
+        typeof entry.name === 'string' && entry.name.trim()
+          ? entry.name.trim()
+          : `Trang tính ${index + 1}`,
+      columns,
+      rows,
+    };
+
+    if (isPlainRecord(entry.cellStyles)) {
+      const cleanedCellStyles = sanitizeJsonSafeValue(entry.cellStyles, 4096, 1);
+      if (isPlainRecord(cleanedCellStyles) && Object.keys(cleanedCellStyles).length > 0) {
+        cleanedSheet.cellStyles =
+          cleanedCellStyles as unknown as SpreadsheetSheet['cellStyles'];
+      }
+    }
+
+    if (Array.isArray(entry.merges)) {
+      const cleanedMerges = entry.merges
+        .filter((merge): merge is Record<string, unknown> => isPlainRecord(merge))
+        .map((merge) => sanitizeJsonSafeValue(merge, 256, 1))
+        .filter((merge): merge is Record<string, unknown> => isPlainRecord(merge));
+      if (cleanedMerges.length > 0) {
+        cleanedSheet.merges = cleanedMerges as unknown as SpreadsheetMergeRange[];
+      }
+    }
+
+    if (Array.isArray(entry.colWidths)) {
+      const widths = entry.colWidths.filter(
+        (width): width is number =>
+          typeof width === 'number' && Number.isFinite(width) && width >= 0
+      );
+      if (widths.length > 0) {
+        cleanedSheet.colWidths = widths;
+      }
+    }
+
+    if (Array.isArray(entry.rowHeights)) {
+      const heights = entry.rowHeights.filter(
+        (height): height is number =>
+          typeof height === 'number' && Number.isFinite(height) && height >= 0
+      );
+      if (heights.length > 0) {
+        cleanedSheet.rowHeights = heights;
+      }
+    }
+
+    if (
+      typeof entry.frozenRows === 'number' &&
+      Number.isFinite(entry.frozenRows) &&
+      entry.frozenRows >= 0
+    ) {
+      cleanedSheet.frozenRows = Math.floor(entry.frozenRows);
+    }
+
+    if (
+      typeof entry.frozenCols === 'number' &&
+      Number.isFinite(entry.frozenCols) &&
+      entry.frozenCols >= 0
+    ) {
+      cleanedSheet.frozenCols = Math.floor(entry.frozenCols);
+    }
+
+    if (typeof entry.tabColor === 'string' && entry.tabColor.trim()) {
+      cleanedSheet.tabColor = entry.tabColor.trim().slice(0, 64);
+    }
+
+    if (Array.isArray(entry.hiddenRows)) {
+      const hiddenRows = entry.hiddenRows.filter(
+        (idx): idx is number =>
+          typeof idx === 'number' && Number.isInteger(idx) && idx >= 0
+      );
+      if (hiddenRows.length > 0) {
+        cleanedSheet.hiddenRows = hiddenRows;
+      }
+    }
+
+    if (Array.isArray(entry.hiddenCols)) {
+      const hiddenCols = entry.hiddenCols.filter(
+        (idx): idx is number =>
+          typeof idx === 'number' && Number.isInteger(idx) && idx >= 0
+      );
+      if (hiddenCols.length > 0) {
+        cleanedSheet.hiddenCols = hiddenCols;
+      }
+    }
+
+    if (typeof entry.autoFilterEnabled === 'boolean') {
+      cleanedSheet.autoFilterEnabled = entry.autoFilterEnabled;
+    }
+
+    if (isPlainRecord(entry.dataValidations)) {
+      const cleanValidations: Record<string, string[]> = {};
+      let hasValidation = false;
+      for (const [cellKey, optionsList] of Object.entries(entry.dataValidations)) {
+        if (Array.isArray(optionsList)) {
+          cleanValidations[cellKey] = optionsList
+            .filter((item): item is string => typeof item === 'string')
+            .slice(0, 500);
+          hasValidation = true;
+        }
+      }
+      if (hasValidation) {
+        cleanedSheet.dataValidations = cleanValidations;
+      }
+    }
+
+    if (Array.isArray(entry.conditionalFormats)) {
+      const cleanRules: ExcelConditionalFormat[] = [];
+      for (const item of entry.conditionalFormats) {
+        if (!isPlainRecord(item) || !isPlainRecord(item.range)) {
+          continue;
+        }
+        const rule = item.rule;
+        if (
+          rule !== 'gt' &&
+          rule !== 'lt' &&
+          rule !== 'eq' &&
+          rule !== 'duplicate'
+        ) {
+          continue;
+        }
+        const { minRow, maxRow, minCol, maxCol } = item.range;
+        if (
+          typeof minRow !== 'number' ||
+          typeof maxRow !== 'number' ||
+          typeof minCol !== 'number' ||
+          typeof maxCol !== 'number' ||
+          !Number.isFinite(minRow) ||
+          !Number.isFinite(maxRow) ||
+          !Number.isFinite(minCol) ||
+          !Number.isFinite(maxCol)
+        ) {
+          continue;
+        }
+        const formattedRule: ExcelConditionalFormat = {
+          id:
+            typeof item.id === 'string' && item.id.trim()
+              ? item.id.trim()
+              : `cf-${cleanRules.length + 1}`,
+          range: { minRow, maxRow, minCol, maxCol },
+          rule,
+          bgColor: typeof item.bgColor === 'string' ? item.bgColor : '#FEF3C7',
+        };
+        if (typeof item.value === 'string') {
+          formattedRule.value = item.value;
+        }
+        if (typeof item.textColor === 'string') {
+          formattedRule.textColor = item.textColor;
+        }
+        cleanRules.push(formattedRule);
+      }
+      if (cleanRules.length > 0) {
+        cleanedSheet.conditionalFormats = cleanRules;
+      }
+    }
+
+    if (Array.isArray(entry.charts)) {
+      const cleanCharts: ExcelChartItem[] = [];
+      for (const chart of entry.charts) {
+        if (!isPlainRecord(chart)) {
+          continue;
+        }
+        const chartType = chart.type;
+        if (chartType !== 'column' && chartType !== 'line' && chartType !== 'pie') {
+          continue;
+        }
+        const categories = Array.isArray(chart.categories)
+          ? chart.categories.map((cat) => String(cat ?? ''))
+          : [];
+        const cleanSeries: ExcelChartSeries[] = [];
+        if (Array.isArray(chart.series)) {
+          for (const ser of chart.series) {
+            if (!isPlainRecord(ser) || !Array.isArray(ser.values)) {
+              continue;
+            }
+            cleanSeries.push({
+              name: typeof ser.name === 'string' ? ser.name : '',
+              values: ser.values.filter(
+                (v): v is number => typeof v === 'number' && Number.isFinite(v)
+              ),
+              color: typeof ser.color === 'string' ? ser.color : '#107C41',
+            });
+          }
+        }
+        cleanCharts.push({
+          id:
+            typeof chart.id === 'string' && chart.id.trim()
+              ? chart.id.trim()
+              : `chart-${cleanCharts.length + 1}`,
+          type: chartType,
+          title: typeof chart.title === 'string' ? chart.title : 'Biểu đồ',
+          categories,
+          series: cleanSeries,
+        });
+      }
+      if (cleanCharts.length > 0) {
+        cleanedSheet.charts = cleanCharts;
+      }
+    }
+
+    cleanedSheets.push(cleanedSheet);
   });
+
+  return cleanedSheets;
+}
+
+function sanitizeOutlineForCloud(rawOutline: unknown): OutlineSection[] {
+  if (!Array.isArray(rawOutline)) {
+    return [];
+  }
+  const result: OutlineSection[] = [];
+  for (const section of rawOutline) {
+    if (!isPlainRecord(section)) {
+      continue;
+    }
+    const cleaned = sanitizeJsonSafeValue(section, MAX_JSONB_STRING_CHARS, 0);
+    if (isPlainRecord(cleaned)) {
+      result.push(cleaned as unknown as OutlineSection);
+    }
+  }
+  return result;
+}
+
+function sanitizePdfPagesForCloud(
+  rawPdfPages: unknown,
+  hasBinaryBackup?: boolean
+): PdfPageItem[] | undefined {
+  if (!Array.isArray(rawPdfPages)) {
+    return undefined;
+  }
+  const maxFieldLength = hasBinaryBackup
+    ? MAX_INLINE_DATA_URI_CHARS_WITH_BINARY
+    : MAX_INLINE_DATA_URI_CHARS_NO_BINARY;
+  const pages: PdfPageItem[] = [];
+  for (const page of rawPdfPages) {
+    if (!isPlainRecord(page)) {
+      continue;
+    }
+    const cleaned = sanitizeJsonSafeValue(page, maxFieldLength, 0);
+    if (isPlainRecord(cleaned)) {
+      pages.push(cleaned as unknown as PdfPageItem);
+    }
+  }
+  return pages;
+}
+
+function sanitizeWordCommentsForCloud(
+  rawComments: unknown
+): WordCommentItem[] | undefined {
+  if (!Array.isArray(rawComments)) {
+    return undefined;
+  }
+  const comments: WordCommentItem[] = [];
+  rawComments.forEach((entry, index) => {
+    if (!isPlainRecord(entry) || typeof entry.text !== 'string') {
+      return;
+    }
+    const text = entry.text.trim();
+    if (!text) {
+      return;
+    }
+    comments.push({
+      id:
+        typeof entry.id === 'string' && entry.id.trim()
+          ? entry.id.trim()
+          : `comment-${index + 1}`,
+      quote:
+        typeof entry.quote === 'string'
+          ? entry.quote.slice(0, 2000)
+          : '',
+      text: text.slice(0, MAX_JSONB_STRING_CHARS),
+      author:
+        typeof entry.author === 'string' && entry.author.trim()
+          ? entry.author.trim().slice(0, 120)
+          : 'Người dùng',
+      createdAt:
+        typeof entry.createdAt === 'string' && entry.createdAt.trim()
+          ? entry.createdAt.trim()
+          : new Date().toISOString(),
+    });
+  });
+  return comments.length > 0 ? comments : undefined;
 }
 
 function normalizeWordParagraphs(
@@ -160,7 +805,10 @@ function normalizeWordParagraphs(
   return hasEntry ? result : undefined;
 }
 
-function normalizeParsedContent(raw: unknown): CloudParsedContent {
+function normalizeParsedContent(
+  raw: unknown,
+  options?: { hasBinaryBackup?: boolean }
+): CloudParsedContent {
   if (!isPlainRecord(raw)) {
     return {
       slidesPreview: [],
@@ -171,13 +819,13 @@ function normalizeParsedContent(raw: unknown): CloudParsedContent {
   const rawSlides = Array.isArray(raw.slidesPreview)
     ? (raw.slidesPreview as SlidePreviewItem[])
     : [];
-  const rawOutline = Array.isArray(raw.outline)
-    ? (raw.outline as OutlineSection[])
-    : [];
 
   const normalized: CloudParsedContent = {
-    slidesPreview: sanitizeSlidesForCloud(rawSlides),
-    outline: rawOutline,
+    slidesPreview: sanitizeSlidesForCloud(rawSlides, {
+      hasBinaryBackup: options?.hasBinaryBackup,
+      stripOversizedDataUris: false,
+    }),
+    outline: sanitizeOutlineForCloud(raw.outline),
   };
 
   if (typeof raw.wordHtml === 'string') {
@@ -190,15 +838,20 @@ function normalizeParsedContent(raw: unknown): CloudParsedContent {
   ) {
     normalized.slideAspectRatio = raw.slideAspectRatio;
   }
-  if (Array.isArray(raw.sheets)) {
-    normalized.sheets = raw.sheets as SpreadsheetSheet[];
+  const normalizedSheets = sanitizeSheetsForCloud(raw.sheets);
+  if (normalizedSheets) {
+    normalized.sheets = normalizedSheets;
   }
   if (Array.isArray(raw.pdfPages)) {
-    normalized.pdfPages = raw.pdfPages as PdfPageItem[];
+    normalized.pdfPages = sanitizePdfPagesForCloud(raw.pdfPages, false);
   }
   const normalizedParagraphs = normalizeWordParagraphs(raw.wordParagraphs);
   if (normalizedParagraphs) {
     normalized.wordParagraphs = normalizedParagraphs;
+  }
+  const normalizedComments = sanitizeWordCommentsForCloud(raw.wordComments);
+  if (normalizedComments) {
+    normalized.wordComments = normalizedComments;
   }
 
   return normalized;
@@ -244,7 +897,8 @@ function mapCloudRowToDocumentItem(row: CloudDocumentRow): DocumentItem {
   const docType: DocumentType = isValidDocumentType(row.file_type)
     ? row.file_type
     : 'docx';
-  const parsed = normalizeParsedContent(row.parsed_content);
+  const hasBinaryBackup = Boolean(row.storage_path || row.r2_object_key);
+  const parsed = normalizeParsedContent(row.parsed_content, { hasBinaryBackup });
   const title = row.title?.trim() || 'Tài liệu chưa đặt tên';
   const accentFromSlide = parsed.slidesPreview[0]?.accentColor;
   const accentColor =
@@ -280,12 +934,14 @@ function mapCloudRowToDocumentItem(row: CloudDocumentRow): DocumentItem {
     pdfPages: parsed.pdfPages,
     wordParagraphs: parsed.wordParagraphs,
     wordHtml: parsed.wordHtml,
+    wordComments: parsed.wordComments,
     isUploaded: true,
     lastSavedAt: row.updated_at ?? undefined,
     lastAccessedAt: row.last_accessed_at ?? undefined,
     storagePath: row.storage_path ?? undefined,
     r2ObjectKey: row.r2_object_key ?? undefined,
     originalFileName: row.file_name ?? undefined,
+    hasLocalEdits: false,
     isSyncedToCloud: true,
     userId: row.user_id,
   };
@@ -508,11 +1164,13 @@ export async function uploadDocumentFileToStorage(
   const safeFileName = sanitizeStorageFileName(file.name);
   const storagePath = `${safeUserId}/${safeDocId}/${safeFileName}`;
 
+  const contentType = resolveMimeTypeForFileName(file.name, file.type);
+
   const { error } = await client.storage
     .from(STORAGE_BUCKET)
     .upload(storagePath, file, {
       upsert: true,
-      contentType: file.type || undefined,
+      contentType: contentType || undefined,
     });
 
   if (error) {
@@ -554,29 +1212,98 @@ export async function getCloudFileObjectUrl(
   };
 }
 
+async function readBlobAsArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
+  if (typeof blob.arrayBuffer === 'function') {
+    return await blob.arrayBuffer();
+  }
+  return await new Response(blob).arrayBuffer();
+}
+
+async function fetchArrayBufferFromSignedOrRemoteUrl(
+  url: string
+): Promise<ArrayBuffer> {
+  const response = await fetch(url, { cache: 'no-store' });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const buffer = await response.arrayBuffer();
+  if (buffer.byteLength === 0) {
+    throw new Error('Tệp tải về có kích thước 0 byte.');
+  }
+  return buffer;
+}
+
 /**
- * Downloads a file from Supabase Storage 'user-files' bucket directly as an ArrayBuffer
- * (used to hydrate .docx / .pptx raw binary across devices when rawArrayBuffer is not in memory).
+ * Downloads a file from Supabase Storage 'user-files' bucket (or R2 fallback) directly as an ArrayBuffer
+ * (used to hydrate .docx / .xlsx / .pptx / .pdf raw binary across devices when rawArrayBuffer is not in memory).
  */
 export async function downloadCloudFileArrayBuffer(
-  storagePath: string
+  storagePath: string,
+  options?: { r2ObjectKey?: string; accessToken?: string | null }
 ): Promise<ArrayBuffer> {
   const cleanPath = storagePath.trim();
-  if (!cleanPath) {
+  const cleanR2Key = options?.r2ObjectKey?.trim() ?? '';
+
+  if (!cleanPath && !cleanR2Key) {
     throw new Error('Đường dẫn tệp trên đám mây không hợp lệ.');
   }
-  const client = getConfiguredSupabaseClient();
-  const { data, error } = await client.storage
-    .from(STORAGE_BUCKET)
-    .download(cleanPath);
 
-  if (error || !data) {
-    throw new Error(
-      `Không thể tải dữ liệu tệp gốc từ đám mây${error?.message ? `: ${error.message}` : '.'}`
-    );
+  let storageFailureMessage = '';
+
+  if (cleanPath) {
+    const client = getConfiguredSupabaseClient();
+    const { data, error } = await client.storage
+      .from(STORAGE_BUCKET)
+      .download(cleanPath);
+
+    if (!error && data) {
+      const buffer = await readBlobAsArrayBuffer(data);
+      if (buffer.byteLength > 0) {
+        return buffer;
+      }
+      storageFailureMessage = 'Dữ liệu tệp tải về bị rỗng.';
+    } else if (error?.message) {
+      storageFailureMessage = error.message;
+    }
+
+    // Fallback to signed URL fetch in case direct authenticated blob download hits MIME/WebView quirks
+    try {
+      const { data: signedData, error: signedError } = await client.storage
+        .from(STORAGE_BUCKET)
+        .createSignedUrl(cleanPath, 120);
+      if (!signedError && signedData?.signedUrl) {
+        return await fetchArrayBufferFromSignedOrRemoteUrl(signedData.signedUrl);
+      }
+      if (signedError?.message && !storageFailureMessage) {
+        storageFailureMessage = signedError.message;
+      }
+    } catch (signedFetchError) {
+      if (!storageFailureMessage && signedFetchError instanceof Error) {
+        storageFailureMessage = signedFetchError.message;
+      }
+    }
   }
 
-  return await data.arrayBuffer();
+  if (cleanR2Key && isR2ApiConfigured) {
+    let resolvedToken = options?.accessToken ?? null;
+    if (!resolvedToken && isSupabaseConfigured && supabase) {
+      try {
+        const sessionRes = await supabase.auth.getSession();
+        resolvedToken = sessionRes.data.session?.access_token ?? null;
+      } catch {
+        resolvedToken = null;
+      }
+    }
+    const { downloadUrl } = await getR2PresignedDownloadUrl({
+      objectKey: cleanR2Key,
+      accessToken: resolvedToken,
+    });
+    return await fetchArrayBufferFromSignedOrRemoteUrl(downloadUrl);
+  }
+
+  throw new Error(
+    `Không thể tải dữ liệu tệp gốc từ đám mây${storageFailureMessage ? `: ${storageFailureMessage}` : '.'}`
+  );
 }
 
 /**
@@ -605,6 +1332,8 @@ export async function downloadCloudFileToDevice(
 
 /**
  * Uploads the source file if needed and upserts the document record into public.documents.
+ * Prioritizes preserving the intact original binary (rawArrayBuffer / sourceFile) when the file
+ * has not been edited locally, storing it in R2 or Supabase Storage 'user-files' without bloating JSONB.
  */
 export async function upsertCloudDocument(
   userId: string,
@@ -613,33 +1342,85 @@ export async function upsertCloudDocument(
     file?: File | null;
     touchUpdatedAt?: boolean;
     forceUploadFile?: boolean;
+    accessToken?: string | null;
   }
 ): Promise<DocumentItem> {
   const client = getConfiguredSupabaseClient();
-  const hasExplicitFileOption =
-    options !== undefined &&
-    Object.prototype.hasOwnProperty.call(options, 'file');
-  const sourceFile = hasExplicitFileOption
-    ? (options.file ?? null)
-    : (doc.sourceFile ?? null);
-  let nextStoragePath = doc.storagePath;
-  let nextOriginalFileName = doc.originalFileName ?? sourceFile?.name;
+  const explicitFile =
+    options?.file instanceof File && options.file.size > 0 ? options.file : null;
+  const docSourceFile =
+    doc.sourceFile instanceof File && doc.sourceFile.size > 0 ? doc.sourceFile : null;
+  const reconstructedOriginalFile = buildOriginalFileForCloud(doc);
 
-  if (
-    sourceFile &&
-    ((!nextStoragePath && !doc.r2ObjectKey) || options?.forceUploadFile)
-  ) {
-    const uploaded = await uploadDocumentFileToStorage(userId, doc.id, sourceFile);
-    nextStoragePath = uploaded.storagePath;
-    if (options?.forceUploadFile || !nextOriginalFileName) {
-      nextOriginalFileName = sourceFile.name;
+  // When unedited locally, never replace an intact original file with a simplified export
+  const binaryFileToUpload = doc.hasLocalEdits
+    ? (explicitFile ?? docSourceFile ?? reconstructedOriginalFile)
+    : (docSourceFile ?? reconstructedOriginalFile ?? explicitFile);
+
+  let nextStoragePath = doc.storagePath;
+  let nextR2ObjectKey = doc.r2ObjectKey;
+  let nextOriginalFileName = doc.originalFileName ?? binaryFileToUpload?.name;
+
+  const hasCloudBinaryAlready = Boolean(nextStoragePath || nextR2ObjectKey);
+  const shouldUploadBinary =
+    Boolean(binaryFileToUpload) &&
+    (!hasCloudBinaryAlready || Boolean(options?.forceUploadFile));
+
+  if (shouldUploadBinary && binaryFileToUpload) {
+    let uploadedViaR2 = false;
+
+    if (isR2ApiConfigured && (!nextStoragePath || Boolean(options?.forceUploadFile))) {
+      let resolvedToken = options?.accessToken ?? null;
+      if (!resolvedToken) {
+        try {
+          const sessionRes = await client.auth.getSession();
+          resolvedToken = sessionRes.data.session?.access_token ?? null;
+        } catch {
+          resolvedToken = null;
+        }
+      }
+      if (resolvedToken) {
+        try {
+          const r2Result = await uploadFileViaR2PresignedUrl({
+            file: binaryFileToUpload,
+            documentId: doc.id,
+            accessToken: resolvedToken,
+          });
+          nextR2ObjectKey = r2Result.objectKey;
+          uploadedViaR2 = true;
+        } catch {
+          // Fall back to Supabase Storage 'user-files' bucket below
+        }
+      }
+    }
+
+    if (!uploadedViaR2) {
+      const uploaded = await uploadDocumentFileToStorage(
+        userId,
+        doc.id,
+        binaryFileToUpload
+      );
+      nextStoragePath = uploaded.storagePath;
+      if (options?.forceUploadFile || !nextOriginalFileName) {
+        nextOriginalFileName = binaryFileToUpload.name;
+      }
+    } else if (options?.forceUploadFile || !nextOriginalFileName) {
+      nextOriginalFileName = binaryFileToUpload.name;
     }
   }
 
-  const sanitizedSlides = sanitizeSlidesForCloud(doc.slidesPreview);
+  const hasBinaryBackup = Boolean(nextStoragePath || nextR2ObjectKey);
+  const sanitizedSlides = sanitizeSlidesForCloud(doc.slidesPreview ?? [], {
+    hasBinaryBackup,
+    stripOversizedDataUris: true,
+  });
+  const sanitizedOutline = sanitizeOutlineForCloud(doc.outline ?? []);
+  const sanitizedSheets = sanitizeSheetsForCloud(doc.sheets);
+  const sanitizedPdfPages = sanitizePdfPagesForCloud(doc.pdfPages, hasBinaryBackup);
+
   const parsedContent: CloudParsedContent = {
     slidesPreview: sanitizedSlides,
-    outline: doc.outline ?? [],
+    outline: sanitizedOutline,
   };
   if (typeof doc.wordHtml === 'string') {
     parsedContent.wordHtml = doc.wordHtml;
@@ -651,14 +1432,19 @@ export async function upsertCloudDocument(
   ) {
     parsedContent.slideAspectRatio = doc.slideAspectRatio;
   }
-  if (doc.sheets) {
-    parsedContent.sheets = doc.sheets;
+  if (sanitizedSheets) {
+    parsedContent.sheets = sanitizedSheets;
   }
-  if (doc.pdfPages) {
-    parsedContent.pdfPages = doc.pdfPages;
+  if (sanitizedPdfPages) {
+    parsedContent.pdfPages = sanitizedPdfPages;
   }
-  if (doc.wordParagraphs) {
-    parsedContent.wordParagraphs = doc.wordParagraphs;
+  const normalizedParagraphs = normalizeWordParagraphs(doc.wordParagraphs);
+  if (normalizedParagraphs) {
+    parsedContent.wordParagraphs = normalizedParagraphs;
+  }
+  const sanitizedWordComments = sanitizeWordCommentsForCloud(doc.wordComments);
+  if (sanitizedWordComments) {
+    parsedContent.wordComments = sanitizedWordComments;
   }
 
   const touchUpdatedAt = options?.touchUpdatedAt !== false;
@@ -672,11 +1458,18 @@ export async function upsertCloudDocument(
       ? nowIso
       : doc.lastAccessedAt;
 
+  const knownByteSize =
+    binaryFileToUpload?.size ??
+    (doc.rawArrayBuffer instanceof ArrayBuffer ? doc.rawArrayBuffer.byteLength : undefined);
   const computedFileSize =
-    doc.fileSize ?? (sourceFile ? formatByteSize(sourceFile.size) : undefined);
-  const fileSizeBytes = sourceFile
-    ? sourceFile.size
-    : parseFormattedFileSize(computedFileSize);
+    doc.fileSize ??
+    (typeof knownByteSize === 'number' && knownByteSize > 0
+      ? formatByteSize(knownByteSize)
+      : undefined);
+  const fileSizeBytes =
+    typeof knownByteSize === 'number' && knownByteSize > 0
+      ? knownByteSize
+      : parseFormattedFileSize(computedFileSize);
 
   const rowPayload = {
     id: doc.id,
@@ -687,7 +1480,7 @@ export async function upsertCloudDocument(
     file_size: computedFileSize ?? null,
     file_size_bytes: fileSizeBytes,
     storage_path: nextStoragePath ?? null,
-    r2_object_key: doc.r2ObjectKey ?? null,
+    r2_object_key: nextR2ObjectKey ?? null,
     folder: doc.folder ?? null,
     is_favorite: Boolean(doc.isFavorite),
     is_shared: Boolean(doc.isShared),
@@ -712,7 +1505,9 @@ export async function upsertCloudDocument(
     ...doc,
     fileSize: computedFileSize,
     storagePath: nextStoragePath,
+    r2ObjectKey: nextR2ObjectKey,
     originalFileName: nextOriginalFileName,
+    hasLocalEdits: doc.hasLocalEdits ?? false,
     lastSavedAt: updatedAtIso,
     lastAccessedAt: lastAccessedIso,
     updatedAt: touchUpdatedAt
@@ -747,7 +1542,8 @@ export async function touchDocumentLastAccessed(
 
 /**
  * Sequentially syncs local documents to the user's Supabase account.
- * Returns only documents that succeeded along with the count of failures.
+ * Reconstructs original binaries from rawArrayBuffer when sourceFile is absent
+ * and preserves unedited uploads across R2 and Supabase Storage.
  */
 export async function syncLocalDocumentsToCloud(
   userId: string,
@@ -756,11 +1552,23 @@ export async function syncLocalDocumentsToCloud(
   const syncedDocs: DocumentItem[] = [];
   let failedCount = 0;
 
+  let accessToken: string | null = null;
+  if (isR2ApiConfigured && isSupabaseConfigured && supabase) {
+    try {
+      const sessionRes = await supabase.auth.getSession();
+      accessToken = sessionRes.data.session?.access_token ?? null;
+    } catch {
+      accessToken = null;
+    }
+  }
+
   for (const doc of docs) {
     try {
+      const originalFile = doc.sourceFile ?? buildOriginalFileForCloud(doc);
       const syncedDoc = await upsertCloudDocument(userId, doc, {
-        file: doc.sourceFile ?? null,
+        file: originalFile,
         touchUpdatedAt: false,
+        accessToken,
       });
       syncedDocs.push(syncedDoc);
     } catch {

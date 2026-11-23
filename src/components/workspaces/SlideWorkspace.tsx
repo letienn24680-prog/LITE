@@ -15,7 +15,9 @@ import {
   AlignCenter,
   AlignLeft,
   AlignRight,
+  BarChart3,
   Bold,
+  BringToFront,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -26,28 +28,48 @@ import {
   Copy,
   Crosshair,
   Download,
+  Eraser,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  FileDown,
+  Group,
+  Highlighter,
   Image,
   ImagePlus,
   Italic,
   Layers,
   LayoutGrid,
+  LayoutTemplate,
+  Link2,
   Loader2,
-  Maximize2,
-  Minus,
+  MonitorPlay,
   Move,
+  Music,
   PaintBucket,
+  Palette,
   Pause,
+  Pen,
+  Pencil,
   Play,
   Plus,
+  Presentation,
   QrCode,
   RefreshCw,
   RotateCcw,
+  RotateCw,
   Save,
+  SendToBack,
+  Shapes,
   Sparkles,
   StickyNote,
+  Table2,
   Trash2,
   Type,
   Underline,
+  Ungroup,
+  Video,
+  Wand2,
   X,
 } from 'lucide-react';
 import { createThumbnailDataUri } from '../../data/mockDocuments';
@@ -55,20 +77,42 @@ import type {
   DocumentItem,
   ModalType,
   OutlineSection,
+  SlideAnimationConfig,
+  SlideChartData,
   SlideImageItem,
   SlidePreviewItem,
   SlideTextBlock,
+  SlideTransitionConfig,
 } from '../../types/document';
-import { exportSlidesToPptx } from '../../utils/fileExporter';
+import {
+  exportOriginalDocumentBinary,
+  exportSlidesToPptx,
+} from '../../utils/fileExporter';
+import { useWorkspaceSync } from '../../contexts/WorkspaceSyncContext';
 import type {
   CollaboratorPresence,
   DocRealtimePatch,
 } from '../../services/realtimeCollab';
+import { useDocumentPinchZoom } from '../../hooks/useDocumentPinchZoom';
 import { CustomVerticalScrollbar } from '../ui/CustomVerticalScrollbar';
 import {
   FloatingSelectionToolbar,
   type FloatingBlockTag,
 } from './FloatingSelectionToolbar';
+import { OfficeStatusBar } from './OfficeStatusBar';
+import {
+  PPT_COLOR_THEMES,
+  PPT_SHAPE_OPTIONS,
+  PPT_SLIDE_LAYOUTS,
+  SlideChartInsertModal,
+  SlideChartSvg,
+  SlideLinkMediaModal,
+  SlideShapeSvg,
+  createBlocksForSlideLayout,
+  type PptColorTheme,
+  type PptShapeKind,
+  type PptSlideLayoutId,
+} from './SlideInsertChartShapes';
 import { WorkspaceTopBar } from './WorkspaceTopBar';
 
 export interface SlideWorkspaceProps {
@@ -102,6 +146,178 @@ interface LaserPosition {
 }
 
 type SlideshowTransition = 'slide' | 'fade';
+type SlideWorkspaceViewMode = 'native' | 'edit';
+type PptRibbonTab = 'home' | 'insert' | 'design' | 'transitions' | 'slideshow';
+type SlideshowDrawTool = 'none' | 'pen' | 'highlighter' | 'eraser';
+
+interface SlideshowStroke {
+  id: string;
+  tool: 'pen' | 'highlighter';
+  color: string;
+  points: Array<{ x: number; y: number }>;
+}
+
+interface SmartGuidesState {
+  xPct: number | null;
+  yPct: number | null;
+}
+
+const PPT_RIBBON_TABS: ReadonlyArray<{ id: PptRibbonTab; label: string }> = [
+  { id: 'home', label: 'Trang đầu' },
+  { id: 'insert', label: 'Chèn' },
+  { id: 'design', label: 'Thiết kế' },
+  { id: 'transitions', label: 'Chuyển cảnh & Hoạt ảnh' },
+  { id: 'slideshow', label: 'Trình chiếu' },
+];
+
+const PPT_TRANSITION_OPTIONS: ReadonlyArray<{
+  type: SlideTransitionConfig['type'];
+  label: string;
+}> = [
+  { type: 'none', label: 'Không' },
+  { type: 'fade', label: 'Làm mờ' },
+  { type: 'push', label: 'Đẩy sang' },
+  { type: 'wipe', label: 'Quét ngang' },
+  { type: 'split', label: 'Tách đôi' },
+  { type: 'zoom', label: 'Phóng to' },
+];
+
+const PPT_ANIMATION_OPTIONS: ReadonlyArray<{
+  type: SlideAnimationConfig['type'];
+  label: string;
+}> = [
+  { type: 'none', label: 'Không' },
+  { type: 'appear', label: 'Xuất hiện' },
+  { type: 'fadeIn', label: 'Mờ dần vào' },
+  { type: 'flyIn', label: 'Bay vào' },
+  { type: 'zoomIn', label: 'Phóng vào' },
+];
+
+const PPT_GRADIENT_PRESETS: ReadonlyArray<{ label: string; value: string }> = [
+  {
+    label: 'Chàm đêm',
+    value: 'linear-gradient(135deg, #0F172A 0%, #312E81 55%, #1E1B4B 100%)',
+  },
+  {
+    label: 'Hoàng hôn cam',
+    value: 'linear-gradient(135deg, #7C2D12 0%, #C43E1C 52%, #EA580C 100%)',
+  },
+  {
+    label: 'Ngọc lục bảo',
+    value: 'linear-gradient(135deg, #064E3B 0%, #047857 52%, #0F766E 100%)',
+  },
+  {
+    label: 'Lụa sáng',
+    value: 'linear-gradient(135deg, #FFFFFF 0%, #F1F5F9 55%, #E2E8F0 100%)',
+  },
+];
+
+const PPT_FONT_FAMILIES = [
+  { label: 'Inter', value: "'Inter', 'Segoe UI', system-ui, sans-serif" },
+  { label: 'Segoe UI', value: "'Segoe UI', Roboto, sans-serif" },
+  { label: 'Georgia', value: 'Georgia, serif' },
+  { label: 'Times New Roman', value: "'Times New Roman', serif" },
+  { label: 'Mono', value: "'JetBrains Mono', monospace" },
+] as const;
+
+function sanitizeExternalUrl(url: string | undefined): string | null {
+  if (!url) {
+    return null;
+  }
+  const trimmed = url.trim();
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+  return null;
+}
+
+function sortBlocksByZIndex(blocks: SlideTextBlock[]): SlideTextBlock[] {
+  return [...blocks].sort((a, b) => (a.zIndex ?? 0) - (b.zIndex ?? 0));
+}
+
+function getSlideshowAnimStyle(
+  anim: SlideAnimationConfig | undefined,
+  revealedStep: number | undefined
+): CSSProperties {
+  if (
+    typeof revealedStep !== 'number' ||
+    !anim ||
+    anim.type === 'none'
+  ) {
+    return {};
+  }
+  const order = Math.max(1, anim.order ?? 1);
+  if (revealedStep < order) {
+    return {
+      opacity: 0,
+      pointerEvents: 'none',
+    };
+  }
+  if (anim.type === 'fadeIn') {
+    return { animation: 'liteObjFadeIn 320ms ease-out both' };
+  }
+  if (anim.type === 'flyIn') {
+    return { animation: 'liteObjFlyIn 360ms cubic-bezier(0.22, 1, 0.36, 1) both' };
+  }
+  if (anim.type === 'zoomIn') {
+    return { animation: 'liteObjZoomIn 320ms cubic-bezier(0.22, 1, 0.36, 1) both' };
+  }
+  return {};
+}
+
+function renderCroppedSlideImage(
+  imageItem: SlideImageItem,
+  altText: string,
+  extraClassName = ''
+) {
+  const crop = imageItem.cropRect;
+  const hasCrop = Boolean(
+    crop && (crop.l > 0 || crop.t > 0 || crop.r > 0 || crop.b > 0)
+  );
+  if (hasCrop && crop) {
+    const visW = Math.max(5, 100 - crop.l - crop.r);
+    const visH = Math.max(5, 100 - crop.t - crop.b);
+    return (
+      <img
+        src={imageItem.src}
+        alt={altText}
+        draggable={false}
+        style={{
+          position: 'absolute',
+          left: `${(-crop.l / visW) * 100}%`,
+          top: `${(-crop.t / visH) * 100}%`,
+          width: `${(100 / visW) * 100}%`,
+          height: `${(100 / visH) * 100}%`,
+          maxWidth: 'none',
+          objectFit: 'fill',
+        }}
+        className={`pointer-events-none select-none ${extraClassName}`}
+      />
+    );
+  }
+  return (
+    <img
+      src={imageItem.src}
+      alt={altText}
+      draggable={false}
+      className={`w-full h-full object-contain pointer-events-none select-none ${extraClassName}`}
+    />
+  );
+}
+
+function getBlockPaddingStyle(
+  paddingPct: SlideTextBlock['paddingPct'],
+  fontScale: number
+): string | undefined {
+  if (!paddingPct) {
+    return undefined;
+  }
+  const t = Math.max(1, paddingPct.top * fontScale);
+  const r = Math.max(2, paddingPct.right * fontScale);
+  const b = Math.max(1, paddingPct.bottom * fontScale);
+  const l = Math.max(2, paddingPct.left * fontScale);
+  return `${t.toFixed(1)}px ${r.toFixed(1)}px ${b.toFixed(1)}px ${l.toFixed(1)}px`;
+}
 
 interface ActiveDragState {
   kind: 'block' | 'image';
@@ -601,8 +817,10 @@ type ResizeHandleDir = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 
 function PowerPointResizeHandles({
   onStartResize,
+  onStartRotate,
 }: {
   onStartResize: (e: ReactPointerEvent<HTMLButtonElement>, dir: ResizeHandleDir) => void;
+  onStartRotate?: (e: ReactPointerEvent<HTMLButtonElement>) => void;
 }) {
   const handles: Array<{ dir: ResizeHandleDir; cls: string; cursor: string }> = [
     { dir: "nw", cls: "-top-1.5 -left-1.5", cursor: "nwse-resize" },
@@ -617,6 +835,26 @@ function PowerPointResizeHandles({
 
   return (
     <>
+      {onStartRotate && (
+        <>
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute -top-5 left-1/2 -translate-x-1/2 w-px h-3.5 bg-[#C43E1C]"
+          />
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              onStartRotate(e);
+            }}
+            aria-label="Xoay đối tượng"
+            title="Kéo để xoay góc đối tượng"
+            className="absolute -top-7 left-1/2 -translate-x-1/2 z-30 h-4 w-4 rounded-full bg-[#C43E1C] text-white border border-white shadow-md flex items-center justify-center cursor-grab active:cursor-grabbing hover:scale-110 transition-transform"
+          >
+            <RotateCw className="h-2.5 w-2.5" />
+          </button>
+        </>
+      )}
       {handles.map((h) => (
         <button
           key={h.dir}
@@ -627,7 +865,7 @@ function PowerPointResizeHandles({
           }}
           aria-label={`Thay đổi kích thước (${h.dir})`}
           style={{ cursor: h.cursor }}
-          className={`absolute ${h.cls} z-30 h-2.5 w-2.5 rounded-full bg-white border-2 border-indigo-600 shadow-sm hover:scale-125 transition-transform`}
+          className={`absolute ${h.cls} z-30 h-2.5 w-2.5 rounded-full bg-white border-2 border-[#C43E1C] shadow-sm hover:scale-125 transition-transform`}
         />
       ))}
     </>
@@ -717,6 +955,7 @@ interface PositionedReadOnlySlideProps {
   totalSlides: number;
   stageWidthPx: number;
   underlinedBlockIds?: Record<string, boolean>;
+  revealedAnimStep?: number;
 }
 
 function ReadOnlySlideStage({
@@ -726,13 +965,14 @@ function ReadOnlySlideStage({
   totalSlides,
   stageWidthPx,
   underlinedBlockIds,
+  revealedAnimStep,
 }: PositionedReadOnlySlideProps) {
   const fontScale =
     stageWidthPx > 0 ? stageWidthPx / REFERENCE_SLIDE_WIDTH_PT : 1;
   const isPositioned = isSlideMasterPositioned(slide);
   const hasLightBg = isLightHexBackground(slide.backgroundColor);
   const accent = slide.accentColor || '#4F46E5';
-  const blocks = slide.blocks ?? [];
+  const blocks = sortBlocksByZIndex(slide.blocks ?? []);
   const images = slide.images ?? [];
   const hasImages = images.length > 0;
   const hasMediaColumn = hasImages || Boolean(slide.metricHighlight);
@@ -749,7 +989,7 @@ function ReadOnlySlideStage({
           const width = block.wPct ?? 88;
           const height = block.hPct;
           const scaledFontPx = Math.max(
-            4,
+            3.5,
             (block.fontSize || (block.kind === 'table' ? 12 : 18)) * fontScale
           );
           const justifyClass =
@@ -760,6 +1000,120 @@ function ReadOnlySlideStage({
                 : 'justify-start';
           const textColor =
             block.color ?? (hasLightBg ? '#0F172A' : '#FFFFFF');
+          const blockPadding = getBlockPaddingStyle(block.paddingPct, fontScale);
+          const animStyle = getSlideshowAnimStyle(block.animation, revealedAnimStep);
+          const safeLink = sanitizeExternalUrl(block.linkUrl);
+
+          if (block.kind === 'shape') {
+            const shapeKind = block.shapeKind ?? 'rect';
+            return (
+              <div
+                key={block.id}
+                style={{
+                  position: 'absolute',
+                  left: `${left}%`,
+                  top: `${top}%`,
+                  width: `${width}%`,
+                  height: height !== undefined ? `${height}%` : '18%',
+                  zIndex: (block.zIndex ?? 0) + 1,
+                  transform: block.rotationDeg
+                    ? `rotate(${block.rotationDeg}deg)`
+                    : undefined,
+                  ...animStyle,
+                }}
+                className="relative flex items-center justify-center"
+              >
+                <SlideShapeSvg
+                  shapeKind={shapeKind}
+                  fillColor={block.fillColor}
+                  borderColor={block.borderColor}
+                  borderWidthPx={block.borderWidthPx}
+                />
+                {shapeKind !== 'line' && block.text && (
+                  <span
+                    className="relative z-10 px-2 text-center font-medium leading-tight pointer-events-none"
+                    style={{
+                      fontSize: `${scaledFontPx.toFixed(2)}px`,
+                      color: textColor,
+                      fontWeight: block.bold ? 700 : 500,
+                    }}
+                  >
+                    {block.text}
+                  </span>
+                )}
+              </div>
+            );
+          }
+
+          if (block.kind === 'chart' && block.chartData) {
+            return (
+              <div
+                key={block.id}
+                style={{
+                  position: 'absolute',
+                  left: `${left}%`,
+                  top: `${top}%`,
+                  width: `${width}%`,
+                  height: height !== undefined ? `${height}%` : '44%',
+                  zIndex: (block.zIndex ?? 0) + 1,
+                  transform: block.rotationDeg
+                    ? `rotate(${block.rotationDeg}deg)`
+                    : undefined,
+                  ...animStyle,
+                }}
+              >
+                <SlideChartSvg
+                  chartData={block.chartData}
+                  hasLightBg={hasLightBg}
+                  fontScale={fontScale}
+                />
+              </div>
+            );
+          }
+
+          if (block.kind === 'media' && block.mediaSrc) {
+            return (
+              <div
+                key={block.id}
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+                style={{
+                  position: 'absolute',
+                  left: `${left}%`,
+                  top: `${top}%`,
+                  width: `${width}%`,
+                  height: height !== undefined ? `${height}%` : '34%',
+                  zIndex: (block.zIndex ?? 0) + 1,
+                  transform: block.rotationDeg
+                    ? `rotate(${block.rotationDeg}deg)`
+                    : undefined,
+                  ...animStyle,
+                }}
+                className="rounded-lg overflow-hidden bg-slate-950/90 border border-white/20 flex flex-col justify-center p-1"
+              >
+                {block.mediaKind === 'audio' ? (
+                  <div className="w-full px-1.5 flex flex-col gap-1">
+                    {block.text && (
+                      <span
+                        className="truncate font-medium text-slate-200"
+                        style={{ fontSize: `${Math.max(7, 11 * fontScale)}px` }}
+                      >
+                        {block.text}
+                      </span>
+                    )}
+                    <audio controls src={block.mediaSrc} className="w-full h-7" />
+                  </div>
+                ) : (
+                  <video
+                    controls
+                    playsInline
+                    src={block.mediaSrc}
+                    className="w-full h-full object-contain rounded"
+                  />
+                )}
+              </div>
+            );
+          }
 
           if (
             block.kind === 'table' &&
@@ -775,8 +1129,15 @@ function ReadOnlySlideStage({
                   top: `${top}%`,
                   width: `${width}%`,
                   height: height !== undefined ? `${height}%` : 'auto',
+                  zIndex: (block.zIndex ?? 0) + 1,
                   borderColor: block.borderColor,
-                  fontFamily: block.fontFamily || "'Inter', 'Segoe UI', system-ui, sans-serif",
+                  transform: block.rotationDeg
+                    ? `rotate(${block.rotationDeg}deg)`
+                    : undefined,
+                  fontFamily:
+                    block.fontFamily ||
+                    "'Inter', 'Segoe UI', system-ui, sans-serif",
+                  ...animStyle,
                 }}
                 className={`overflow-hidden ${block.borderColor ? 'border' : ''}`}
               >
@@ -784,38 +1145,47 @@ function ReadOnlySlideStage({
                   <tbody>
                     {block.tableRows.map((row, rIdx) => (
                       <tr key={`${block.id}-ro-r-${rIdx}`}>
-                        {row.map((cell, cIdx) => (
-                          <td
-                            key={`${block.id}-ro-c-${rIdx}-${cIdx}`}
-                            className="border px-1.5 py-0.5 align-middle truncate"
-                            style={{
-                              borderColor:
-                                block.borderColor ??
-                                (hasLightBg
-                                  ? 'rgba(15,23,42,0.22)'
-                                  : 'rgba(255,255,255,0.22)'),
-                              backgroundColor:
-                                rIdx === 0
-                                  ? block.fillColor ??
-                                    (hasLightBg
-                                      ? 'rgba(15,23,42,0.06)'
-                                      : 'rgba(255,255,255,0.08)')
-                                  : 'transparent',
-                              fontSize: `${scaledFontPx.toFixed(2)}px`,
-                              fontWeight:
-                                rIdx === 0 || block.bold ? 700 : 400,
-                              fontStyle: block.italic ? 'italic' : 'normal',
-                              textDecoration: underlinedBlockIds?.[block.id]
-                                ? 'underline'
-                                : 'none',
-                              color: textColor,
-                              textAlign: block.align ?? 'left',
-                              fontFamily: block.fontFamily || "'Inter', 'Segoe UI', system-ui, sans-serif",
-                            }}
-                          >
-                            {cell}
-                          </td>
-                        ))}
+                        {row.map((cell, cIdx) => {
+                          const cellStyle = block.tableCellStyles?.[rIdx]?.[cIdx];
+                          return (
+                            <td
+                              key={`${block.id}-ro-c-${rIdx}-${cIdx}`}
+                              className="border px-1 py-0.5 align-middle truncate"
+                              style={{
+                                borderColor:
+                                  block.borderColor ??
+                                  (hasLightBg
+                                    ? 'rgba(15,23,42,0.22)'
+                                    : 'rgba(255,255,255,0.22)'),
+                                backgroundColor:
+                                  cellStyle?.fillColor ??
+                                  (rIdx === 0
+                                    ? block.fillColor ??
+                                      (hasLightBg
+                                        ? 'rgba(15,23,42,0.06)'
+                                        : 'rgba(255,255,255,0.08)')
+                                    : 'transparent'),
+                                fontSize: `${scaledFontPx.toFixed(2)}px`,
+                                fontWeight:
+                                  (cellStyle?.bold ?? (rIdx === 0 || block.bold))
+                                    ? 700
+                                    : 400,
+                                fontStyle: block.italic ? 'italic' : 'normal',
+                                textDecoration: underlinedBlockIds?.[block.id]
+                                  ? 'underline'
+                                  : 'none',
+                                color: cellStyle?.textColor ?? textColor,
+                                textAlign:
+                                  cellStyle?.align ?? block.align ?? 'left',
+                                fontFamily:
+                                  block.fontFamily ||
+                                  "'Inter', 'Segoe UI', system-ui, sans-serif",
+                              }}
+                            >
+                              {cell}
+                            </td>
+                          );
+                        })}
                       </tr>
                     ))}
                   </tbody>
@@ -827,39 +1197,72 @@ function ReadOnlySlideStage({
           return (
             <div
               key={block.id}
+              onClick={
+                safeLink
+                  ? (e) => {
+                      e.stopPropagation();
+                      window.open(safeLink, '_blank', 'noopener,noreferrer');
+                    }
+                  : undefined
+              }
               style={{
                 position: 'absolute',
                 left: `${left}%`,
                 top: `${top}%`,
                 width: `${width}%`,
                 height: height !== undefined ? `${height}%` : 'auto',
+                zIndex: (block.zIndex ?? 0) + 1,
                 backgroundColor: block.fillColor,
                 backgroundImage: block.fillGradient,
                 borderColor: block.borderColor,
-                borderWidth: block.borderColor ? `${block.borderWidthPx ?? 1}px` : undefined,
-                borderStyle: block.borderColor ? "solid" : undefined,
+                borderWidth: block.borderColor
+                  ? `${block.borderWidthPx ?? 1}px`
+                  : undefined,
+                borderStyle: block.borderColor ? 'solid' : undefined,
                 borderRadius: block.borderRadius,
                 boxShadow: block.shadowCss,
-                transform: block.rotationDeg ? `rotate(${block.rotationDeg}deg)` : undefined,
+                padding: blockPadding,
+                transform: block.rotationDeg
+                  ? `rotate(${block.rotationDeg}deg)`
+                  : undefined,
+                ...animStyle,
               }}
-              className={`flex flex-col ${justifyClass} overflow-hidden px-1.5 py-0.5`}
+              className={`flex flex-col ${justifyClass} overflow-hidden ${
+                blockPadding ? '' : 'px-1.5 py-0.5'
+              } ${safeLink ? 'cursor-pointer hover:underline' : ''}`}
             >
-              <p
-                className="whitespace-pre-wrap break-words leading-[1.16] tracking-tight"
-                style={{
-                  fontSize: `${scaledFontPx.toFixed(2)}px`,
-                  fontWeight: block.bold || block.role === 'title' ? 700 : 400,
-                  fontStyle: block.italic ? 'italic' : 'normal',
-                  textDecoration: underlinedBlockIds?.[block.id]
-                    ? 'underline'
-                    : 'none',
-                  color: textColor,
-                  textAlign: block.align ?? 'left',
-                  fontFamily: block.fontFamily || "'Inter', 'Segoe UI', system-ui, sans-serif",
-                }}
-              >
-                {block.text}
-              </p>
+              {block.richParagraphs && block.richParagraphs.length > 0 ? (
+                <RichTextFittedView
+                  block={block}
+                  fontScale={fontScale}
+                  textColor={safeLink ? '#38BDF8' : textColor}
+                  underlined={Boolean(underlinedBlockIds?.[block.id] || safeLink)}
+                />
+              ) : (
+                <p
+                  className="whitespace-pre-wrap break-words leading-[1.16] tracking-tight"
+                  style={{
+                    fontSize: `${Math.max(
+                      3.5,
+                      scaledFontPx * ((block.fontScalePct ?? 100) / 100)
+                    ).toFixed(2)}px`,
+                    fontWeight:
+                      block.bold || block.role === 'title' ? 700 : 400,
+                    fontStyle: block.italic ? 'italic' : 'normal',
+                    textDecoration:
+                      underlinedBlockIds?.[block.id] || safeLink
+                        ? 'underline'
+                        : 'none',
+                    color: safeLink ? '#38BDF8' : textColor,
+                    textAlign: block.align ?? 'left',
+                    fontFamily:
+                      block.fontFamily ||
+                      "'Inter', 'Segoe UI', system-ui, sans-serif",
+                  }}
+                >
+                  {block.text}
+                </p>
+              )}
             </div>
           );
         })}
@@ -873,15 +1276,17 @@ function ReadOnlySlideStage({
               top: `${imageItem.yPct ?? 20 + iIdx * 8}%`,
               width: `${imageItem.wPct ?? 36}%`,
               height: `${imageItem.hPct ?? 44}%`,
+              borderRadius: imageItem.borderRadius,
+              transform: imageItem.rotationDeg
+                ? `rotate(${imageItem.rotationDeg}deg)`
+                : undefined,
             }}
-            className="overflow-hidden flex items-center justify-center"
+            className="relative overflow-hidden flex items-center justify-center"
           >
-            <img
-              src={imageItem.src}
-              alt={imageItem.alt ?? `Hình ${iIdx + 1}`}
-              draggable={false}
-              className="w-full h-full object-contain"
-            />
+            {renderCroppedSlideImage(
+              imageItem,
+              imageItem.alt ?? `Hình ${iIdx + 1}`
+            )}
           </div>
         ))}
       </div>
@@ -1138,7 +1543,7 @@ export function SlideWorkspace({
   autoSaveEnabled = false,
   isHydratingCloudFile = false,
   onRetryCloudDownload,
-  collaborators: _collaborators = [],
+  collaborators = [],
   selfSessionId,
   collabPermission = 'owner',
   onPresenceUpdate,
@@ -1146,6 +1551,16 @@ export function SlideWorkspace({
   incomingRemotePatch = null,
 }: SlideWorkspaceProps) {
   const isReadOnly = collabPermission === 'view';
+  const { onDownloadOriginalFile } = useWorkspaceSync();
+  const [viewMode, setViewMode] = useState<SlideWorkspaceViewMode>(() =>
+    collabPermission === 'view' ||
+    Boolean(document.rawArrayBuffer || document.isUploaded)
+      ? 'native'
+      : 'edit'
+  );
+  const [hasLocalEdits, setHasLocalEdits] = useState<boolean>(() =>
+    Boolean(document.hasLocalEdits)
+  );
   const [slides, setSlides] = useState<SlidePreviewItem[]>(() =>
     initializeDeckSlides(document)
   );
@@ -1174,6 +1589,11 @@ export function SlideWorkspace({
   const [isDirty, setIsDirty] = useState<boolean>(false);
   const [saveFeedback, setSaveFeedback] = useState<boolean>(false);
   const [isExporting, setIsExporting] = useState<boolean>(false);
+  const [isDownloadingOriginal, setIsDownloadingOriginal] =
+    useState<boolean>(false);
+  const [downloadOriginalNotice, setDownloadOriginalNotice] = useState<
+    string | null
+  >(null);
   const [exportError, setExportError] = useState<string | null>(null);
 
   // ResizeObserver measured sizes
@@ -1181,22 +1601,54 @@ export function SlideWorkspace({
     width: number;
     height: number;
   }>({ width: 960, height: 540 });
+  const [measuredEditorCanvasWidth, setMeasuredEditorCanvasWidth] =
+    useState<number>(0);
   const [slideshowViewportSize, setSlideshowViewportSize] = useState<{
     width: number;
     height: number;
   }>({ width: 1280, height: 720 });
+  const [measuredSlideshowCanvasWidth, setMeasuredSlideshowCanvasWidth] =
+    useState<number>(0);
 
-  // Fullscreen Slideshow State
+  // Fullscreen Slideshow & PowerPoint Pro Ribbon State
+  const [activeRibbonTab, setActiveRibbonTab] = useState<PptRibbonTab>('home');
+  const [pptViewMode, setPptViewMode] = useState<'normal' | 'sorter'>('normal');
+  const [selectedBlockIds, setSelectedBlockIds] = useState<string[]>([]);
+  const [smartGuides, setSmartGuides] = useState<SmartGuidesState>({
+    xPct: null,
+    yPct: null,
+  });
+  const [thumbContextMenu, setThumbContextMenu] = useState<{
+    x: number;
+    y: number;
+    slideIdx: number;
+  } | null>(null);
+  const [draggedSlideIdx, setDraggedSlideIdx] = useState<number | null>(null);
+  const [dragOverSlideIdx, setDragOverSlideIdx] = useState<number | null>(null);
+  const [notesHeightPx, setNotesHeightPx] = useState<number>(72);
+  const [isLayoutPickerOpen, setIsLayoutPickerOpen] = useState<boolean>(false);
+  const [isShapePickerOpen, setIsShapePickerOpen] = useState<boolean>(false);
+  const [isChartModalOpen, setIsChartModalOpen] = useState<boolean>(false);
+  const [linkMediaModalMode, setLinkMediaModalMode] = useState<
+    'link' | 'video' | 'audio' | null
+  >(null);
+
   const [isSlideshowActive, setIsSlideshowActive] = useState<boolean>(false);
-  const [slideshowTransition, setSlideshowTransition] =
-    useState<SlideshowTransition>('slide');
+  const [slideshowTransition] = useState<SlideshowTransition>('slide');
   const [slideshowDirection, setSlideshowDirection] = useState<1 | -1>(1);
+  const [revealedAnimStep, setRevealedAnimStep] = useState<number>(0);
   const [isSlideshowLaser, setIsSlideshowLaser] = useState<boolean>(false);
   const [slideshowLaserPos, setSlideshowLaserPos] = useState<LaserPosition>({
     x: 50,
     y: 50,
     visible: false,
   });
+  const [slideshowDrawTool, setSlideshowDrawTool] =
+    useState<SlideshowDrawTool>('none');
+  const [slideshowStrokesBySlide, setSlideshowStrokesBySlide] = useState<
+    Record<string, SlideshowStroke[]>
+  >({});
+  const activeSlideshowStrokeIdRef = useRef<string | null>(null);
   const [isSlideshowGridOpen, setIsSlideshowGridOpen] =
     useState<boolean>(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -1215,9 +1667,14 @@ export function SlideWorkspace({
   const saveTimerRef = useRef<number | null>(null);
   const exportErrorTimerRef = useRef<number | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const bgImageInputRef = useRef<HTMLInputElement | null>(null);
   const editorViewportRef = useRef<HTMLDivElement | null>(null);
   const editorCanvasRef = useRef<HTMLDivElement | null>(null);
   const slideshowViewportRef = useRef<HTMLDivElement | null>(null);
+  const slideshowCanvasRef = useRef<HTMLDivElement | null>(null);
+  const slideshowTouchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const justSwipedSlideshowRef = useRef<boolean>(false);
+  const downloadNoticeTimerRef = useRef<number | null>(null);
   const enteredFullscreenRef = useRef<boolean>(false);
   const justDraggedRef = useRef<boolean>(false);
   const activeDragCleanupRef = useRef<(() => void) | null>(null);
@@ -1252,10 +1709,26 @@ export function SlideWorkspace({
     if (isNewDoc) {
       loadedDocIdRef.current = document.id;
       setSlides(initializeDeckSlides(document));
+      setViewMode(
+        collabPermission === 'view' ||
+          Boolean(document.rawArrayBuffer || document.isUploaded)
+          ? 'native'
+          : 'edit'
+      );
+      setHasLocalEdits(Boolean(document.hasLocalEdits));
       setActiveSlideIdx(0);
       setSelectedBlockId(null);
+      setSelectedBlockIds([]);
+      setEditingBlockId(null);
       setSelectedImageId(null);
       setNewlyAddedBlockId(null);
+      setSmartGuides({ xPct: null, yPct: null });
+      setThumbContextMenu(null);
+      setPptViewMode('normal');
+      setRevealedAnimStep(0);
+      setSlideshowDrawTool('none');
+      setSlideshowStrokesBySlide({});
+      setDownloadOriginalNotice(null);
       setIsLaserActive(false);
       setLaserPos({ x: 50, y: 50, visible: false });
       setElapsedSeconds(0);
@@ -1291,14 +1764,42 @@ export function SlideWorkspace({
     }
   }, [document, isHydratingCloudFile]);
 
-  // Clear selection/mobile sheet if switched to read-only permission
+  // Clear selection/mobile sheet and force native view if switched to read-only permission
   useEffect(() => {
     if (isReadOnly) {
+      setViewMode('native');
       setSelectedBlockId(null);
+      setEditingBlockId(null);
       setSelectedImageId(null);
       setIsMobileSheetOpen(false);
     }
   }, [isReadOnly]);
+
+  // Pinch / Ctrl+Wheel zoom strictly scoped to the slide viewport (25% - 200%)
+  useDocumentPinchZoom(editorViewportRef, zoomPct, setZoomPct, {
+    min: 25,
+    max: 200,
+    disabled:
+      isSlideshowActive ||
+      isModalOpen ||
+      isChartModalOpen ||
+      linkMediaModalMode !== null ||
+      pptViewMode === 'sorter',
+  });
+
+  // Close thumbnail context menu on outside click / Escape
+  useEffect(() => {
+    if (!thumbContextMenu) {
+      return;
+    }
+    const closeMenu = () => setThumbContextMenu(null);
+    window.addEventListener('click', closeMenu);
+    window.addEventListener('contextmenu', closeMenu);
+    return () => {
+      window.removeEventListener('click', closeMenu);
+      window.removeEventListener('contextmenu', closeMenu);
+    };
+  }, [thumbContextMenu]);
 
   // Real-time presentation stopwatch
   useEffect(() => {
@@ -1346,12 +1847,34 @@ export function SlideWorkspace({
     };
   }, []);
 
-  // Measure slideshow viewport with ResizeObserver when slideshow is active
+  // Measure actual slide canvas width with ResizeObserver for exact fontScale = width / 960
+  useEffect(() => {
+    const el = editorCanvasRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+    const updateCanvasWidth = () => {
+      const w = el.clientWidth;
+      if (w > 0) {
+        setMeasuredEditorCanvasWidth(w);
+      }
+    };
+    updateCanvasWidth();
+    const observer = new ResizeObserver(updateCanvasWidth);
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+    };
+  }, [zoomPct, activeSlideIdx, isHydratingCloudFile]);
+
+  // Measure slideshow viewport and slideshow canvas with ResizeObserver when slideshow is active
   useEffect(() => {
     if (!isSlideshowActive) {
+      setMeasuredSlideshowCanvasWidth(0);
       return;
     }
     const el = slideshowViewportRef.current;
+    const canvasEl = slideshowCanvasRef.current;
     if (!el || typeof ResizeObserver === 'undefined') {
       return;
     }
@@ -1363,10 +1886,16 @@ export function SlideWorkspace({
           height: Math.max(150, Math.floor(rect.height - 16)),
         });
       }
+      if (canvasEl && canvasEl.clientWidth > 0) {
+        setMeasuredSlideshowCanvasWidth(canvasEl.clientWidth);
+      }
     };
     updateSize();
     const observer = new ResizeObserver(updateSize);
     observer.observe(el);
+    if (canvasEl) {
+      observer.observe(canvasEl);
+    }
     return () => {
       observer.disconnect();
     };
@@ -1406,6 +1935,9 @@ export function SlideWorkspace({
       }
       if (exportErrorTimerRef.current !== null) {
         window.clearTimeout(exportErrorTimerRef.current);
+      }
+      if (downloadNoticeTimerRef.current !== null) {
+        window.clearTimeout(downloadNoticeTimerRef.current);
       }
       if (broadcastThrottleTimerRef.current !== null) {
         window.clearTimeout(broadcastThrottleTimerRef.current);
@@ -1556,7 +2088,9 @@ export function SlideWorkspace({
   );
   const zoomedWidthPx = editorFitWidthPx * (zoomPct / 100);
   const zoomedHeightPx = (editorFitWidthPx / currentAspectRatio) * (zoomPct / 100);
-  const editorFontScale = zoomedWidthPx / REFERENCE_SLIDE_WIDTH_PT;
+  const actualEditorCanvasWidth =
+    measuredEditorCanvasWidth > 0 ? measuredEditorCanvasWidth : zoomedWidthPx;
+  const editorFontScale = actualEditorCanvasWidth / REFERENCE_SLIDE_WIDTH_PT;
 
   const slideshowFitWidthPx = Math.max(
     240,
@@ -1566,6 +2100,10 @@ export function SlideWorkspace({
     )
   );
   const slideshowFitHeightPx = slideshowFitWidthPx / currentAspectRatio;
+  const actualSlideshowStageWidth =
+    measuredSlideshowCanvasWidth > 0
+      ? measuredSlideshowCanvasWidth
+      : slideshowFitWidthPx;
 
   const buildLiveDocument = useCallback((): DocumentItem => {
     const baseDoc = documentRef.current;
@@ -1586,12 +2124,13 @@ export function SlideWorkspace({
       slidesPreview: syncedSlides,
       outline: derivedOutline.length > 0 ? derivedOutline : baseDoc.outline,
       pageCount: syncedSlides.length,
+      hasLocalEdits: hasLocalEdits || Boolean(baseDoc.hasLocalEdits),
       contentPreview:
         syncedSlides[0]?.bullets[0] ??
         syncedSlides[0]?.title ??
         baseDoc.contentPreview,
     };
-  }, [slides]);
+  }, [hasLocalEdits, slides]);
 
   const handleSave = useCallback(() => {
     if (isReadOnly) {
@@ -1656,36 +2195,82 @@ export function SlideWorkspace({
     };
   }, [autoSaveEnabled, isDirty, isReadOnly, slides, handleSave]);
 
-  const startSlideshow = useCallback(() => {
-    setSelectedBlockId(null);
-    setSelectedImageId(null);
-    setIsLaserActive(false);
-    setIsSlideshowLaser(false);
-    setSlideshowLaserPos({ x: 50, y: 50, visible: false });
-    setIsSlideshowGridOpen(false);
-    setSlideshowDirection(1);
-    setIsSlideshowActive(true);
-    enteredFullscreenRef.current = false;
-
-    try {
-      const req = window.document.documentElement.requestFullscreen?.();
-      if (req && typeof req.then === 'function') {
-        void req
-          .then(() => {
-            enteredFullscreenRef.current = true;
-          })
-          .catch(() => {
-            enteredFullscreenRef.current = false;
-          });
-      }
-    } catch {
-      enteredFullscreenRef.current = false;
+  const getMaxAnimationStep = useCallback((slide: SlidePreviewItem | undefined): number => {
+    if (!slide?.blocks) {
+      return 0;
     }
+    let maxOrder = 0;
+    for (const blk of slide.blocks) {
+      if (blk.animation && blk.animation.type !== 'none') {
+        maxOrder = Math.max(maxOrder, blk.animation.order ?? 1);
+      }
+    }
+    return maxOrder;
   }, []);
+
+  const findNextVisibleSlideIdx = useCallback(
+    (fromIdx: number, direction: 1 | -1): number => {
+      let cursor = fromIdx + direction;
+      while (cursor >= 0 && cursor < slides.length) {
+        if (!slides[cursor]?.hidden) {
+          return cursor;
+        }
+        cursor += direction;
+      }
+      return fromIdx;
+    },
+    [slides]
+  );
+
+  const startSlideshow = useCallback(
+    (startFromIdx?: number) => {
+      const requestedIdx =
+        typeof startFromIdx === 'number'
+          ? Math.max(0, Math.min(slides.length - 1, startFromIdx))
+          : 0;
+      let targetIdx = requestedIdx;
+      if (typeof startFromIdx !== 'number' && slides[targetIdx]?.hidden) {
+        const firstVisible = slides.findIndex((s) => !s.hidden);
+        if (firstVisible >= 0) {
+          targetIdx = firstVisible;
+        }
+      }
+      setActiveSlideIdx(targetIdx);
+      setSelectedBlockId(null);
+      setSelectedBlockIds([]);
+      setSelectedImageId(null);
+      setIsLaserActive(false);
+      setIsSlideshowLaser(false);
+      setSlideshowDrawTool('none');
+      setRevealedAnimStep(0);
+      setSlideshowLaserPos({ x: 50, y: 50, visible: false });
+      setIsSlideshowGridOpen(false);
+      setSlideshowDirection(1);
+      setIsSlideshowActive(true);
+      enteredFullscreenRef.current = false;
+
+      try {
+        const req = window.document.documentElement.requestFullscreen?.();
+        if (req && typeof req.then === 'function') {
+          void req
+            .then(() => {
+              enteredFullscreenRef.current = true;
+            })
+            .catch(() => {
+              enteredFullscreenRef.current = false;
+            });
+        }
+      } catch {
+        enteredFullscreenRef.current = false;
+      }
+    },
+    [slides]
+  );
 
   const exitSlideshow = useCallback(() => {
     setIsSlideshowGridOpen(false);
     setIsSlideshowLaser(false);
+    setSlideshowDrawTool('none');
     setIsSlideshowActive(false);
     enteredFullscreenRef.current = false;
 
@@ -1698,10 +2283,44 @@ export function SlideWorkspace({
     }
   }, []);
 
+  const advanceSlideshowStep = useCallback(() => {
+    const activeSlide = slides[safeSlideIdx];
+    const maxStep = getMaxAnimationStep(activeSlide);
+    if (revealedAnimStep < maxStep) {
+      setRevealedAnimStep((prev) => prev + 1);
+      return;
+    }
+    const nextIdx = findNextVisibleSlideIdx(safeSlideIdx, 1);
+    if (nextIdx !== safeSlideIdx) {
+      setSlideshowDirection(1);
+      setRevealedAnimStep(0);
+      setActiveSlideIdx(nextIdx);
+    }
+  }, [
+    findNextVisibleSlideIdx,
+    getMaxAnimationStep,
+    revealedAnimStep,
+    safeSlideIdx,
+    slides,
+  ]);
+
+  const retreatSlideshowStep = useCallback(() => {
+    if (revealedAnimStep > 0) {
+      setRevealedAnimStep((prev) => Math.max(0, prev - 1));
+      return;
+    }
+    const prevIdx = findNextVisibleSlideIdx(safeSlideIdx, -1);
+    if (prevIdx !== safeSlideIdx) {
+      setSlideshowDirection(-1);
+      setRevealedAnimStep(0);
+      setActiveSlideIdx(prevIdx);
+    }
+  }, [findNextVisibleSlideIdx, revealedAnimStep, safeSlideIdx]);
+
   // Keyboard navigation + Slideshow shortcuts + Ctrl/Cmd+S save
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (isModalOpen) {
+      if (isModalOpen || isChartModalOpen || linkMediaModalMode !== null) {
         return;
       }
 
@@ -1729,15 +2348,17 @@ export function SlideWorkspace({
           (event.key === ' ' && !isButtonFocused)
         ) {
           event.preventDefault();
-          setSlideshowDirection(1);
-          setActiveSlideIdx((prev) =>
-            prev < slides.length - 1 ? prev + 1 : prev
-          );
+          advanceSlideshowStep();
         } else if (event.key === 'ArrowLeft' || event.key === 'PageUp') {
           event.preventDefault();
-          setSlideshowDirection(-1);
-          setActiveSlideIdx((prev) => (prev > 0 ? prev - 1 : prev));
+          retreatSlideshowStep();
         }
+        return;
+      }
+
+      if (event.key === 'F5' && !isSlideshowActive) {
+        event.preventDefault();
+        startSlideshow(event.shiftKey ? safeSlideIdx : 0);
         return;
       }
 
@@ -1750,6 +2371,15 @@ export function SlideWorkspace({
       }
 
       if (event.key === 'Escape') {
+        if (thumbContextMenu) {
+          setThumbContextMenu(null);
+          return;
+        }
+        if (isLayoutPickerOpen || isShapePickerOpen) {
+          setIsLayoutPickerOpen(false);
+          setIsShapePickerOpen(false);
+          return;
+        }
         if (isMobileSheetOpen) {
           setIsMobileSheetOpen(false);
           return;
@@ -1762,8 +2392,13 @@ export function SlideWorkspace({
           setIsLaserActive(false);
           return;
         }
-        if (selectedBlockId !== null || selectedImageId !== null) {
+        if (
+          selectedBlockId !== null ||
+          selectedBlockIds.length > 0 ||
+          selectedImageId !== null
+        ) {
           setSelectedBlockId(null);
+          setSelectedBlockIds([]);
           setSelectedImageId(null);
         }
         return;
@@ -1776,6 +2411,7 @@ export function SlideWorkspace({
       if (event.key === 'ArrowRight' || event.key === 'PageDown') {
         event.preventDefault();
         setSelectedBlockId(null);
+        setSelectedBlockIds([]);
         setSelectedImageId(null);
         setActiveSlideIdx((prev) =>
           prev < slides.length - 1 ? prev + 1 : prev
@@ -1783,6 +2419,7 @@ export function SlideWorkspace({
       } else if (event.key === 'ArrowLeft' || event.key === 'PageUp') {
         event.preventDefault();
         setSelectedBlockId(null);
+        setSelectedBlockIds([]);
         setSelectedImageId(null);
         setActiveSlideIdx((prev) => (prev > 0 ? prev - 1 : prev));
       }
@@ -1794,14 +2431,25 @@ export function SlideWorkspace({
     };
   }, [
     slides.length,
+    safeSlideIdx,
     isMobileSheetOpen,
     isMobileDrawerOpen,
     isLaserActive,
     isModalOpen,
+    isChartModalOpen,
+    linkMediaModalMode,
+    isLayoutPickerOpen,
+    isShapePickerOpen,
+    thumbContextMenu,
     isSlideshowActive,
     isSlideshowGridOpen,
     selectedBlockId,
+    selectedBlockIds.length,
     selectedImageId,
+    isReadOnly,
+    startSlideshow,
+    advanceSlideshowStep,
+    retreatSlideshowStep,
     handleSave,
     exitSlideshow,
   ]);
@@ -1824,6 +2472,7 @@ export function SlideWorkspace({
         )
       );
       setIsDirty(true);
+      setHasLocalEdits(true);
       setSaveFeedback(false);
       notifyTypingActivity(true);
     },
@@ -1834,6 +2483,8 @@ export function SlideWorkspace({
     if (isReadOnly) {
       return;
     }
+    localMutationPendingRef.current = true;
+    setHasLocalEdits(true);
     uidRef.current += 1;
     const newSlideId = `${document.id}-custom-slide-${Date.now()}-${uidRef.current}`;
     const newTitleBlockId = `${newSlideId}-blk-title`;
@@ -1905,6 +2556,11 @@ export function SlideWorkspace({
   };
 
   const handleDuplicateSlide = () => {
+    if (isReadOnly) {
+      return;
+    }
+    localMutationPendingRef.current = true;
+    setHasLocalEdits(true);
     uidRef.current += 1;
     const cloneId = `${document.id}-dup-slide-${Date.now()}-${uidRef.current}`;
     const clonedSlide: SlidePreviewItem = {
@@ -1943,9 +2599,11 @@ export function SlideWorkspace({
   };
 
   const handleDeleteSlide = () => {
-    if (slides.length <= 1) {
+    if (isReadOnly || slides.length <= 1) {
       return;
     }
+    localMutationPendingRef.current = true;
+    setHasLocalEdits(true);
     setSlides((prev) => {
       const filtered = prev.filter((_, idx) => idx !== safeSlideIdx);
       return filtered.map((item, idx) => ({ ...item, index: idx + 1 }));
@@ -1958,6 +2616,10 @@ export function SlideWorkspace({
   };
 
   const handleAddTextBlock = () => {
+    if (isReadOnly) {
+      return;
+    }
+    setViewMode('edit');
     uidRef.current += 1;
     const newBlockId = `${currentSlide.id}-blk-new-${Date.now()}-${uidRef.current}`;
     const defaultTextColor = hasLightSlideBg ? '#1E293B' : '#F1F5F9';
@@ -1993,6 +2655,10 @@ export function SlideWorkspace({
   };
 
   const handleTriggerAddImage = () => {
+    if (isReadOnly) {
+      return;
+    }
+    setViewMode('edit');
     setIsLaserActive(false);
     imageInputRef.current?.click();
   };
@@ -2089,11 +2755,15 @@ export function SlideWorkspace({
   };
 
   const handleToggleBlockUnderline = (blockId: string) => {
+    if (isReadOnly) {
+      return;
+    }
     setUnderlinedBlockIds((prev) => ({
       ...prev,
       [blockId]: !prev[blockId],
     }));
     setIsDirty(true);
+    setHasLocalEdits(true);
     setSaveFeedback(false);
   };
 
@@ -2151,11 +2821,517 @@ export function SlideWorkspace({
     }));
   };
 
+  const handleDuplicateSlideAt = (targetIdx: number) => {
+    if (isReadOnly) {
+      return;
+    }
+    const targetSlide = slides[targetIdx];
+    if (!targetSlide) {
+      return;
+    }
+    localMutationPendingRef.current = true;
+    setHasLocalEdits(true);
+    uidRef.current += 1;
+    const cloneId = `${document.id}-dup-slide-${Date.now()}-${uidRef.current}`;
+    const clonedSlide: SlidePreviewItem = {
+      ...targetSlide,
+      id: cloneId,
+      blocks: (targetSlide.blocks ?? []).map((block, bIdx) => ({
+        ...block,
+        id: `${cloneId}-blk-${bIdx + 1}`,
+        tableRows: block.tableRows
+          ? block.tableRows.map((row) => [...row])
+          : undefined,
+      })),
+      images: targetSlide.images
+        ? targetSlide.images.map((img, iIdx) => ({
+            ...img,
+            id: `${cloneId}-img-${iIdx + 1}`,
+          }))
+        : undefined,
+    };
+
+    setSlides((prev) => {
+      const insertAt = Math.min(targetIdx + 1, prev.length);
+      const next = [
+        ...prev.slice(0, insertAt),
+        clonedSlide,
+        ...prev.slice(insertAt),
+      ];
+      return next.map((item, idx) => syncSlideSummary(item, idx));
+    });
+    setActiveSlideIdx(targetIdx + 1);
+    setSelectedBlockId(null);
+    setSelectedBlockIds([]);
+    setSelectedImageId(null);
+    setIsDirty(true);
+    setSaveFeedback(false);
+  };
+
+  const handleDeleteSlideAt = (targetIdx: number) => {
+    if (isReadOnly || slides.length <= 1) {
+      return;
+    }
+    localMutationPendingRef.current = true;
+    setHasLocalEdits(true);
+    setSlides((prev) => {
+      const filtered = prev.filter((_, idx) => idx !== targetIdx);
+      return filtered.map((item, idx) => ({ ...item, index: idx + 1 }));
+    });
+    setActiveSlideIdx((prev) => {
+      if (prev > targetIdx) {
+        return prev - 1;
+      }
+      return Math.max(0, Math.min(prev, slides.length - 2));
+    });
+    setSelectedBlockId(null);
+    setSelectedBlockIds([]);
+    setSelectedImageId(null);
+    setIsDirty(true);
+    setSaveFeedback(false);
+  };
+
+  const handleToggleHideSlide = (targetIdx: number) => {
+    if (isReadOnly) {
+      return;
+    }
+    mutateSlideAt(targetIdx, (slide) => ({
+      ...slide,
+      hidden: !slide.hidden,
+    }));
+  };
+
+  const handleReorderSlide = (fromIdx: number, toIdx: number) => {
+    if (isReadOnly || fromIdx === toIdx) {
+      return;
+    }
+    localMutationPendingRef.current = true;
+    setHasLocalEdits(true);
+    const activeId = currentSlide?.id;
+    setSlides((prev) => {
+      if (
+        fromIdx < 0 ||
+        toIdx < 0 ||
+        fromIdx >= prev.length ||
+        toIdx >= prev.length
+      ) {
+        return prev;
+      }
+      const next = [...prev];
+      const [moved] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, moved);
+      const reindexed = next.map((s, i) => ({ ...s, index: i + 1 }));
+      if (activeId) {
+        const nextActive = reindexed.findIndex((s) => s.id === activeId);
+        if (nextActive >= 0) {
+          setActiveSlideIdx(nextActive);
+        }
+      }
+      return reindexed;
+    });
+    setIsDirty(true);
+    setSaveFeedback(false);
+  };
+
+  const handleApplySlideLayout = (layoutId: PptSlideLayoutId) => {
+    if (isReadOnly) {
+      return;
+    }
+    setViewMode('edit');
+    setIsLayoutPickerOpen(false);
+    const isLight = isLightHexBackground(currentSlide.backgroundColor);
+    const newBlocks = createBlocksForSlideLayout(
+      layoutId,
+      `${currentSlide.id}-${Date.now()}`,
+      {
+        titleColor: isLight ? '#0F172A' : '#FFFFFF',
+        bodyColor: isLight ? '#334155' : '#E2E8F0',
+        accentColor,
+      }
+    );
+    mutateSlideAt(safeSlideIdx, (slide) => ({
+      ...slide,
+      isMasterPositioned: true,
+      blocks: newBlocks,
+    }));
+    setSelectedBlockId(newBlocks[0]?.id ?? null);
+    setSelectedBlockIds(newBlocks[0] ? [newBlocks[0].id] : []);
+    setSelectedImageId(null);
+  };
+
+  const handleInsertShape = (shapeKind: PptShapeKind) => {
+    if (isReadOnly) {
+      return;
+    }
+    setViewMode('edit');
+    setIsShapePickerOpen(false);
+    uidRef.current += 1;
+    const shapeId = `${currentSlide.id}-shape-${Date.now()}-${uidRef.current}`;
+    const offset = (currentBlocks.length % 5) * 4;
+    const isLine = shapeKind === 'line';
+    const newShapeBlock: SlideTextBlock = {
+      id: shapeId,
+      kind: 'shape',
+      shapeKind,
+      text: isLine ? '' : 'Nhấn đúp nhập chữ',
+      fontSize: 16,
+      bold: false,
+      color: '#FFFFFF',
+      align: 'center',
+      fillColor: isLine ? undefined : '#C43E1C',
+      borderColor: isLine ? '#F59E0B' : '#FFFFFF',
+      borderWidthPx: isLine ? 4 : 2,
+      xPct: Math.min(62, 24 + offset),
+      yPct: Math.min(68, 28 + offset),
+      wPct: isLine ? 36 : 24,
+      hPct: isLine ? 6 : 22,
+      zIndex: currentBlocks.length + 1,
+    };
+    mutateSlideAt(safeSlideIdx, (slide) => ({
+      ...slide,
+      isMasterPositioned: true,
+      blocks: [...(slide.blocks ?? []), newShapeBlock],
+    }));
+    setSelectedImageId(null);
+    setSelectedBlockId(shapeId);
+    setSelectedBlockIds([shapeId]);
+  };
+
+  const handleInsertTable = (rows = 3, cols = 3) => {
+    if (isReadOnly) {
+      return;
+    }
+    setViewMode('edit');
+    uidRef.current += 1;
+    const tblId = `${currentSlide.id}-tbl-${Date.now()}-${uidRef.current}`;
+    const tableRows: string[][] = Array.from({ length: rows }, (_, r) =>
+      Array.from({ length: cols }, (_, c) =>
+        r === 0 ? `Cột ${c + 1}` : `Dữ liệu ${r}.${c + 1}`
+      )
+    );
+    const newTblBlock: SlideTextBlock = {
+      id: tblId,
+      kind: 'table',
+      tableRows,
+      text: tableRows.map((r) => r.join(' | ')).join('\n'),
+      fontSize: 13,
+      color: hasLightSlideBg ? '#0F172A' : '#FFFFFF',
+      fillColor: hasLightSlideBg ? 'rgba(196,62,28,0.12)' : 'rgba(196,62,28,0.28)',
+      borderColor: hasLightSlideBg ? 'rgba(15,23,42,0.25)' : 'rgba(255,255,255,0.25)',
+      xPct: 12,
+      yPct: 26,
+      wPct: 76,
+      hPct: 44,
+      zIndex: currentBlocks.length + 1,
+    };
+    mutateSlideAt(safeSlideIdx, (slide) => ({
+      ...slide,
+      isMasterPositioned: true,
+      blocks: [...(slide.blocks ?? []), newTblBlock],
+    }));
+    setSelectedImageId(null);
+    setSelectedBlockId(tblId);
+    setSelectedBlockIds([tblId]);
+  };
+
+  const handleInsertChart = (chartData: SlideChartData) => {
+    if (isReadOnly) {
+      return;
+    }
+    setViewMode('edit');
+    setIsChartModalOpen(false);
+    uidRef.current += 1;
+    const chartId = `${currentSlide.id}-chart-${Date.now()}-${uidRef.current}`;
+    const newChartBlock: SlideTextBlock = {
+      id: chartId,
+      kind: 'chart',
+      chartData,
+      text: chartData.title ?? 'Biểu đồ dữ liệu',
+      fontSize: 14,
+      xPct: 16,
+      yPct: 22,
+      wPct: 68,
+      hPct: 54,
+      zIndex: currentBlocks.length + 1,
+    };
+    mutateSlideAt(safeSlideIdx, (slide) => ({
+      ...slide,
+      isMasterPositioned: true,
+      blocks: [...(slide.blocks ?? []), newChartBlock],
+    }));
+    setSelectedImageId(null);
+    setSelectedBlockId(chartId);
+    setSelectedBlockIds([chartId]);
+  };
+
+  const handleInsertLinkBlock = (label: string, url: string) => {
+    if (isReadOnly) {
+      return;
+    }
+    setViewMode('edit');
+    setLinkMediaModalMode(null);
+    uidRef.current += 1;
+    const linkId = `${currentSlide.id}-link-${Date.now()}-${uidRef.current}`;
+    const newLinkBlock: SlideTextBlock = {
+      id: linkId,
+      kind: 'text',
+      text: label || url,
+      linkUrl: url,
+      fontSize: 16,
+      bold: true,
+      color: '#38BDF8',
+      align: 'left',
+      xPct: 12,
+      yPct: 74,
+      wPct: 48,
+      hPct: 10,
+      zIndex: currentBlocks.length + 1,
+    };
+    mutateSlideAt(safeSlideIdx, (slide) => ({
+      ...slide,
+      isMasterPositioned: true,
+      blocks: [...(slide.blocks ?? []), newLinkBlock],
+    }));
+    setSelectedImageId(null);
+    setSelectedBlockId(linkId);
+    setSelectedBlockIds([linkId]);
+  };
+
+  const handleInsertMediaBlock = (
+    mediaKind: 'video' | 'audio',
+    src: string,
+    label: string
+  ) => {
+    if (isReadOnly) {
+      return;
+    }
+    setViewMode('edit');
+    setLinkMediaModalMode(null);
+    uidRef.current += 1;
+    const mediaId = `${currentSlide.id}-media-${Date.now()}-${uidRef.current}`;
+    const newMediaBlock: SlideTextBlock = {
+      id: mediaId,
+      kind: 'media',
+      mediaKind,
+      mediaSrc: src,
+      text: label,
+      fontSize: 13,
+      xPct: 22,
+      yPct: mediaKind === 'video' ? 24 : 40,
+      wPct: 56,
+      hPct: mediaKind === 'video' ? 46 : 16,
+      zIndex: currentBlocks.length + 1,
+    };
+    mutateSlideAt(safeSlideIdx, (slide) => ({
+      ...slide,
+      isMasterPositioned: true,
+      blocks: [...(slide.blocks ?? []), newMediaBlock],
+    }));
+    setSelectedImageId(null);
+    setSelectedBlockId(mediaId);
+    setSelectedBlockIds([mediaId]);
+  };
+
+  const handleApplyColorTheme = (theme: PptColorTheme) => {
+    if (isReadOnly) {
+      return;
+    }
+    setViewMode('edit');
+    mutateSlideAt(safeSlideIdx, (slide) => ({
+      ...slide,
+      backgroundColor: theme.bgColor,
+      backgroundGradient: theme.bgGradient,
+      backgroundImageSrc: undefined,
+      accentColor: theme.accentColor,
+      blocks: (slide.blocks ?? []).map((blk) =>
+        blk.kind === 'shape' || blk.kind === 'chart' || blk.kind === 'media'
+          ? blk
+          : {
+              ...blk,
+              color:
+                blk.role === 'title' ? theme.titleColor : theme.bodyColor,
+            }
+      ),
+    }));
+  };
+
+  const handleApplySlideGradient = (gradient: string) => {
+    if (isReadOnly) {
+      return;
+    }
+    setViewMode('edit');
+    const isLightGrad = gradient.includes('#FFFFFF');
+    mutateSlideAt(safeSlideIdx, (slide) => ({
+      ...slide,
+      backgroundColor: isLightGrad ? '#FFFFFF' : '#161D2E',
+      backgroundGradient: gradient,
+      backgroundImageSrc: undefined,
+    }));
+  };
+
+  const handleBackgroundImageFileChange = async (
+    event: ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || isReadOnly) {
+      return;
+    }
+    try {
+      const src = await readImageFileAsSrc(file);
+      mutateSlideAt(safeSlideIdx, (slide) => ({
+        ...slide,
+        backgroundImageSrc: src,
+        backgroundGradient: undefined,
+      }));
+    } catch {
+      setExportError('Không thể đặt ảnh nền cho slide.');
+    }
+  };
+
+  const handleApplyBackgroundToAll = () => {
+    if (isReadOnly) {
+      return;
+    }
+    localMutationPendingRef.current = true;
+    setHasLocalEdits(true);
+    setSlides((prev) =>
+      prev.map((slide, idx) =>
+        syncSlideSummary(
+          {
+            ...slide,
+            backgroundColor: currentSlide.backgroundColor,
+            backgroundGradient: currentSlide.backgroundGradient,
+            backgroundImageSrc: currentSlide.backgroundImageSrc,
+            accentColor: currentSlide.accentColor,
+          },
+          idx
+        )
+      )
+    );
+    setIsDirty(true);
+    setSaveFeedback(false);
+  };
+
+  const handleApplyTransitionToAll = () => {
+    if (isReadOnly) {
+      return;
+    }
+    const baseTransition = currentSlide.transition ?? {
+      type: 'fade' as const,
+      durationMs: 350,
+    };
+    localMutationPendingRef.current = true;
+    setHasLocalEdits(true);
+    setSlides((prev) =>
+      prev.map((slide, idx) =>
+        syncSlideSummary(
+          {
+            ...slide,
+            transition: { ...baseTransition },
+          },
+          idx
+        )
+      )
+    );
+    setIsDirty(true);
+    setSaveFeedback(false);
+  };
+
+  const handleBringToFront = (blockId: string) => {
+    if (isReadOnly) {
+      return;
+    }
+    const maxZ = currentBlocks.reduce(
+      (max, b) => Math.max(max, b.zIndex ?? 0),
+      0
+    );
+    handleUpdateBlock(blockId, { zIndex: maxZ + 1 });
+  };
+
+  const handleSendToBack = (blockId: string) => {
+    if (isReadOnly) {
+      return;
+    }
+    const minZ = currentBlocks.reduce(
+      (min, b) => Math.min(min, b.zIndex ?? 0),
+      0
+    );
+    handleUpdateBlock(blockId, { zIndex: minZ - 1 });
+  };
+
+  const handleGroupSelected = () => {
+    if (isReadOnly || selectedBlockIds.length < 2) {
+      return;
+    }
+    const newGroupId = `grp-${Date.now()}`;
+    const idSet = new Set(selectedBlockIds);
+    mutateSlideAt(safeSlideIdx, (slide) => ({
+      ...slide,
+      blocks: (slide.blocks ?? []).map((b) =>
+        idSet.has(b.id) ? { ...b, groupId: newGroupId } : b
+      ),
+    }));
+  };
+
+  const handleUngroupSelected = () => {
+    if (isReadOnly || !selectedBlock?.groupId) {
+      return;
+    }
+    const targetGrp = selectedBlock.groupId;
+    mutateSlideAt(safeSlideIdx, (slide) => ({
+      ...slide,
+      blocks: (slide.blocks ?? []).map((b) =>
+        b.groupId === targetGrp ? { ...b, groupId: undefined } : b
+      ),
+    }));
+  };
+
   const handleSpeakerNoteChange = (value: string) => {
     mutateSlideAt(safeSlideIdx, (slide) => ({
       ...slide,
       speakerNote: value,
     }));
+  };
+
+  const handleDownloadOriginal = async () => {
+    if (isDownloadingOriginal) {
+      return;
+    }
+    setIsDownloadingOriginal(true);
+    setExportError(null);
+    setDownloadOriginalNotice(null);
+    try {
+      if (onDownloadOriginalFile) {
+        await onDownloadOriginalFile();
+        return;
+      }
+
+      const res = await exportOriginalDocumentBinary(
+        buildLiveDocument(),
+        document.rawArrayBuffer
+      );
+      setDownloadOriginalNotice(res.message);
+
+      if (downloadNoticeTimerRef.current !== null) {
+        window.clearTimeout(downloadNoticeTimerRef.current);
+      }
+      downloadNoticeTimerRef.current = window.setTimeout(() => {
+        setDownloadOriginalNotice(null);
+        downloadNoticeTimerRef.current = null;
+      }, 4500);
+    } catch {
+      setExportError('Không thể tải xuống bản gốc. Vui lòng thử lại.');
+      if (exportErrorTimerRef.current !== null) {
+        window.clearTimeout(exportErrorTimerRef.current);
+      }
+      exportErrorTimerRef.current = window.setTimeout(() => {
+        setExportError(null);
+        exportErrorTimerRef.current = null;
+      }, 3500);
+    } finally {
+      setIsDownloadingOriginal(false);
+    }
   };
 
   const handleExportPptx = async () => {
@@ -2227,7 +3403,13 @@ export function SlideWorkspace({
       hPct: number;
     }
   ) => {
-    if (isLaserActive || isSlideshowActive || event.button !== 0) {
+    if (
+      isReadOnly ||
+      viewMode === 'native' ||
+      isLaserActive ||
+      isSlideshowActive ||
+      event.button !== 0
+    ) {
       return;
     }
     const canvasEl = editorCanvasRef.current;
@@ -2237,11 +3419,56 @@ export function SlideWorkspace({
     event.stopPropagation();
 
     if (params.kind === 'block') {
+      const targetBlock = currentBlocks.find((b) => b.id === params.id);
+      if (event.shiftKey) {
+        setSelectedBlockIds((prev) =>
+          prev.includes(params.id) ? prev : [...prev, params.id]
+        );
+      } else if (targetBlock?.groupId) {
+        const grpIds = currentBlocks
+          .filter((b) => b.groupId === targetBlock.groupId)
+          .map((b) => b.id);
+        setSelectedBlockIds(grpIds);
+      } else {
+        setSelectedBlockIds([params.id]);
+      }
       setSelectedBlockId(params.id);
       setSelectedImageId(null);
     } else {
       setSelectedImageId(params.id);
       setSelectedBlockId(null);
+      setSelectedBlockIds([]);
+    }
+
+    const draggedBlock =
+      params.kind === 'block'
+        ? currentBlocks.find((b) => b.id === params.id)
+        : undefined;
+    const draggedGroupId = draggedBlock?.groupId;
+    const originGroupPositions = new Map<string, { xPct: number; yPct: number }>();
+    if (draggedGroupId) {
+      for (const blk of currentBlocks) {
+        if (blk.groupId === draggedGroupId) {
+          originGroupPositions.set(blk.id, {
+            xPct: blk.xPct ?? 6,
+            yPct: blk.yPct ?? 10,
+          });
+        }
+      }
+    }
+
+    const snapXTargets: number[] = [50];
+    const snapYTargets: number[] = [50];
+    for (const blk of currentBlocks) {
+      if (blk.id === params.id || (draggedGroupId && blk.groupId === draggedGroupId)) {
+        continue;
+      }
+      const bx = blk.xPct ?? 6;
+      const by = blk.yPct ?? 10;
+      const bw = blk.wPct ?? 40;
+      const bh = blk.hPct ?? 16;
+      snapXTargets.push(bx, bx + bw / 2, bx + bw);
+      snapYTargets.push(by, by + bh / 2, by + bh);
     }
 
     const dragState: ActiveDragState = {
@@ -2276,36 +3503,80 @@ export function SlideWorkspace({
 
       const maxX = Math.max(0, 100 - Math.min(dragState.widthPct, 95));
       const maxY = Math.max(0, 100 - Math.min(dragState.heightPct, 95));
-      const nextX = roundPct(
-        clampValue(
-          dragState.originXPct + (dx / rect.width) * 100,
-          0,
-          maxX
-        )
+      let nextX = clampValue(
+        dragState.originXPct + (dx / rect.width) * 100,
+        0,
+        maxX
       );
-      const nextY = roundPct(
-        clampValue(
-          dragState.originYPct + (dy / rect.height) * 100,
-          0,
-          maxY
-        )
+      let nextY = clampValue(
+        dragState.originYPct + (dy / rect.height) * 100,
+        0,
+        maxY
       );
+
+      // Smart Guides Snap (center & object edges within 1.2%)
+      let guideX: number | null = null;
+      let guideY: number | null = null;
+      const snapTol = 1.2;
+      const xAnchors = [0, dragState.widthPct / 2, dragState.widthPct];
+      for (const targetX of snapXTargets) {
+        for (const offsetX of xAnchors) {
+          if (Math.abs(nextX + offsetX - targetX) <= snapTol) {
+            nextX = clampValue(targetX - offsetX, 0, maxX);
+            guideX = roundPct(targetX);
+            break;
+          }
+        }
+        if (guideX !== null) {
+          break;
+        }
+      }
+      const yAnchors = [0, dragState.heightPct / 2, dragState.heightPct];
+      for (const targetY of snapYTargets) {
+        for (const offsetY of yAnchors) {
+          if (Math.abs(nextY + offsetY - targetY) <= snapTol) {
+            nextY = clampValue(targetY - offsetY, 0, maxY);
+            guideY = roundPct(targetY);
+            break;
+          }
+        }
+        if (guideY !== null) {
+          break;
+        }
+      }
+      setSmartGuides({ xPct: guideX, yPct: guideY });
+
+      const finalX = roundPct(nextX);
+      const finalY = roundPct(nextY);
+      const deltaX = finalX - dragState.originXPct;
+      const deltaY = finalY - dragState.originYPct;
 
       mutateSlideAt(targetSlideIdx, (slide) => {
         if (dragState.kind === 'block') {
           return {
             ...slide,
-            blocks: (slide.blocks ?? []).map((block) =>
-              block.id === dragState.id
-                ? { ...block, xPct: nextX, yPct: nextY }
-                : block
-            ),
+            blocks: (slide.blocks ?? []).map((block) => {
+              if (block.id === dragState.id) {
+                return { ...block, xPct: finalX, yPct: finalY };
+              }
+              if (draggedGroupId && block.groupId === draggedGroupId) {
+                const orig = originGroupPositions.get(block.id);
+                if (orig) {
+                  return {
+                    ...block,
+                    xPct: roundPct(clampValue(orig.xPct + deltaX, 0, 95)),
+                    yPct: roundPct(clampValue(orig.yPct + deltaY, 0, 95)),
+                  };
+                }
+              }
+              return block;
+            }),
           };
         }
         return {
           ...slide,
           images: (slide.images ?? []).map((img) =>
-            img.id === dragState.id ? { ...img, xPct: nextX, yPct: nextY } : img
+            img.id === dragState.id ? { ...img, xPct: finalX, yPct: finalY } : img
           ),
         };
       });
@@ -2317,6 +3588,7 @@ export function SlideWorkspace({
       window.removeEventListener('pointercancel', handleWindowPointerUp);
       activeDragCleanupRef.current = null;
       setDraggingId(null);
+      setSmartGuides({ xPct: null, yPct: null });
     };
 
     const handleWindowPointerUp = () => {
@@ -2391,6 +3663,88 @@ export function SlideWorkspace({
     window.addEventListener("pointerup", onUp);
   };
 
+  const startElementRotate = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    params: {
+      kind: 'block' | 'image';
+      id: string;
+      xPct: number;
+      yPct: number;
+      wPct: number;
+      hPct: number;
+    }
+  ) => {
+    if (isReadOnly || isLaserActive || isSlideshowActive || event.button !== 0) {
+      return;
+    }
+    const canvasRect = editorCanvasRef.current?.getBoundingClientRect();
+    if (!canvasRect) {
+      return;
+    }
+    event.stopPropagation();
+    const centerX =
+      canvasRect.left + ((params.xPct + params.wPct / 2) / 100) * canvasRect.width;
+    const centerY =
+      canvasRect.top + ((params.yPct + params.hPct / 2) / 100) * canvasRect.height;
+    const targetSlideIdx = safeSlideIdx;
+
+    const onMove = (moveEv: PointerEvent) => {
+      const rad = Math.atan2(moveEv.clientY - centerY, moveEv.clientX - centerX);
+      let deg = Math.round((rad * 180) / Math.PI + 90);
+      if (moveEv.shiftKey) {
+        deg = Math.round(deg / 15) * 15;
+      }
+      const normalized = ((deg % 360) + 360) % 360;
+      const signedDeg = normalized > 180 ? normalized - 360 : normalized;
+      mutateSlideAt(targetSlideIdx, (slide) => {
+        if (params.kind === 'block') {
+          return {
+            ...slide,
+            blocks: (slide.blocks ?? []).map((b) =>
+              b.id === params.id ? { ...b, rotationDeg: signedDeg } : b
+            ),
+          };
+        }
+        return {
+          ...slide,
+          images: (slide.images ?? []).map((im) =>
+            im.id === params.id ? { ...im, rotationDeg: signedDeg } : im
+          ),
+        };
+      });
+    };
+
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      justDraggedRef.current = true;
+      window.setTimeout(() => {
+        justDraggedRef.current = false;
+      }, 0);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
+  const startNotesResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    const startY = event.clientY;
+    const originH = notesHeightPx;
+    const onMove = (moveEv: PointerEvent) => {
+      const delta = startY - moveEv.clientY;
+      setNotesHeightPx(clampValue(originH + delta, 44, 220));
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
   const updateLaserFromPointer = (
     event: ReactPointerEvent<HTMLDivElement>
   ) => {
@@ -2433,8 +3787,9 @@ export function SlideWorkspace({
         type="button"
         onMouseDown={handlePreventMouseDown}
         onClick={handleAddSlide}
-        title="Thêm slide mới"
-        className="inline-flex items-center justify-center gap-1 min-h-[34px] px-2 rounded-lg bg-indigo-600/90 hover:bg-indigo-500 text-[11px] font-semibold text-white transition-colors whitespace-nowrap"
+        disabled={isReadOnly}
+        title={isReadOnly ? 'Bạn chỉ có quyền xem' : 'Thêm slide mới'}
+        className="inline-flex items-center justify-center gap-1 min-h-[34px] px-2 rounded-lg bg-indigo-600/90 hover:bg-indigo-500 text-[11px] font-semibold text-white transition-colors whitespace-nowrap disabled:opacity-35 disabled:cursor-not-allowed"
       >
         <Plus className="h-3.5 w-3.5 shrink-0" />
         <span>Thêm</span>
@@ -2443,8 +3798,9 @@ export function SlideWorkspace({
         type="button"
         onMouseDown={handlePreventMouseDown}
         onClick={handleDuplicateSlide}
-        title="Nhân bản slide đang chọn"
-        className="inline-flex items-center justify-center gap-1 min-h-[34px] px-2 rounded-lg bg-white/[0.07] hover:bg-white/[0.14] border border-white/10 text-[11px] font-medium text-slate-200 transition-colors whitespace-nowrap"
+        disabled={isReadOnly}
+        title={isReadOnly ? 'Bạn chỉ có quyền xem' : 'Nhân bản slide đang chọn'}
+        className="inline-flex items-center justify-center gap-1 min-h-[34px] px-2 rounded-lg bg-white/[0.07] hover:bg-white/[0.14] border border-white/10 text-[11px] font-medium text-slate-200 transition-colors whitespace-nowrap disabled:opacity-35 disabled:cursor-not-allowed"
       >
         <Copy className="h-3 w-3 shrink-0" />
         <span>Nhân bản</span>
@@ -2453,11 +3809,13 @@ export function SlideWorkspace({
         type="button"
         onMouseDown={handlePreventMouseDown}
         onClick={handleDeleteSlide}
-        disabled={slides.length <= 1}
+        disabled={isReadOnly || slides.length <= 1}
         title={
-          slides.length <= 1
-            ? 'Không thể xóa slide cuối cùng'
-            : 'Xóa slide đang chọn'
+          isReadOnly
+            ? 'Bạn chỉ có quyền xem'
+            : slides.length <= 1
+              ? 'Không thể xóa slide cuối cùng'
+              : 'Xóa slide đang chọn'
         }
         className="inline-flex items-center justify-center gap-1 min-h-[34px] px-2 rounded-lg bg-white/[0.05] hover:bg-rose-500/20 border border-white/10 hover:border-rose-400/40 text-[11px] font-medium text-slate-300 hover:text-rose-200 transition-colors whitespace-nowrap disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:bg-white/[0.05] disabled:hover:border-white/10 disabled:hover:text-slate-300"
       >
@@ -2476,6 +3834,9 @@ export function SlideWorkspace({
         const imageCount = slide.images?.length ?? 0;
         const thumbPositioned = isSlideMasterPositioned(slide);
         const thumbAspectRatio = getSafeAspectRatio(slide, document);
+        const slideCollaborators = collaborators.filter(
+          (c) => c.sessionId !== selfSessionId && c.slideIndex === idx
+        );
 
         return (
           <button
@@ -2488,24 +3849,79 @@ export function SlideWorkspace({
                 : undefined
             }
             type="button"
+            draggable={!isReadOnly}
+            onDragStart={(e) => {
+              if (isReadOnly) {
+                return;
+              }
+              setDraggedSlideIdx(idx);
+              e.dataTransfer.effectAllowed = 'move';
+            }}
+            onDragOver={(e) => {
+              if (isReadOnly || draggedSlideIdx === null) {
+                return;
+              }
+              e.preventDefault();
+              if (dragOverSlideIdx !== idx) {
+                setDragOverSlideIdx(idx);
+              }
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              if (!isReadOnly && draggedSlideIdx !== null && draggedSlideIdx !== idx) {
+                handleReorderSlide(draggedSlideIdx, idx);
+              }
+              setDraggedSlideIdx(null);
+              setDragOverSlideIdx(null);
+            }}
+            onDragEnd={() => {
+              setDraggedSlideIdx(null);
+              setDragOverSlideIdx(null);
+            }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setThumbContextMenu({
+                x: Math.min(e.clientX, window.innerWidth - 210),
+                y: Math.min(e.clientY, window.innerHeight - 200),
+                slideIdx: idx,
+              });
+            }}
             onClick={() => handleSelectSlide(idx)}
             aria-current={isActive ? 'true' : undefined}
             aria-label={`Chọn Slide ${idx + 1}: ${slide.title}`}
-            className={`group w-full text-left flex items-start gap-2 rounded-xl p-1.5 transition-all ${
+            style={
+              !isActive && slideCollaborators.length > 0
+                ? { boxShadow: `0 0 0 1.5px ${slideCollaborators[0].color}99` }
+                : undefined
+            }
+            className={`group w-full text-left flex items-start gap-2 rounded-xl p-1.5 transition-all relative ${
               isActive
-                ? 'bg-indigo-500/15 ring-2 ring-indigo-500'
-                : 'hover:bg-white/[0.05] ring-1 ring-transparent'
+                ? 'bg-[#C43E1C]/20 ring-2 ring-[#C43E1C]'
+                : dragOverSlideIdx === idx
+                  ? 'bg-white/10 ring-2 ring-amber-400/70'
+                  : 'hover:bg-white/[0.05] ring-1 ring-transparent'
+            } ${slide.hidden ? 'opacity-55' : ''} ${
+              draggedSlideIdx === idx ? 'opacity-40 scale-[0.98]' : ''
             }`}
           >
-            <span
-              className={`w-5 shrink-0 pt-0.5 text-right text-[11px] font-semibold tabular-nums ${
-                isActive
-                  ? 'text-indigo-300'
-                  : 'text-slate-500 group-hover:text-slate-300'
-              }`}
-            >
-              {idx + 1}
-            </span>
+            <div className="w-5 shrink-0 pt-0.5 flex flex-col items-end gap-0.5">
+              <span
+                className={`text-right text-[11px] font-semibold tabular-nums ${
+                  isActive
+                    ? 'text-orange-300'
+                    : 'text-slate-500 group-hover:text-slate-300'
+                }`}
+              >
+                {idx + 1}
+              </span>
+              {slide.hidden && (
+                <EyeOff
+                  className="h-3 w-3 text-slate-400"
+                  aria-label="Slide đang bị ẩn"
+                />
+              )}
+            </div>
 
             <div className="flex-1 min-w-0">
               {thumbPositioned ? (
@@ -2602,6 +4018,35 @@ export function SlideWorkspace({
               >
                 {slide.title}
               </p>
+
+              {slideCollaborators.length > 0 && (
+                <div className="mt-1 flex flex-wrap items-center gap-1">
+                  {slideCollaborators.slice(0, 3).map((collab) => {
+                    const shortName =
+                      collab.displayName.trim().split(/\s+/)[0] ||
+                      collab.displayName;
+                    return (
+                      <span
+                        key={collab.sessionId}
+                        title={`${collab.displayName} đang xem Slide ${idx + 1}`}
+                        style={{ borderColor: `${collab.color}88` }}
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-slate-900/90 border text-[9.5px] font-medium text-slate-100 max-w-[92px]"
+                      >
+                        <span
+                          className="h-1.5 w-1.5 rounded-full shrink-0"
+                          style={{ backgroundColor: collab.color }}
+                        />
+                        <span className="truncate">{shortName}</span>
+                      </span>
+                    );
+                  })}
+                  {slideCollaborators.length > 3 && (
+                    <span className="px-1 py-0.5 rounded-full bg-white/10 text-[9px] font-semibold text-slate-300">
+                      +{slideCollaborators.length - 3}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           </button>
         );
@@ -2612,14 +4057,41 @@ export function SlideWorkspace({
   const hasImages = currentImages.length > 0;
   const hasMediaColumn = hasImages || Boolean(currentSlide.metricHighlight);
 
-  const slideshowAnimationStyle: CSSProperties =
-    slideshowTransition === 'fade'
-      ? { animation: 'liteSlideFadeIn 260ms cubic-bezier(0.22, 1, 0.36, 1) both' }
-      : {
-          animation: `${
-            slideshowDirection > 0 ? 'liteSlideFromRight' : 'liteSlideFromLeft'
-          } 280ms cubic-bezier(0.22, 1, 0.36, 1) both`,
-        };
+  const effectiveTransitionType: SlideTransitionConfig['type'] =
+    currentSlide.transition?.type ??
+    (slideshowTransition === 'fade' ? 'fade' : 'push');
+  const transitionDuration = currentSlide.transition?.durationMs ?? 350;
+
+  const slideshowAnimationStyle: CSSProperties = (() => {
+    if (effectiveTransitionType === 'none') {
+      return {};
+    }
+    if (effectiveTransitionType === 'fade') {
+      return {
+        animation: `liteSlideFadeIn ${transitionDuration}ms cubic-bezier(0.22, 1, 0.36, 1) both`,
+      };
+    }
+    if (effectiveTransitionType === 'wipe') {
+      return {
+        animation: `liteSlideWipeIn ${transitionDuration}ms cubic-bezier(0.22, 1, 0.36, 1) both`,
+      };
+    }
+    if (effectiveTransitionType === 'split') {
+      return {
+        animation: `liteSlideSplitIn ${transitionDuration}ms cubic-bezier(0.22, 1, 0.36, 1) both`,
+      };
+    }
+    if (effectiveTransitionType === 'zoom') {
+      return {
+        animation: `liteSlideZoomIn ${transitionDuration}ms cubic-bezier(0.22, 1, 0.36, 1) both`,
+      };
+    }
+    return {
+      animation: `${
+        slideshowDirection > 0 ? 'liteSlideFromRight' : 'liteSlideFromLeft'
+      } ${transitionDuration}ms cubic-bezier(0.22, 1, 0.36, 1) both`,
+    };
+  })();
 
   return (
     <div className="h-[100dvh] w-full flex flex-col bg-[#181D27] text-slate-100 overflow-hidden">
@@ -2632,11 +4104,19 @@ export function SlideWorkspace({
         className="hidden"
         aria-label="Chọn ảnh để chèn vào slide"
       />
+      <input
+        ref={bgImageInputRef}
+        type="file"
+        accept="image/*"
+        onChange={(event) => void handleBackgroundImageFileChange(event)}
+        className="hidden"
+        aria-label="Chọn ảnh nền cho slide"
+      />
 
       {/* Shared Top Workspace Header */}
       <WorkspaceTopBar
         document={document}
-        collaborators={_collaborators}
+        collaborators={collaborators}
         selfSessionId={selfSessionId}
         collabPermission={collabPermission}
         theme="dark"
@@ -2659,6 +4139,68 @@ export function SlideWorkspace({
         }
         toolbar={
           <>
+            {/* Mode Switcher: Xem nguyên bản (Giống Microsoft Office) vs Chỉnh sửa nhanh */}
+            <div
+              role="group"
+              aria-label="Chế độ xem và chỉnh sửa slide"
+              className="inline-flex items-center rounded-xl bg-[#1C2331] border border-white/10 p-0.5 shrink-0"
+            >
+              <button
+                type="button"
+                onMouseDown={handlePreventMouseDown}
+                onClick={() => {
+                  setSelectedBlockId(null);
+                  setEditingBlockId(null);
+                  setSelectedImageId(null);
+                  setIsMobileSheetOpen(false);
+                  setViewMode('native');
+                }}
+                aria-pressed={viewMode === 'native'}
+                aria-label="Xem nguyên bản (Giống Microsoft Office)"
+                title="Xem nguyên bản (Giống Microsoft Office)"
+                className={`inline-flex items-center gap-1.5 min-h-[30px] px-2.5 rounded-[10px] text-xs font-semibold transition-colors whitespace-nowrap ${
+                  viewMode === 'native'
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'text-slate-300 hover:bg-white/[0.08] hover:text-white'
+                }`}
+              >
+                <Eye className="h-3.5 w-3.5 shrink-0" />
+                <span>
+                  Xem nguyên bản
+                  <span className="hidden 2xl:inline">
+                    {' '}
+                    (Giống Microsoft Office)
+                  </span>
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onMouseDown={handlePreventMouseDown}
+                disabled={isReadOnly}
+                onClick={() => {
+                  if (!isReadOnly) {
+                    setViewMode('edit');
+                  }
+                }}
+                aria-pressed={viewMode === 'edit' && !isReadOnly}
+                aria-label="Chỉnh sửa nhanh"
+                title={
+                  isReadOnly
+                    ? 'Bạn chỉ có quyền xem tài liệu này'
+                    : 'Chuyển sang chế độ Chỉnh sửa nhanh'
+                }
+                className={`inline-flex items-center gap-1.5 min-h-[30px] px-2.5 rounded-[10px] text-xs font-semibold transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
+                  viewMode === 'edit' && !isReadOnly
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'text-slate-300 hover:bg-white/[0.08] hover:text-white'
+                }`}
+              >
+                <Pencil className="h-3.5 w-3.5 shrink-0" />
+                <span>Chỉnh sửa nhanh</span>
+              </button>
+            </div>
+
             {/* Presentation Stopwatch */}
             <div className="inline-flex items-center rounded-xl bg-[#1C2331] border border-white/10 p-0.5 shrink-0">
               <button
@@ -2764,9 +4306,12 @@ export function SlideWorkspace({
             <button
               type="button"
               onClick={handleSave}
+              disabled={isReadOnly}
               aria-label="Lưu thay đổi bản trình chiếu"
-              title="Lưu thay đổi (Ctrl+S)"
-              className={`shrink-0 inline-flex items-center justify-center gap-1.5 min-h-[36px] px-2.5 rounded-xl text-xs font-semibold border transition-all whitespace-nowrap ${
+              title={
+                isReadOnly ? 'Bạn chỉ có quyền xem' : 'Lưu thay đổi (Ctrl+S)'
+              }
+              className={`shrink-0 inline-flex items-center justify-center gap-1.5 min-h-[36px] px-2.5 rounded-xl text-xs font-semibold border transition-all whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
                 saveFeedback
                   ? 'bg-emerald-500/20 border-emerald-400/50 text-emerald-200'
                   : isDirty
@@ -2783,13 +4328,32 @@ export function SlideWorkspace({
                 <>
                   <span className="relative flex items-center justify-center">
                     <Save className="h-3.5 w-3.5 shrink-0" />
-                    {isDirty && (
+                    {isDirty && !isReadOnly && (
                       <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-amber-400" />
                     )}
                   </span>
                   <span className="hidden md:inline">Lưu thay đổi</span>
                 </>
               )}
+            </button>
+
+            {/* Download Original File Button */}
+            <button
+              type="button"
+              onClick={() => void handleDownloadOriginal()}
+              disabled={isDownloadingOriginal}
+              aria-label="Tải xuống bản gốc"
+              title="Tải xuống tệp .pptx gốc ban đầu"
+              className="shrink-0 inline-flex items-center justify-center gap-1.5 min-h-[36px] px-2.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/35 text-xs font-semibold text-emerald-200 transition-colors whitespace-nowrap disabled:opacity-60 disabled:cursor-wait"
+            >
+              {isDownloadingOriginal ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+              ) : (
+                <FileDown className="h-3.5 w-3.5 shrink-0" />
+              )}
+              <span className="hidden lg:inline">
+                {isDownloadingOriginal ? 'Đang tải...' : 'Tải xuống bản gốc'}
+              </span>
             </button>
 
             {/* Export Real .pptx Button */}
@@ -2811,13 +4375,13 @@ export function SlideWorkspace({
               </span>
             </button>
 
-            {/* Primary Indigo CTA: Real Fullscreen Slideshow */}
+            {/* Primary PowerPoint CTA: Real Fullscreen Slideshow */}
             <button
               type="button"
-              onClick={startSlideshow}
+              onClick={() => startSlideshow(0)}
               aria-label="Trình chiếu toàn màn hình"
-              title="Trình chiếu toàn màn hình (F5 / Toàn màn hình)"
-              className="shrink-0 inline-flex items-center justify-center gap-1.5 min-h-[36px] px-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white shadow-sm shadow-indigo-950/60 transition-all whitespace-nowrap"
+              title="Trình chiếu toàn màn hình (F5)"
+              className="shrink-0 inline-flex items-center justify-center gap-1.5 min-h-[36px] px-3 rounded-xl bg-[#C43E1C] hover:bg-[#a83316] text-xs font-semibold text-white shadow-sm shadow-black/40 transition-all whitespace-nowrap"
             >
               <Play className="h-3.5 w-3.5 fill-white text-white shrink-0" />
               <span>Trình chiếu</span>
@@ -2865,6 +4429,21 @@ export function SlideWorkspace({
             onClick={() => setExportError(null)}
             aria-label="Đóng thông báo lỗi"
             className="p-1 rounded hover:bg-rose-500/20"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Download Original Success Notice */}
+      {downloadOriginalNotice && (
+        <div className="shrink-0 px-4 py-2 bg-emerald-500/15 border-b border-emerald-400/30 text-xs text-emerald-200 flex items-center justify-between gap-2">
+          <span>{downloadOriginalNotice}</span>
+          <button
+            type="button"
+            onClick={() => setDownloadOriginalNotice(null)}
+            aria-label="Đóng thông báo tải xuống"
+            className="p-1 rounded hover:bg-emerald-500/20"
           >
             <X className="h-3.5 w-3.5" />
           </button>
@@ -2960,370 +4539,866 @@ export function SlideWorkspace({
 
         {/* Center Stage Editor + Bottom Speaker Notes */}
         <main className="flex-1 min-w-0 flex flex-col bg-[#181D27] overflow-hidden relative">
-          {/* Desktop Slide Text Block, Image & Background Editing Toolbar (md+) */}
-          <div className="hidden md:block shrink-0 bg-[#141923]/95 border-b border-white/10 px-3 sm:px-5 py-1.5">
-            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar min-h-[34px]">
-              {/* + Thêm khung chữ */}
-              <button
-                type="button"
-                onMouseDown={handlePreventMouseDown}
-                onClick={handleAddTextBlock}
-                className="shrink-0 inline-flex items-center gap-1.5 min-h-[32px] px-2.5 rounded-lg bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-400/35 text-xs font-semibold text-indigo-200 transition-colors whitespace-nowrap"
-              >
-                <Plus className="h-3.5 w-3.5 shrink-0" />
-                <Type className="h-3.5 w-3.5 shrink-0" />
-                <span>Thêm khung chữ</span>
-              </button>
-
-              {/* + Thêm ảnh */}
-              <button
-                type="button"
-                onMouseDown={handlePreventMouseDown}
-                onClick={handleTriggerAddImage}
-                className="shrink-0 inline-flex items-center gap-1.5 min-h-[32px] px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 transition-colors whitespace-nowrap"
-              >
-                <ImagePlus className="h-3.5 w-3.5 text-emerald-300 shrink-0" />
-                <span>Thêm ảnh</span>
-              </button>
-
-              {/* Slide Background Swatches */}
+          {/* Microsoft PowerPoint Ribbon (#C43E1C, horizontally scrollable on mobile) */}
+          <div className="shrink-0 bg-[#141923] border-b border-white/10">
+            {/* Ribbon Tab Bar */}
+            <div className="bg-[#C43E1C] px-2 sm:px-4 flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
               <div
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-[#1C2331] border border-white/10 shrink-0"
-                title="Đổi màu nền slide hiện tại"
+                role="tablist"
+                aria-label="Thanh Ribbon PowerPoint"
+                className="flex items-center gap-0.5 shrink-0"
               >
-                <PaintBucket className="h-3 w-3 text-slate-400 mr-0.5 shrink-0" />
-                {SLIDE_BG_PRESETS.map((bg) => {
-                  const active =
-                    !currentSlide.backgroundImageSrc &&
-                    !currentSlide.backgroundGradient &&
-                    (currentSlide.backgroundColor ?? '#161D2E').toLowerCase() ===
-                      bg.value.toLowerCase();
+                {PPT_RIBBON_TABS.map((tab) => {
+                  const isTabActive = activeRibbonTab === tab.id;
                   return (
                     <button
-                      key={bg.value}
+                      key={tab.id}
                       type="button"
+                      role="tab"
+                      aria-selected={isTabActive}
                       onMouseDown={handlePreventMouseDown}
-                      onClick={() => handleChangeSlideBackground(bg.value)}
-                      title={`Nền ${bg.label}`}
-                      aria-label={`Đổi nền slide thành ${bg.label}`}
-                      className={`h-4 w-4 rounded border transition-transform ${
-                        active
-                          ? 'ring-2 ring-indigo-400 scale-110 border-white'
-                          : 'border-white/25 hover:scale-110'
+                      onClick={() => {
+                        setActiveRibbonTab(tab.id);
+                        setIsLayoutPickerOpen(false);
+                        setIsShapePickerOpen(false);
+                      }}
+                      className={`px-2.5 sm:px-3.5 py-1.5 text-[11.5px] font-semibold whitespace-nowrap transition-colors rounded-t-lg mt-1 ${
+                        isTabActive
+                          ? 'bg-[#141923] text-white shadow-sm'
+                          : 'text-white/90 hover:bg-white/15 hover:text-white'
                       }`}
-                      style={{ backgroundColor: bg.value }}
-                    />
+                    >
+                      {tab.label}
+                    </button>
                   );
                 })}
-                <input
-                  type="color"
-                  value={toSafeColorInputValue(
-                    currentSlide.backgroundColor,
-                    '#161D2E'
-                  )}
-                  onChange={(event) =>
-                    handleChangeSlideBackground(event.target.value)
-                  }
-                  aria-label="Chọn màu nền slide tùy chỉnh"
-                  title="Màu nền slide tùy chỉnh"
-                  className="h-4 w-5 ml-0.5 rounded cursor-pointer border-0 bg-transparent p-0"
-                />
               </div>
 
-              {selectedBlock ? (
-                <>
-                  <span
-                    aria-hidden="true"
-                    className="h-5 w-px mx-1 bg-white/10 shrink-0"
-                  />
-
-                  {/* H1 / H2 / P Preset Buttons */}
-                  <div
-                    role="group"
-                    aria-label="Kiểu tiêu đề khung chữ"
-                    className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-[#1C2331] border border-white/10 shrink-0"
+              <div className="flex items-center gap-1.5 shrink-0 py-1">
+                {!isReadOnly && selectedBlockIds.length >= 2 && (
+                  <button
+                    type="button"
+                    onMouseDown={handlePreventMouseDown}
+                    onClick={handleGroupSelected}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-black/25 hover:bg-black/40 text-[11px] font-semibold text-white whitespace-nowrap"
                   >
-                    {(
-                      [
-                        { tag: 'h1', label: 'H1', active: selectedBlock.fontSize >= 32 },
-                        {
-                          tag: 'h2',
-                          label: 'H2',
-                          active:
-                            selectedBlock.fontSize >= 24 &&
-                            selectedBlock.fontSize < 32,
-                        },
-                        { tag: 'p', label: 'P', active: selectedBlock.fontSize < 24 },
-                      ] as const
-                    ).map(({ tag, label, active }) => (
-                      <button
-                        key={tag}
-                        type="button"
-                        onMouseDown={handlePreventMouseDown}
-                        onClick={() =>
-                          handleApplyBlockPreset(selectedBlock.id, tag)
-                        }
-                        aria-pressed={active}
-                        title={`Kiểu chữ ${label}`}
-                        className={`min-h-[26px] px-2 rounded-md text-[11px] font-bold transition-colors ${
-                          active
-                            ? 'bg-indigo-600 text-white'
-                            : 'text-slate-300 hover:bg-white/10 hover:text-white'
-                        }`}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-
-                  {/* Font Size Picker */}
-                  <div
-                    role="group"
-                    aria-label="Cỡ chữ khung đang chọn"
-                    className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-[#1C2331] border border-white/10 shrink-0"
+                    <Group className="h-3 w-3" />
+                    <span>Nhóm ({selectedBlockIds.length})</span>
+                  </button>
+                )}
+                {!isReadOnly && selectedBlock?.groupId && (
+                  <button
+                    type="button"
+                    onMouseDown={handlePreventMouseDown}
+                    onClick={handleUngroupSelected}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-black/25 hover:bg-black/40 text-[11px] font-semibold text-white whitespace-nowrap"
                   >
-                    {SLIDE_FONT_SIZES.map((size) => {
-                      const isSizeActive = selectedBlock.fontSize === size;
-                      return (
+                    <Ungroup className="h-3 w-3" />
+                    <span>Bỏ nhóm</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onMouseDown={handlePreventMouseDown}
+                  onClick={() =>
+                    setPptViewMode((prev) =>
+                      prev === 'sorter' ? 'normal' : 'sorter'
+                    )
+                  }
+                  aria-pressed={pptViewMode === 'sorter'}
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold whitespace-nowrap transition-colors ${
+                    pptViewMode === 'sorter'
+                      ? 'bg-white text-[#C43E1C]'
+                      : 'bg-black/20 hover:bg-black/35 text-white'
+                  }`}
+                >
+                  <LayoutGrid className="h-3 w-3" />
+                  <span className="hidden sm:inline">Sắp xếp slide</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Active Ribbon Tab Command Strip */}
+            <div className="px-2.5 sm:px-4 py-1.5 bg-[#141923]/95 relative">
+              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar min-h-[34px]">
+                {activeRibbonTab === 'home' && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={isReadOnly}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={handleAddSlide}
+                      className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-[#C43E1C] hover:bg-[#a83316] text-xs font-semibold text-white whitespace-nowrap disabled:opacity-40"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      <span>Slide mới</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isReadOnly}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => {
+                        setIsLayoutPickerOpen((v) => !v);
+                        setIsShapePickerOpen(false);
+                      }}
+                      aria-expanded={isLayoutPickerOpen}
+                      className={`shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap disabled:opacity-40 ${
+                        isLayoutPickerOpen
+                          ? 'bg-[#C43E1C]/25 border-[#C43E1C] text-orange-200'
+                          : 'bg-white/[0.06] hover:bg-white/[0.12] border-white/10 text-slate-200'
+                      }`}
+                    >
+                      <LayoutTemplate className="h-3.5 w-3.5 text-orange-300" />
+                      <span>Bố cục</span>
+                      <ChevronDown className="h-3 w-3 opacity-70" />
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isReadOnly}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={handleAddTextBlock}
+                      className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 whitespace-nowrap disabled:opacity-40"
+                    >
+                      <Type className="h-3.5 w-3.5 text-indigo-300" />
+                      <span>Khung chữ</span>
+                    </button>
+
+                    {selectedBlock && !isReadOnly ? (
+                      <>
+                        <span className="h-5 w-px mx-0.5 bg-white/10 shrink-0" />
+                        <select
+                          aria-label="Phông chữ"
+                          value={
+                            selectedBlock.fontFamily ?? PPT_FONT_FAMILIES[0].value
+                          }
+                          onChange={(e) =>
+                            handleUpdateBlock(selectedBlock.id, {
+                              fontFamily: e.target.value,
+                            })
+                          }
+                          className="shrink-0 h-8 px-2 rounded-lg bg-[#1C2331] border border-white/15 text-xs text-slate-100 outline-none focus:border-[#C43E1C]"
+                        >
+                          {PPT_FONT_FAMILIES.map((f) => (
+                            <option key={f.label} value={f.value}>
+                              {f.label}
+                            </option>
+                          ))}
+                        </select>
+
+                        <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-[#1C2331] border border-white/10 shrink-0">
+                          {SLIDE_FONT_SIZES.map((size) => {
+                            const isSizeActive = selectedBlock.fontSize === size;
+                            return (
+                              <button
+                                key={size}
+                                type="button"
+                                onMouseDown={handlePreventMouseDown}
+                                onClick={() =>
+                                  handleUpdateBlock(selectedBlock.id, {
+                                    fontSize: size,
+                                  })
+                                }
+                                aria-pressed={isSizeActive}
+                                className={`min-h-[26px] px-1.5 rounded-md text-[11px] font-semibold tabular-nums transition-colors ${
+                                  isSizeActive
+                                    ? 'bg-[#C43E1C] text-white'
+                                    : 'text-slate-300 hover:bg-white/10 hover:text-white'
+                                }`}
+                              >
+                                {size}
+                              </button>
+                            );
+                          })}
+                        </div>
+
                         <button
-                          key={size}
                           type="button"
                           onMouseDown={handlePreventMouseDown}
                           onClick={() =>
                             handleUpdateBlock(selectedBlock.id, {
-                              fontSize: size,
+                              bold: !selectedBlock.bold,
                             })
                           }
-                          aria-pressed={isSizeActive}
-                          className={`min-h-[26px] px-2 rounded-md text-[11px] font-semibold tabular-nums transition-colors ${
-                            isSizeActive
-                              ? 'bg-indigo-600 text-white'
-                              : 'text-slate-300 hover:bg-white/10 hover:text-white'
+                          aria-pressed={Boolean(selectedBlock.bold)}
+                          title="In đậm"
+                          className={`shrink-0 inline-flex items-center justify-center h-8 w-8 rounded-lg border ${
+                            selectedBlock.bold
+                              ? 'bg-[#C43E1C]/35 border-[#C43E1C] text-white'
+                              : 'bg-white/[0.04] hover:bg-white/[0.1] border-white/10 text-slate-300'
                           }`}
                         >
-                          {size}
+                          <Bold className="h-3.5 w-3.5" />
                         </button>
-                      );
-                    })}
-                  </div>
 
-                  {/* Bold, Italic & Underline */}
-                  <button
-                    type="button"
-                    onMouseDown={handlePreventMouseDown}
-                    onClick={() =>
-                      handleUpdateBlock(selectedBlock.id, {
-                        bold: !selectedBlock.bold,
-                      })
-                    }
-                    aria-pressed={Boolean(selectedBlock.bold)}
-                    aria-label="In đậm khung chữ"
-                    title="In đậm"
-                    className={`shrink-0 inline-flex items-center justify-center h-8 w-8 rounded-lg border transition-colors ${
-                      selectedBlock.bold
-                        ? 'bg-indigo-500/30 border-indigo-400/50 text-white'
-                        : 'bg-white/[0.04] hover:bg-white/[0.1] border-white/10 text-slate-300'
-                    }`}
-                  >
-                    <Bold className="h-3.5 w-3.5" />
-                  </button>
-
-                  <button
-                    type="button"
-                    onMouseDown={handlePreventMouseDown}
-                    onClick={() =>
-                      handleUpdateBlock(selectedBlock.id, {
-                        italic: !selectedBlock.italic,
-                      })
-                    }
-                    aria-pressed={Boolean(selectedBlock.italic)}
-                    aria-label="In nghiêng khung chữ"
-                    title="In nghiêng"
-                    className={`shrink-0 inline-flex items-center justify-center h-8 w-8 rounded-lg border transition-colors ${
-                      selectedBlock.italic
-                        ? 'bg-indigo-500/30 border-indigo-400/50 text-white'
-                        : 'bg-white/[0.04] hover:bg-white/[0.1] border-white/10 text-slate-300'
-                    }`}
-                  >
-                    <Italic className="h-3.5 w-3.5" />
-                  </button>
-
-                  <button
-                    type="button"
-                    onMouseDown={handlePreventMouseDown}
-                    onClick={() =>
-                      handleToggleBlockUnderline(selectedBlock.id)
-                    }
-                    aria-pressed={Boolean(underlinedBlockIds[selectedBlock.id])}
-                    aria-label="Gạch chân khung chữ"
-                    title="Gạch chân"
-                    className={`shrink-0 inline-flex items-center justify-center h-8 w-8 rounded-lg border transition-colors ${
-                      underlinedBlockIds[selectedBlock.id]
-                        ? 'bg-indigo-500/30 border-indigo-400/50 text-white'
-                        : 'bg-white/[0.04] hover:bg-white/[0.1] border-white/10 text-slate-300'
-                    }`}
-                  >
-                    <Underline className="h-3.5 w-3.5" />
-                  </button>
-
-                  {/* Text Color Swatches + Custom Color Input */}
-                  <div className="inline-flex items-center gap-1 px-1.5 py-1 rounded-lg bg-[#1C2331] border border-white/10 shrink-0">
-                    {SLIDE_COLOR_SWATCHES.map((swatch) => {
-                      const isColorActive =
-                        (selectedBlock.color ?? '#FFFFFF').toLowerCase() ===
-                        swatch.value.toLowerCase();
-                      return (
                         <button
-                          key={swatch.value}
                           type="button"
                           onMouseDown={handlePreventMouseDown}
                           onClick={() =>
                             handleUpdateBlock(selectedBlock.id, {
-                              color: swatch.value,
+                              italic: !selectedBlock.italic,
                             })
                           }
-                          title={`Màu ${swatch.label}`}
-                          aria-label={`Đổi màu chữ thành ${swatch.label}`}
-                          className={`h-5 w-5 rounded-full border transition-transform ${
-                            isColorActive
-                              ? 'ring-2 ring-indigo-400 scale-110 border-white'
-                              : 'border-white/25 hover:scale-110'
+                          aria-pressed={Boolean(selectedBlock.italic)}
+                          title="In nghiêng"
+                          className={`shrink-0 inline-flex items-center justify-center h-8 w-8 rounded-lg border ${
+                            selectedBlock.italic
+                              ? 'bg-[#C43E1C]/35 border-[#C43E1C] text-white'
+                              : 'bg-white/[0.04] hover:bg-white/[0.1] border-white/10 text-slate-300'
                           }`}
-                          style={{ backgroundColor: swatch.value }}
-                        />
-                      );
-                    })}
-                    <input
-                      type="color"
-                      value={toSafeColorInputValue(
-                        selectedBlock.color,
-                        hasLightSlideBg ? '#0F172A' : '#FFFFFF'
-                      )}
-                      onChange={(event) =>
-                        handleUpdateBlock(selectedBlock.id, {
-                          color: event.target.value,
-                        })
-                      }
-                      aria-label="Chọn màu chữ tùy chỉnh"
-                      title="Màu chữ tùy chỉnh"
-                      className="h-5 w-6 ml-0.5 rounded cursor-pointer border-0 bg-transparent p-0"
-                    />
-                  </div>
+                        >
+                          <Italic className="h-3.5 w-3.5" />
+                        </button>
 
-                  {/* Block Fill Color Picker */}
-                  <div className="inline-flex items-center gap-1 px-1.5 py-1 rounded-lg bg-[#1C2331] border border-white/10 shrink-0">
-                    <span className="text-[10px] text-slate-400 px-0.5">
-                      Nền khối
-                    </span>
-                    <input
-                      type="color"
-                      value={toSafeColorInputValue(
-                        selectedBlock.fillColor,
-                        '#1E293B'
-                      )}
-                      onChange={(event) =>
-                        handleUpdateBlock(selectedBlock.id, {
-                          fillColor: event.target.value,
-                        })
-                      }
-                      aria-label="Màu nền khung chữ"
-                      title="Màu nền khung chữ"
-                      className="h-5 w-5 rounded cursor-pointer border-0 bg-transparent p-0"
-                    />
-                    {selectedBlock.fillColor && (
-                      <button
-                        type="button"
-                        onMouseDown={handlePreventMouseDown}
-                        onClick={() =>
-                          handleUpdateBlock(selectedBlock.id, {
-                            fillColor: undefined,
-                          })
-                        }
-                        title="Xóa màu nền khối"
-                        className="text-[10px] text-slate-300 hover:text-white px-1 rounded bg-white/10"
-                      >
-                        Trong
-                      </button>
+                        <button
+                          type="button"
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() =>
+                            handleToggleBlockUnderline(selectedBlock.id)
+                          }
+                          aria-pressed={Boolean(
+                            underlinedBlockIds[selectedBlock.id]
+                          )}
+                          title="Gạch chân"
+                          className={`shrink-0 inline-flex items-center justify-center h-8 w-8 rounded-lg border ${
+                            underlinedBlockIds[selectedBlock.id]
+                              ? 'bg-[#C43E1C]/35 border-[#C43E1C] text-white'
+                              : 'bg-white/[0.04] hover:bg-white/[0.1] border-white/10 text-slate-300'
+                          }`}
+                        >
+                          <Underline className="h-3.5 w-3.5" />
+                        </button>
+
+                        <div className="inline-flex items-center gap-1 px-1.5 py-1 rounded-lg bg-[#1C2331] border border-white/10 shrink-0">
+                          {SLIDE_COLOR_SWATCHES.map((swatch) => {
+                            const isColorActive =
+                              (selectedBlock.color ?? '#FFFFFF').toLowerCase() ===
+                              swatch.value.toLowerCase();
+                            return (
+                              <button
+                                key={swatch.value}
+                                type="button"
+                                onMouseDown={handlePreventMouseDown}
+                                onClick={() =>
+                                  handleUpdateBlock(selectedBlock.id, {
+                                    color: swatch.value,
+                                  })
+                                }
+                                title={`Màu chữ ${swatch.label}`}
+                                className={`h-4 w-4 rounded-full border ${
+                                  isColorActive
+                                    ? 'ring-2 ring-orange-400 scale-110 border-white'
+                                    : 'border-white/25 hover:scale-110'
+                                }`}
+                                style={{ backgroundColor: swatch.value }}
+                              />
+                            );
+                          })}
+                          <input
+                            type="color"
+                            value={toSafeColorInputValue(
+                              selectedBlock.color,
+                              hasLightSlideBg ? '#0F172A' : '#FFFFFF'
+                            )}
+                            onChange={(event) =>
+                              handleUpdateBlock(selectedBlock.id, {
+                                color: event.target.value,
+                              })
+                            }
+                            aria-label="Màu chữ tùy chỉnh"
+                            className="h-4 w-5 rounded cursor-pointer border-0 bg-transparent p-0"
+                          />
+                        </div>
+
+                        <div className="inline-flex items-center gap-1 px-1.5 py-1 rounded-lg bg-[#1C2331] border border-white/10 shrink-0">
+                          <span className="text-[10px] text-slate-400">Nền</span>
+                          <input
+                            type="color"
+                            value={toSafeColorInputValue(
+                              selectedBlock.fillColor,
+                              '#C43E1C'
+                            )}
+                            onChange={(event) =>
+                              handleUpdateBlock(selectedBlock.id, {
+                                fillColor: event.target.value,
+                              })
+                            }
+                            aria-label="Màu nền khối"
+                            className="h-4 w-5 rounded cursor-pointer border-0 bg-transparent p-0"
+                          />
+                          {selectedBlock.fillColor && (
+                            <button
+                              type="button"
+                              onMouseDown={handlePreventMouseDown}
+                              onClick={() =>
+                                handleUpdateBlock(selectedBlock.id, {
+                                  fillColor: undefined,
+                                })
+                              }
+                              className="text-[10px] text-slate-300 hover:text-white px-1 rounded bg-white/10"
+                            >
+                              Xóa
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-[#1C2331] border border-white/10 shrink-0">
+                          {(
+                            [
+                              { value: 'left', label: 'Căn trái', Icon: AlignLeft },
+                              {
+                                value: 'center',
+                                label: 'Căn giữa',
+                                Icon: AlignCenter,
+                              },
+                              { value: 'right', label: 'Căn phải', Icon: AlignRight },
+                            ] as const
+                          ).map(({ value, label, Icon }) => (
+                            <button
+                              key={value}
+                              type="button"
+                              onMouseDown={handlePreventMouseDown}
+                              onClick={() =>
+                                handleUpdateBlock(selectedBlock.id, {
+                                  align: value,
+                                })
+                              }
+                              title={label}
+                              className={`h-7 w-7 rounded-md flex items-center justify-center ${
+                                (selectedBlock.align ?? 'left') === value
+                                  ? 'bg-[#C43E1C] text-white'
+                                  : 'text-slate-300 hover:bg-white/10'
+                              }`}
+                            >
+                              <Icon className="h-3.5 w-3.5" />
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-[#1C2331] border border-white/10 shrink-0">
+                          <button
+                            type="button"
+                            onMouseDown={handlePreventMouseDown}
+                            onClick={() => handleBringToFront(selectedBlock.id)}
+                            title="Đưa lên trên cùng (Bring to Front)"
+                            className="h-7 px-2 rounded-md text-[11px] text-slate-200 hover:bg-white/10 inline-flex items-center gap-1"
+                          >
+                            <BringToFront className="h-3.5 w-3.5 text-orange-300" />
+                            <span className="hidden lg:inline">Lên trên</span>
+                          </button>
+                          <button
+                            type="button"
+                            onMouseDown={handlePreventMouseDown}
+                            onClick={() => handleSendToBack(selectedBlock.id)}
+                            title="Đưa xuống dưới cùng (Send to Back)"
+                            className="h-7 px-2 rounded-md text-[11px] text-slate-200 hover:bg-white/10 inline-flex items-center gap-1"
+                          >
+                            <SendToBack className="h-3.5 w-3.5 text-slate-300" />
+                            <span className="hidden lg:inline">Xuống dưới</span>
+                          </button>
+                        </div>
+
+                        <button
+                          type="button"
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() => handleDeleteBlock(selectedBlock.id)}
+                          title="Xóa đối tượng đang chọn"
+                          className="shrink-0 inline-flex items-center gap-1 h-8 px-2 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/35 text-xs font-medium text-rose-200"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </>
+                    ) : selectedImage && !isReadOnly ? (
+                      <>
+                        <span className="h-5 w-px mx-0.5 bg-white/10 shrink-0" />
+                        <span className="text-[11.5px] text-orange-200 whitespace-nowrap">
+                          Đang chọn ảnh · Kéo chấm tròn trên đỉnh để xoay
+                        </span>
+                        <button
+                          type="button"
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() => handleDeleteImage(selectedImage.id)}
+                          className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/35 text-xs font-medium text-rose-200 whitespace-nowrap"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          <span>Xóa ảnh</span>
+                        </button>
+                      </>
+                    ) : (
+                      <span className="text-[11.5px] text-slate-400 whitespace-nowrap pl-1">
+                        {isReadOnly
+                          ? 'Chế độ Chỉ xem · Chọn tab Trình chiếu để bắt đầu.'
+                          : 'Bấm chọn khung/ảnh trên slide để định dạng, xoay, nhóm hoặc Shift+Click chọn nhiều.'}
+                      </span>
                     )}
-                  </div>
+                  </>
+                )}
 
-                  {/* Alignment: Left / Center / Right */}
-                  <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-[#1C2331] border border-white/10 shrink-0">
-                    {(
-                      [
-                        { value: 'left', label: 'Căn trái', Icon: AlignLeft },
-                        {
-                          value: 'center',
-                          label: 'Căn giữa',
-                          Icon: AlignCenter,
-                        },
-                        { value: 'right', label: 'Căn phải', Icon: AlignRight },
-                      ] as const
-                    ).map(({ value, label, Icon }) => {
-                      const active = (selectedBlock.align ?? 'left') === value;
-                      return (
+                {activeRibbonTab === 'insert' && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={isReadOnly}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={handleAddTextBlock}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-[#C43E1C]/20 hover:bg-[#C43E1C]/35 border border-[#C43E1C]/50 text-xs font-semibold text-orange-100 whitespace-nowrap disabled:opacity-40"
+                    >
+                      <Type className="h-3.5 w-3.5" />
+                      <span>Hộp văn bản</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isReadOnly}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={handleTriggerAddImage}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 whitespace-nowrap disabled:opacity-40"
+                    >
+                      <ImagePlus className="h-3.5 w-3.5 text-emerald-300" />
+                      <span>Hình ảnh</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isReadOnly}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => handleInsertTable(3, 3)}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 whitespace-nowrap disabled:opacity-40"
+                    >
+                      <Table2 className="h-3.5 w-3.5 text-sky-300" />
+                      <span>Bảng (3×3)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isReadOnly}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => setIsChartModalOpen(true)}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 whitespace-nowrap disabled:opacity-40"
+                    >
+                      <BarChart3 className="h-3.5 w-3.5 text-amber-300" />
+                      <span>Biểu đồ</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isReadOnly}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => {
+                        setIsShapePickerOpen((v) => !v);
+                        setIsLayoutPickerOpen(false);
+                      }}
+                      aria-expanded={isShapePickerOpen}
+                      className={`shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap disabled:opacity-40 ${
+                        isShapePickerOpen
+                          ? 'bg-[#C43E1C]/25 border-[#C43E1C] text-orange-200'
+                          : 'bg-white/[0.06] hover:bg-white/[0.12] border-white/10 text-slate-200'
+                      }`}
+                    >
+                      <Shapes className="h-3.5 w-3.5 text-orange-300" />
+                      <span>Hình khối (11)</span>
+                      <ChevronDown className="h-3 w-3 opacity-70" />
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isReadOnly}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => setLinkMediaModalMode('link')}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 whitespace-nowrap disabled:opacity-40"
+                    >
+                      <Link2 className="h-3.5 w-3.5 text-cyan-300" />
+                      <span>Liên kết</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isReadOnly}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => setLinkMediaModalMode('video')}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 whitespace-nowrap disabled:opacity-40"
+                    >
+                      <Video className="h-3.5 w-3.5 text-rose-300" />
+                      <span>Video</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isReadOnly}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => setLinkMediaModalMode('audio')}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 whitespace-nowrap disabled:opacity-40"
+                    >
+                      <Music className="h-3.5 w-3.5 text-violet-300" />
+                      <span>Âm thanh</span>
+                    </button>
+                  </>
+                )}
+
+                {activeRibbonTab === 'design' && (
+                  <>
+                    <div className="inline-flex items-center gap-1 shrink-0">
+                      <Palette className="h-3.5 w-3.5 text-orange-300 mr-0.5 shrink-0" />
+                      {PPT_COLOR_THEMES.map((theme) => {
+                        const isActiveTheme =
+                          (currentSlide.backgroundColor ?? '').toLowerCase() ===
+                            theme.bgColor.toLowerCase() &&
+                          (currentSlide.accentColor ?? '').toLowerCase() ===
+                            theme.accentColor.toLowerCase();
+                        return (
+                          <button
+                            key={theme.id}
+                            type="button"
+                            disabled={isReadOnly}
+                            onMouseDown={handlePreventMouseDown}
+                            onClick={() => handleApplyColorTheme(theme)}
+                            title={theme.name}
+                            className={`h-8 px-2 rounded-lg border inline-flex items-center gap-1 text-[11px] font-medium whitespace-nowrap disabled:opacity-40 ${
+                              isActiveTheme
+                                ? 'border-[#C43E1C] bg-[#C43E1C]/20 text-white'
+                                : 'border-white/10 bg-[#1C2331] hover:border-white/30 text-slate-200'
+                            }`}
+                          >
+                            <span className="flex items-center -space-x-1">
+                              {theme.swatches.map((hex, i) => (
+                                <span
+                                  key={`${theme.id}-sw-${i}`}
+                                  className="h-3 w-3 rounded-full border border-white/30"
+                                  style={{ backgroundColor: hex }}
+                                />
+                              ))}
+                            </span>
+                            <span className="hidden lg:inline">{theme.name}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <span className="h-5 w-px mx-0.5 bg-white/10 shrink-0" />
+
+                    <div className="inline-flex items-center gap-1 shrink-0">
+                      {PPT_GRADIENT_PRESETS.map((g) => (
                         <button
-                          key={value}
+                          key={g.label}
                           type="button"
+                          disabled={isReadOnly}
                           onMouseDown={handlePreventMouseDown}
-                          onClick={() =>
-                            handleUpdateBlock(selectedBlock.id, {
-                              align: value,
-                            })
-                          }
-                          aria-pressed={active}
-                          aria-label={label}
-                          title={label}
-                          className={`h-7 w-7 rounded-md flex items-center justify-center transition-colors ${
-                            active
-                              ? 'bg-indigo-600 text-white'
-                              : 'text-slate-300 hover:bg-white/10'
-                          }`}
-                        >
-                          <Icon className="h-3.5 w-3.5" />
-                        </button>
-                      );
-                    })}
-                  </div>
+                          onClick={() => handleApplySlideGradient(g.value)}
+                          title={`Nền chuyển sắc: ${g.label}`}
+                          className="h-6 w-6 rounded border border-white/25 hover:scale-110 transition-transform disabled:opacity-40"
+                          style={{ backgroundImage: g.value }}
+                        />
+                      ))}
+                    </div>
 
-                  {/* Delete Selected Block */}
-                  <button
-                    type="button"
-                    onMouseDown={handlePreventMouseDown}
-                    onClick={() => handleDeleteBlock(selectedBlock.id)}
-                    aria-label="Xóa khung chữ đang chọn"
-                    title="Xóa khung chữ"
-                    className="shrink-0 inline-flex items-center gap-1 min-h-[32px] px-2.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/35 text-xs font-medium text-rose-200 transition-colors whitespace-nowrap"
-                  >
-                    <Trash2 className="h-3.5 w-3.5 shrink-0" />
-                    <span className="hidden lg:inline">Xóa khung</span>
-                  </button>
-                </>
-              ) : selectedImage ? (
-                <>
-                  <span
-                    aria-hidden="true"
-                    className="h-5 w-px mx-1 bg-white/10 shrink-0"
-                  />
-                  <span className="text-[11.5px] text-indigo-200 whitespace-nowrap">
-                    Đang chọn ảnh{isPositionedSlide ? ' · Kéo thả để di chuyển' : ''}
-                  </span>
-                  <button
-                    type="button"
-                    onMouseDown={handlePreventMouseDown}
-                    onClick={() => handleDeleteImage(selectedImage.id)}
-                    aria-label="Xóa ảnh đang chọn"
-                    className="shrink-0 inline-flex items-center gap-1 min-h-[32px] px-2.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/35 text-xs font-medium text-rose-200 transition-colors whitespace-nowrap"
-                  >
-                    <Trash2 className="h-3.5 w-3.5 shrink-0" />
-                    <span>Xóa ảnh</span>
-                  </button>
-                </>
-              ) : (
-                <p className="text-[11.5px] text-slate-400 truncate pl-1.5">
-                  Bấm vào khung chữ/bảng để sửa nội dung, hoặc kéo thanh tay cầm
-                  để di chuyển vị trí.
-                </p>
+                    <div className="inline-flex items-center gap-1 px-1.5 py-1 rounded-lg bg-[#1C2331] border border-white/10 shrink-0">
+                      <PaintBucket className="h-3 w-3 text-slate-400" />
+                      {SLIDE_BG_PRESETS.map((bg) => (
+                        <button
+                          key={bg.value}
+                          type="button"
+                          disabled={isReadOnly}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() => handleChangeSlideBackground(bg.value)}
+                          title={`Màu đơn: ${bg.label}`}
+                          className="h-4 w-4 rounded border border-white/25 hover:scale-110 transition-transform disabled:opacity-40"
+                          style={{ backgroundColor: bg.value }}
+                        />
+                      ))}
+                      <input
+                        type="color"
+                        disabled={isReadOnly}
+                        value={toSafeColorInputValue(
+                          currentSlide.backgroundColor,
+                          '#161D2E'
+                        )}
+                        onChange={(event) =>
+                          handleChangeSlideBackground(event.target.value)
+                        }
+                        aria-label="Màu nền slide tùy chỉnh"
+                        className="h-4 w-5 rounded cursor-pointer border-0 bg-transparent p-0"
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={isReadOnly}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => bgImageInputRef.current?.click()}
+                      className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 whitespace-nowrap disabled:opacity-40"
+                    >
+                      <Image className="h-3.5 w-3.5 text-emerald-300" />
+                      <span>Ảnh nền</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isReadOnly}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={handleApplyBackgroundToAll}
+                      className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-[#C43E1C]/20 hover:bg-[#C43E1C]/35 border border-[#C43E1C]/50 text-xs font-semibold text-orange-100 whitespace-nowrap disabled:opacity-40"
+                    >
+                      <span>Áp dụng nền tất cả</span>
+                    </button>
+                  </>
+                )}
+
+                {activeRibbonTab === 'transitions' && (
+                  <>
+                    <div className="inline-flex items-center gap-1 shrink-0">
+                      <Sparkles className="h-3.5 w-3.5 text-orange-300 mr-0.5 shrink-0" />
+                      <span className="text-[11px] text-slate-400">Chuyển slide:</span>
+                      {PPT_TRANSITION_OPTIONS.map((opt) => {
+                        const active =
+                          (currentSlide.transition?.type ?? 'fade') === opt.type;
+                        return (
+                          <button
+                            key={opt.type}
+                            type="button"
+                            disabled={isReadOnly}
+                            onMouseDown={handlePreventMouseDown}
+                            onClick={() =>
+                              mutateSlideAt(safeSlideIdx, (s) => ({
+                                ...s,
+                                transition: {
+                                  type: opt.type,
+                                  durationMs: s.transition?.durationMs ?? 350,
+                                },
+                              }))
+                            }
+                            className={`h-7 px-2 rounded-md border text-[11px] font-medium whitespace-nowrap disabled:opacity-40 ${
+                              active
+                                ? 'bg-[#C43E1C] border-[#C43E1C] text-white'
+                                : 'bg-[#1C2331] border-white/10 text-slate-200 hover:bg-white/10'
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <select
+                      aria-label="Thời lượng chuyển cảnh"
+                      disabled={isReadOnly}
+                      value={currentSlide.transition?.durationMs ?? 350}
+                      onChange={(e) =>
+                        mutateSlideAt(safeSlideIdx, (s) => ({
+                          ...s,
+                          transition: {
+                            type: s.transition?.type ?? 'fade',
+                            durationMs: Number(e.target.value),
+                          },
+                        }))
+                      }
+                      className="shrink-0 h-7 px-2 rounded-md bg-[#1C2331] border border-white/15 text-[11px] text-slate-100"
+                    >
+                      <option value={200}>0.2s</option>
+                      <option value={350}>0.35s</option>
+                      <option value={600}>0.6s</option>
+                      <option value={1000}>1.0s</option>
+                    </select>
+
+                    <button
+                      type="button"
+                      disabled={isReadOnly}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={handleApplyTransitionToAll}
+                      className="shrink-0 h-7 px-2.5 rounded-md bg-[#C43E1C]/20 hover:bg-[#C43E1C]/35 border border-[#C43E1C]/50 text-[11px] font-semibold text-orange-100 whitespace-nowrap disabled:opacity-40"
+                    >
+                      Áp dụng tất cả
+                    </button>
+
+                    <span className="h-5 w-px mx-0.5 bg-white/10 shrink-0" />
+
+                    <div className="inline-flex items-center gap-1 shrink-0">
+                      <Wand2 className="h-3.5 w-3.5 text-amber-300 shrink-0" />
+                      <span className="text-[11px] text-slate-400">
+                        Hoạt ảnh khối:
+                      </span>
+                      {selectedBlock && !isReadOnly ? (
+                        <>
+                          {PPT_ANIMATION_OPTIONS.map((animOpt) => {
+                            const active =
+                              (selectedBlock.animation?.type ?? 'none') ===
+                              animOpt.type;
+                            return (
+                              <button
+                                key={animOpt.type}
+                                type="button"
+                                onMouseDown={handlePreventMouseDown}
+                                onClick={() =>
+                                  handleUpdateBlock(selectedBlock.id, {
+                                    animation: {
+                                      type: animOpt.type,
+                                      order:
+                                        animOpt.type === 'none'
+                                          ? undefined
+                                          : selectedBlock.animation?.order ?? 1,
+                                    },
+                                  })
+                                }
+                                className={`h-7 px-2 rounded-md border text-[11px] font-medium whitespace-nowrap ${
+                                  active
+                                    ? 'bg-indigo-600 border-indigo-400 text-white'
+                                    : 'bg-[#1C2331] border-white/10 text-slate-200 hover:bg-white/10'
+                                }`}
+                              >
+                                {animOpt.label}
+                              </button>
+                            );
+                          })}
+                          {selectedBlock.animation &&
+                            selectedBlock.animation.type !== 'none' && (
+                              <select
+                                aria-label="Thứ tự click hiệu ứng"
+                                value={selectedBlock.animation.order ?? 1}
+                                onChange={(e) =>
+                                  handleUpdateBlock(selectedBlock.id, {
+                                    animation: {
+                                      type:
+                                        selectedBlock.animation?.type ?? 'fadeIn',
+                                      order: Number(e.target.value),
+                                    },
+                                  })
+                                }
+                                className="h-7 px-1.5 rounded-md bg-[#1C2331] border border-white/15 text-[11px] text-slate-100"
+                              >
+                                {[1, 2, 3, 4, 5, 6].map((n) => (
+                                  <option key={n} value={n}>
+                                    Click #{n}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                        </>
+                      ) : (
+                        <span className="text-[11px] text-slate-500 whitespace-nowrap">
+                          (Chọn 1 đối tượng trên slide)
+                        </span>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {activeRibbonTab === 'slideshow' && (
+                  <>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => startSlideshow(0)}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-[#C43E1C] hover:bg-[#a83316] text-xs font-semibold text-white whitespace-nowrap"
+                    >
+                      <Play className="h-3.5 w-3.5 fill-white" />
+                      <span>Từ đầu (F5)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => startSlideshow(safeSlideIdx)}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-white/[0.08] hover:bg-white/[0.15] border border-white/15 text-xs font-semibold text-white whitespace-nowrap"
+                    >
+                      <MonitorPlay className="h-3.5 w-3.5 text-orange-300" />
+                      <span>Từ trang hiện tại (Shift+F5)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isReadOnly}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => handleToggleHideSlide(safeSlideIdx)}
+                      aria-pressed={Boolean(currentSlide.hidden)}
+                      className={`shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap disabled:opacity-40 ${
+                        currentSlide.hidden
+                          ? 'bg-amber-500/20 border-amber-400/50 text-amber-200'
+                          : 'bg-white/[0.06] hover:bg-white/[0.12] border-white/10 text-slate-200'
+                      }`}
+                    >
+                      <EyeOff className="h-3.5 w-3.5" />
+                      <span>{currentSlide.hidden ? 'Bỏ ẩn slide' : 'Ẩn slide'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => setIsLaserActive((p) => !p)}
+                      aria-pressed={isLaserActive}
+                      className={`shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap ${
+                        isLaserActive
+                          ? 'bg-rose-500/25 border-rose-400/60 text-rose-100'
+                          : 'bg-white/[0.06] hover:bg-white/[0.12] border-white/10 text-slate-200'
+                      }`}
+                    >
+                      <Crosshair className="h-3.5 w-3.5" />
+                      <span>Bút Laser</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => onOpenModal('present', buildLiveDocument())}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 whitespace-nowrap"
+                    >
+                      <Presentation className="h-3.5 w-3.5 text-indigo-300" />
+                      <span>Presenter View</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => onOpenModal('qr', buildLiveDocument())}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 whitespace-nowrap"
+                    >
+                      <QrCode className="h-3.5 w-3.5 text-cyan-300" />
+                      <span>Điều khiển QR</span>
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {/* Popover: 6 Slide Layouts Picker */}
+              {isLayoutPickerOpen && !isReadOnly && (
+                <div className="mt-2 p-2.5 rounded-xl bg-[#1A202E] border border-white/15 shadow-2xl grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2 z-30 relative">
+                  {PPT_SLIDE_LAYOUTS.map((layout) => (
+                    <button
+                      key={layout.id}
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => handleApplySlideLayout(layout.id)}
+                      className="text-left p-2 rounded-lg bg-white/[0.04] hover:bg-[#C43E1C]/20 border border-white/10 hover:border-[#C43E1C]/60 transition-colors"
+                    >
+                      <div className="text-[11px] font-semibold text-white">
+                        {layout.label}
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5 line-clamp-1">
+                        {layout.desc}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Popover: 11 SVG Shapes Picker */}
+              {isShapePickerOpen && !isReadOnly && (
+                <div className="mt-2 p-2.5 rounded-xl bg-[#1A202E] border border-white/15 shadow-2xl flex flex-wrap gap-1.5 z-30 relative">
+                  {PPT_SHAPE_OPTIONS.map((shapeOpt) => {
+                    const ShapeIcon = shapeOpt.Icon;
+                    return (
+                      <button
+                        key={shapeOpt.kind}
+                        type="button"
+                        onMouseDown={handlePreventMouseDown}
+                        onClick={() => handleInsertShape(shapeOpt.kind)}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/[0.05] hover:bg-[#C43E1C]/25 border border-white/10 hover:border-[#C43E1C] text-[11px] font-medium text-slate-100 transition-colors"
+                      >
+                        <ShapeIcon className="h-3.5 w-3.5 text-orange-300" />
+                        <span>{shapeOpt.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
               )}
             </div>
           </div>
@@ -3349,7 +5424,163 @@ export function SlideWorkspace({
             </div>
           )}
 
-          {/* Main Editable Slide Stage Container (ResizeObserver proportional fit) */}
+          {/* Slide Sorter Grid OR Main Editable Slide Stage Container */}
+          {pptViewMode === 'sorter' ? (
+            <div className="flex-1 min-h-0 overflow-y-auto scrollbar-dark p-4 sm:p-6">
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <div>
+                  <h2 className="text-sm sm:text-base font-bold text-white flex items-center gap-2">
+                    <LayoutGrid className="h-4 w-4 text-[#C43E1C]" />
+                    <span>Chế độ sắp xếp trang chiếu (Slide Sorter)</span>
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Kéo thả để đổi thứ tự slide hoặc bấm đúp vào slide để chỉnh sửa chi tiết.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPptViewMode('normal')}
+                  className="px-3 py-1.5 rounded-xl bg-[#C43E1C] hover:bg-[#a83316] text-xs font-semibold text-white shrink-0"
+                >
+                  Về chế độ Bình thường
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                {slides.map((slideItem, idx) => {
+                  const isActive = idx === safeSlideIdx;
+                  return (
+                    <div
+                      key={`sorter-${slideItem.id}`}
+                      draggable={!isReadOnly}
+                      onDragStart={(e) => {
+                        if (isReadOnly) {
+                          return;
+                        }
+                        setDraggedSlideIdx(idx);
+                        e.dataTransfer.effectAllowed = 'move';
+                      }}
+                      onDragOver={(e) => {
+                        if (isReadOnly || draggedSlideIdx === null) {
+                          return;
+                        }
+                        e.preventDefault();
+                        if (dragOverSlideIdx !== idx) {
+                          setDragOverSlideIdx(idx);
+                        }
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        if (
+                          !isReadOnly &&
+                          draggedSlideIdx !== null &&
+                          draggedSlideIdx !== idx
+                        ) {
+                          handleReorderSlide(draggedSlideIdx, idx);
+                        }
+                        setDraggedSlideIdx(null);
+                        setDragOverSlideIdx(null);
+                      }}
+                      onDragEnd={() => {
+                        setDraggedSlideIdx(null);
+                        setDragOverSlideIdx(null);
+                      }}
+                      onClick={() => handleSelectSlide(idx)}
+                      onDoubleClick={() => {
+                        handleSelectSlide(idx);
+                        setPptViewMode('normal');
+                      }}
+                      className={`group rounded-2xl p-2.5 border cursor-pointer transition-all flex flex-col ${
+                        isActive
+                          ? 'bg-[#C43E1C]/15 border-[#C43E1C] ring-2 ring-[#C43E1C]/60'
+                          : dragOverSlideIdx === idx
+                            ? 'bg-white/10 border-amber-400 ring-2 ring-amber-400/50'
+                            : 'bg-[#141923] border-white/10 hover:border-white/25'
+                      } ${slideItem.hidden ? 'opacity-55' : ''}`}
+                    >
+                      <div
+                        style={{
+                          aspectRatio: String(
+                            getSafeAspectRatio(slideItem, document)
+                          ),
+                        }}
+                        className="w-full rounded-xl overflow-hidden border border-white/10 pointer-events-none relative"
+                      >
+                        <ReadOnlySlideStage
+                          doc={document}
+                          slide={slideItem}
+                          slideIndex={idx}
+                          totalSlides={slides.length}
+                          stageWidthPx={320}
+                          underlinedBlockIds={underlinedBlockIds}
+                        />
+                        {slideItem.hidden && (
+                          <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-black/75 text-[10px] font-semibold text-amber-200 inline-flex items-center gap-1">
+                            <EyeOff className="h-3 w-3" />
+                            <span>Đang ẩn</span>
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="mt-2 flex items-center justify-between gap-2">
+                        <div className="min-w-0 flex items-center gap-1.5">
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-bold tabular-nums ${
+                              isActive
+                                ? 'bg-[#C43E1C] text-white'
+                                : 'bg-white/10 text-slate-300'
+                            }`}
+                          >
+                            {idx + 1}
+                          </span>
+                          <span className="text-xs font-medium text-slate-200 truncate">
+                            {slideItem.title}
+                          </span>
+                        </div>
+
+                        {!isReadOnly && (
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            className="flex items-center gap-1 shrink-0"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => handleDuplicateSlideAt(idx)}
+                              title="Nhân bản slide"
+                              className="p-1 rounded hover:bg-white/10 text-slate-400 hover:text-white"
+                            >
+                              <Copy className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleHideSlide(idx)}
+                              title={slideItem.hidden ? 'Hiện slide' : 'Ẩn slide'}
+                              className="p-1 rounded hover:bg-white/10 text-slate-400 hover:text-amber-300"
+                            >
+                              {slideItem.hidden ? (
+                                <Eye className="h-3.5 w-3.5 text-amber-300" />
+                              ) : (
+                                <EyeOff className="h-3.5 w-3.5" />
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={slides.length <= 1}
+                              onClick={() => handleDeleteSlideAt(idx)}
+                              title="Xóa slide"
+                              className="p-1 rounded hover:bg-rose-500/20 text-slate-400 hover:text-rose-300 disabled:opacity-30"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
           <div className="flex-1 min-h-0 flex flex-col px-3 sm:px-6 lg:px-10 pt-3 sm:pt-4 pb-2 overflow-hidden">
             <div
               ref={editorViewportRef}
@@ -3363,6 +5594,7 @@ export function SlideWorkspace({
                   }
                   if (!isLaserActive) {
                     setSelectedBlockId(null);
+                    setSelectedBlockIds([]);
                     setEditingBlockId(null);
                     setSelectedImageId(null);
                   }
@@ -3381,19 +5613,30 @@ export function SlideWorkspace({
                     : 'border-white/15 ring-1 ring-white/[0.06]'
                 }`}
               >
-                {isPositionedSlide ? (
+                {viewMode === 'native' || isReadOnly ? (
+                  <ReadOnlySlideStage
+                    doc={document}
+                    slide={currentSlide}
+                    slideIndex={safeSlideIdx}
+                    totalSlides={slides.length}
+                    stageWidthPx={actualEditorCanvasWidth}
+                    underlinedBlockIds={underlinedBlockIds}
+                  />
+                ) : isPositionedSlide ? (
                   /* Master-Positioned OpenXML Coordinate Stage (xPct, yPct, wPct, hPct) */
                   <div className="absolute inset-0">
-                    {currentBlocks.map((block, bIdx) => {
+                    {sortBlocksByZIndex(currentBlocks).map((block, bIdx) => {
                       const isSelected =
-                        !isLaserActive && selectedBlockId === block.id;
+                        !isLaserActive &&
+                        (selectedBlockId === block.id ||
+                          selectedBlockIds.includes(block.id));
                       const isBeingDragged = draggingId === block.id;
                       const xPct = block.xPct ?? 6;
                       const yPct = block.yPct ?? 10 + bIdx * 14;
                       const wPct = block.wPct ?? 88;
                       const hPct = block.hPct ?? 16;
                       const scaledFontPx = Math.max(
-                        8,
+                        4,
                         (block.fontSize ||
                           (block.kind === 'table' ? 12 : 18)) *
                           editorFontScale
@@ -3406,6 +5649,15 @@ export function SlideWorkspace({
                             : 'justify-start';
                       const textColor =
                         block.color ?? (hasLightSlideBg ? '#0F172A' : '#FFFFFF');
+                      const blockPadding = getBlockPaddingStyle(
+                        block.paddingPct,
+                        editorFontScale
+                      );
+                      const safeLink = sanitizeExternalUrl(block.linkUrl);
+                      const isNonTextBlock =
+                        block.kind === 'shape' ||
+                        block.kind === 'chart' ||
+                        block.kind === 'media';
 
                       return (
                         <div
@@ -3415,11 +5667,30 @@ export function SlideWorkspace({
                               return;
                             }
                             event.stopPropagation();
+                            if (event.shiftKey) {
+                              setSelectedBlockIds((prev) =>
+                                prev.includes(block.id)
+                                  ? prev
+                                  : [...prev, block.id]
+                              );
+                            } else if (block.groupId) {
+                              setSelectedBlockIds(
+                                currentBlocks
+                                  .filter((b) => b.groupId === block.groupId)
+                                  .map((b) => b.id)
+                              );
+                            } else {
+                              setSelectedBlockIds([block.id]);
+                            }
                             setSelectedBlockId(block.id);
                             setSelectedImageId(null);
                           }}
                           onPointerDown={(event) => {
-                            if (event.target === event.currentTarget) {
+                            if (
+                              event.target === event.currentTarget ||
+                              block.kind === 'shape' ||
+                              block.kind === 'chart'
+                            ) {
                               startElementDrag(event, {
                                 kind: 'block',
                                 id: block.id,
@@ -3437,19 +5708,38 @@ export function SlideWorkspace({
                             width: `${wPct}%`,
                             height:
                               block.hPct !== undefined ? `${hPct}%` : 'auto',
-                            backgroundColor: block.fillColor,
-                            backgroundImage: block.fillGradient,
-                            borderColor: block.borderColor,
-                            borderWidth: block.borderColor ? `${block.borderWidthPx ?? 1}px` : undefined,
-                            borderStyle: block.borderColor ? "solid" : undefined,
-                            borderRadius: block.borderRadius ?? "6px",
+                            zIndex: isSelected
+                              ? (block.zIndex ?? 0) + 20
+                              : (block.zIndex ?? 0) + 1,
+                            backgroundColor:
+                              block.kind === 'shape' ? undefined : block.fillColor,
+                            backgroundImage:
+                              block.kind === 'shape' ? undefined : block.fillGradient,
+                            borderColor:
+                              block.kind === 'shape' ? undefined : block.borderColor,
+                            borderWidth:
+                              block.kind !== 'shape' && block.borderColor
+                                ? `${block.borderWidthPx ?? 1}px`
+                                : undefined,
+                            borderStyle:
+                              block.kind !== 'shape' && block.borderColor
+                                ? 'solid'
+                                : undefined,
+                            borderRadius: block.borderRadius ?? '6px',
                             boxShadow: block.shadowCss,
-                            transform: block.rotationDeg ? `rotate(${block.rotationDeg}deg)` : undefined,
-                            fontFamily: block.fontFamily || "'Inter', 'Segoe UI', system-ui, sans-serif",
+                            padding: isNonTextBlock ? undefined : blockPadding,
+                            transform: block.rotationDeg
+                              ? `rotate(${block.rotationDeg}deg)`
+                              : undefined,
+                            fontFamily:
+                              block.fontFamily ||
+                              "'Inter', 'Segoe UI', system-ui, sans-serif",
                           }}
-                          className={`group flex flex-col ${justifyClass} px-1.5 py-1 transition-shadow ${
+                          className={`group flex flex-col ${justifyClass} ${
+                            isNonTextBlock || blockPadding ? '' : 'px-1.5 py-1'
+                          } transition-shadow ${
                             isSelected
-                              ? 'ring-2 ring-indigo-500 z-10'
+                              ? 'ring-2 ring-[#C43E1C]'
                               : isLaserActive
                                 ? ''
                                 : hasLightSlideBg
@@ -3460,16 +5750,7 @@ export function SlideWorkspace({
                           {isSelected && !isReadOnly && (
                             <PowerPointResizeHandles
                               onStartResize={(ev, dir) =>
-                                startElementResize(ev, dir, { kind: "block", id: block.id, xPct, yPct, wPct, hPct })
-                              }
-                            />
-                          )}
-                          {/* Floating Drag Handle */}
-                          {!isLaserActive && (
-                            <button
-                              type="button"
-                              onPointerDown={(event) =>
-                                startElementDrag(event, {
+                                startElementResize(ev, dir, {
                                   kind: 'block',
                                   id: block.id,
                                   xPct,
@@ -3478,28 +5759,157 @@ export function SlideWorkspace({
                                   hPct,
                                 })
                               }
-                              aria-label="Kéo để di chuyển khung"
-                              title="Kéo thả để di chuyển vị trí"
-                              className={`absolute -top-3 left-1 z-20 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-indigo-600 text-white text-[9px] font-semibold shadow-md cursor-grab active:cursor-grabbing transition-opacity ${
+                              onStartRotate={(ev) =>
+                                startElementRotate(ev, {
+                                  kind: 'block',
+                                  id: block.id,
+                                  xPct,
+                                  yPct,
+                                  wPct,
+                                  hPct,
+                                })
+                              }
+                            />
+                          )}
+                          {/* Floating Drag Handle + Group/Anim Indicator */}
+                          {!isLaserActive && (
+                            <div
+                              className={`absolute -top-3 left-1 z-20 inline-flex items-center gap-1 transition-opacity ${
                                 isSelected
                                   ? 'opacity-100'
                                   : 'opacity-0 group-hover:opacity-100'
                               }`}
                             >
-                              <Move className="h-2.5 w-2.5" />
-                              <span>Kéo</span>
-                            </button>
+                              <button
+                                type="button"
+                                onPointerDown={(event) =>
+                                  startElementDrag(event, {
+                                    kind: 'block',
+                                    id: block.id,
+                                    xPct,
+                                    yPct,
+                                    wPct,
+                                    hPct,
+                                  })
+                                }
+                                aria-label="Kéo để di chuyển khung"
+                                title="Kéo thả để di chuyển vị trí"
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-[#C43E1C] text-white text-[9px] font-semibold shadow-md cursor-grab active:cursor-grabbing"
+                              >
+                                <Move className="h-2.5 w-2.5" />
+                                <span>Kéo</span>
+                              </button>
+                              {block.animation && block.animation.type !== 'none' && (
+                                <span className="px-1 py-0.5 rounded bg-indigo-600 text-[8.5px] font-bold text-white shadow">
+                                  #{block.animation.order ?? 1}
+                                </span>
+                              )}
+                              {block.groupId && (
+                                <span className="px-1 py-0.5 rounded bg-amber-500 text-[8.5px] font-bold text-slate-950 shadow">
+                                  Nhóm
+                                </span>
+                              )}
+                            </div>
                           )}
 
-                          {block.kind === 'table' &&
-                          Array.isArray(block.tableRows) &&
-                          block.tableRows.length > 0 ? (
+                          {block.kind === 'shape' ? (
+                            <div
+                              onDoubleClick={(e) => {
+                                if (!isReadOnly && block.shapeKind !== 'line') {
+                                  e.stopPropagation();
+                                  setEditingBlockId(block.id);
+                                }
+                              }}
+                              className="w-full h-full relative flex items-center justify-center"
+                            >
+                              <SlideShapeSvg
+                                shapeKind={block.shapeKind ?? 'rect'}
+                                fillColor={block.fillColor}
+                                borderColor={block.borderColor}
+                                borderWidthPx={block.borderWidthPx}
+                              />
+                              {block.shapeKind !== 'line' &&
+                                editingBlockId !== block.id &&
+                                block.text && (
+                                  <span
+                                    className="relative z-10 px-2 text-center leading-tight pointer-events-none"
+                                    style={{
+                                      fontSize: `${scaledFontPx.toFixed(2)}px`,
+                                      color: textColor,
+                                      fontWeight: block.bold ? 700 : 500,
+                                    }}
+                                  >
+                                    {block.text}
+                                  </span>
+                                )}
+                              {editingBlockId === block.id &&
+                                block.shapeKind !== 'line' && (
+                                  <input
+                                    type="text"
+                                    autoFocus
+                                    value={block.text}
+                                    onClick={(e) => e.stopPropagation()}
+                                    onPointerDown={(e) => e.stopPropagation()}
+                                    onChange={(e) =>
+                                      handleUpdateBlock(block.id, {
+                                        text: e.target.value,
+                                      })
+                                    }
+                                    onBlur={() => setEditingBlockId(null)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter' || e.key === 'Escape') {
+                                        setEditingBlockId(null);
+                                      }
+                                    }}
+                                    className="absolute inset-2 z-20 bg-black/65 text-white text-xs text-center rounded border border-white/40 outline-none px-1"
+                                  />
+                                )}
+                            </div>
+                          ) : block.kind === 'chart' && block.chartData ? (
+                            <div className="w-full h-full">
+                              <SlideChartSvg
+                                chartData={block.chartData}
+                                hasLightBg={hasLightSlideBg}
+                                fontScale={editorFontScale}
+                              />
+                            </div>
+                          ) : block.kind === 'media' && block.mediaSrc ? (
+                            <div
+                              onPointerDown={(e) => e.stopPropagation()}
+                              className="w-full h-full rounded-lg overflow-hidden bg-slate-950/90 border border-white/20 flex flex-col justify-center p-1"
+                            >
+                              {block.mediaKind === 'audio' ? (
+                                <div className="w-full px-1 flex flex-col gap-1">
+                                  <span className="text-[10px] font-medium text-slate-200 truncate">
+                                    {block.text || 'Tệp âm thanh'}
+                                  </span>
+                                  <audio
+                                    controls
+                                    src={block.mediaSrc}
+                                    className="w-full h-7"
+                                  />
+                                </div>
+                              ) : (
+                                <video
+                                  controls
+                                  playsInline
+                                  src={block.mediaSrc}
+                                  className="w-full h-full object-contain rounded"
+                                />
+                              )}
+                            </div>
+                          ) : block.kind === 'table' &&
+                            Array.isArray(block.tableRows) &&
+                            block.tableRows.length > 0 ? (
                             <div className="w-full h-full overflow-auto no-scrollbar">
                               <table className="w-full h-full border-collapse table-fixed">
                                 <tbody>
                                   {block.tableRows.map((row, rIdx) => (
                                     <tr key={`${block.id}-r-${rIdx}`}>
-                                      {row.map((cell, cIdx) => (
+                                      {row.map((cell, cIdx) => {
+                                        const cellStyle =
+                                          block.tableCellStyles?.[rIdx]?.[cIdx];
+                                        return (
                                         <td
                                           key={`${block.id}-c-${rIdx}-${cIdx}`}
                                           className="border px-1.5 py-0.5 align-middle"
@@ -3510,18 +5920,19 @@ export function SlideWorkspace({
                                                 ? 'rgba(15,23,42,0.22)'
                                                 : 'rgba(255,255,255,0.22)'),
                                             backgroundColor:
-                                              rIdx === 0
+                                              cellStyle?.fillColor ??
+                                              (rIdx === 0
                                                 ? block.fillColor ??
                                                   (hasLightSlideBg
                                                     ? 'rgba(15,23,42,0.06)'
                                                     : 'rgba(255,255,255,0.08)')
-                                                : 'transparent',
+                                                : 'transparent'),
                                           }}
                                         >
                                           <input
                                             type="text"
                                             value={cell}
-                                            disabled={isLaserActive}
+                                            disabled={isLaserActive || isReadOnly}
                                             onFocus={() => {
                                               if (!isLaserActive) {
                                                 setSelectedBlockId(block.id);
@@ -3545,7 +5956,7 @@ export function SlideWorkspace({
                                             style={{
                                               fontSize: `${scaledFontPx.toFixed(2)}px`,
                                               fontWeight:
-                                                rIdx === 0 || block.bold
+                                                (cellStyle?.bold ?? (rIdx === 0 || block.bold))
                                                   ? 700
                                                   : 400,
                                               fontStyle: block.italic
@@ -3555,15 +5966,16 @@ export function SlideWorkspace({
                                                 underlinedBlockIds[block.id]
                                                   ? 'underline'
                                                   : 'none',
-                                              color: textColor,
-                                              textAlign: block.align ?? 'left',
+                                              color: cellStyle?.textColor ?? textColor,
+                                              textAlign: cellStyle?.align ?? block.align ?? 'left',
                                               fontFamily:
                                                 block.fontFamily || undefined,
                                             }}
                                             className="w-full min-w-0 bg-transparent border-0 outline-none truncate"
                                           />
                                         </td>
-                                      ))}
+                                        );
+                                      })}
                                     </tr>
                                   ))}
                                 </tbody>
@@ -3622,15 +6034,45 @@ export function SlideWorkspace({
                               onActivateEdit={() => {
                                 if (!isLaserActive) {
                                   setSelectedBlockId(block.id);
+                                  setSelectedBlockIds([block.id]);
                                   setSelectedImageId(null);
                                   if (!isReadOnly) setEditingBlockId(block.id);
                                 }
                               }}
                             />
                           )}
+                          {safeLink && (
+                            <a
+                              href={safeLink}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              title={`Mở liên kết: ${safeLink}`}
+                              className="mt-0.5 inline-flex items-center gap-1 text-[10px] text-sky-300 hover:underline self-start"
+                            >
+                              <ExternalLink className="h-2.5 w-2.5 shrink-0" />
+                              <span className="truncate max-w-[160px]">{safeLink}</span>
+                            </a>
+                          )}
                         </div>
                       );
                     })}
+
+                    {/* Smart Alignment Guides (while dragging elements) */}
+                    {smartGuides.xPct !== null && (
+                      <div
+                        aria-hidden="true"
+                        className="pointer-events-none absolute inset-y-0 z-40 border-l border-dashed border-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.85)]"
+                        style={{ left: `${smartGuides.xPct}%` }}
+                      />
+                    )}
+                    {smartGuides.yPct !== null && (
+                      <div
+                        aria-hidden="true"
+                        className="pointer-events-none absolute inset-x-0 z-40 border-t border-dashed border-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.85)]"
+                        style={{ top: `${smartGuides.yPct}%` }}
+                      />
+                    )}
 
                     {/* Positioned Draggable Images */}
                     {currentImages.map((imageItem, imgIdx) => {
@@ -3651,6 +6093,7 @@ export function SlideWorkspace({
                             event.stopPropagation();
                             setSelectedImageId(imageItem.id);
                             setSelectedBlockId(null);
+                            setSelectedBlockIds([]);
                           }}
                           onPointerDown={(event) =>
                             startElementDrag(event, {
@@ -3671,14 +6114,14 @@ export function SlideWorkspace({
                             borderRadius: imageItem.borderRadius ?? "6px",
                             transform: imageItem.rotationDeg ? `rotate(${imageItem.rotationDeg}deg)` : undefined,
                           }}
-                          className={`group rounded-lg overflow-hidden flex items-center justify-center transition-shadow ${
+                          className={`group rounded-lg flex items-center justify-center transition-shadow ${
                             isLaserActive
                               ? 'pointer-events-none'
                               : 'cursor-grab active:cursor-grabbing'
                           } ${
                             isSelected
-                              ? 'ring-2 ring-indigo-500 z-10'
-                              : 'hover:ring-1 hover:ring-indigo-400/60'
+                              ? 'ring-2 ring-[#C43E1C] z-10'
+                              : 'hover:ring-1 hover:ring-[#C43E1C]/60'
                           }`}
                         >
                           {isSelected && !isReadOnly && (
@@ -3686,17 +6129,28 @@ export function SlideWorkspace({
                               onStartResize={(ev, dir) =>
                                 startElementResize(ev, dir, { kind: "image", id: imageItem.id, xPct, yPct, wPct, hPct })
                               }
+                              onStartRotate={(ev) =>
+                                startElementRotate(ev, {
+                                  kind: 'image',
+                                  id: imageItem.id,
+                                  xPct,
+                                  yPct,
+                                  wPct,
+                                  hPct,
+                                })
+                              }
                             />
                           )}
-                          <img
-                            src={imageItem.src}
-                            alt={
+                          <div
+                            style={{ borderRadius: imageItem.borderRadius ?? '6px' }}
+                            className="relative w-full h-full overflow-hidden flex items-center justify-center"
+                          >
+                            {renderCroppedSlideImage(
+                              imageItem,
                               imageItem.alt ??
-                              `Hình ảnh ${imgIdx + 1} của Slide ${safeSlideIdx + 1}`
-                            }
-                            draggable={false}
-                            className="w-full h-full object-contain pointer-events-none select-none"
-                          />
+                                `Hình ảnh ${imgIdx + 1} của Slide ${safeSlideIdx + 1}`
+                            )}
+                          </div>
                         </div>
                       );
                     })}
@@ -3768,7 +6222,7 @@ export function SlideWorkspace({
                             const isSelected =
                               !isLaserActive && selectedBlockId === block.id;
                             const scaledFontPx = Math.max(
-                              10,
+                              4,
                               (block.fontSize || 18) * editorFontScale
                             );
                             return (
@@ -4038,45 +6492,6 @@ export function SlideWorkspace({
                 </button>
               </div>
 
-              <div className="hidden sm:flex items-center gap-1.5 bg-[#141923] border border-white/10 rounded-lg px-2 py-1">
-                <button
-                  type="button"
-                  onClick={() => setZoomPct((z) => Math.max(50, z - 10))}
-                  title="Thu nhỏ"
-                  className="p-0.5 rounded hover:bg-white/10 text-slate-300 hover:text-white"
-                >
-                  <Minus className="h-3.5 w-3.5" />
-                </button>
-                <input
-                  type="range"
-                  min={50}
-                  max={180}
-                  step={5}
-                  value={zoomPct}
-                  onChange={(e) => setZoomPct(Number(e.target.value))}
-                  aria-label="Thu phóng trang chiếu"
-                  className="w-20 accent-indigo-500 cursor-pointer"
-                />
-                <button
-                  type="button"
-                  onClick={() => setZoomPct((z) => Math.min(180, z + 10))}
-                  title="Phóng to"
-                  className="p-0.5 rounded hover:bg-white/10 text-slate-300 hover:text-white"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                </button>
-                <span className="text-[11px] font-mono text-slate-200 tabular-nums w-9 text-right">
-                  {zoomPct}%
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setZoomPct(100)}
-                  title="Vừa khung màn hình (100%)"
-                  className="ml-0.5 p-0.5 rounded hover:bg-white/10 text-slate-300 hover:text-white"
-                >
-                  <Maximize2 className="h-3 w-3" />
-                </button>
-              </div>
               <div className="hidden xl:flex items-center gap-1.5 max-w-[140px] overflow-x-auto no-scrollbar">
                 {slides.map((slideItem, idx) => (
                   <button
@@ -4086,7 +6501,7 @@ export function SlideWorkspace({
                     aria-label={`Đi tới Slide ${idx + 1}`}
                     className={`h-2 shrink-0 rounded-full transition-all ${
                       idx === safeSlideIdx
-                        ? 'w-5 bg-indigo-400'
+                        ? 'w-5 bg-[#C43E1C]'
                         : 'w-2 bg-white/20 hover:bg-white/45'
                     }`}
                   />
@@ -4094,21 +6509,36 @@ export function SlideWorkspace({
               </div>
             </div>
           </div>
+          )}
 
-          {/* Bottom Speaker Notes Dock */}
+          {/* Resizable Bottom Speaker Notes Dock */}
           <section
             aria-label="Ghi chú diễn giả"
-            className="shrink-0 border-t border-white/10 bg-[#141923] pb-14 md:pb-0"
+            className="shrink-0 border-t border-white/10 bg-[#141923]"
           >
-            <div className="px-3.5 sm:px-5 py-2 flex items-center justify-between gap-2">
+            {isNotesExpanded && (
+              <div
+                onPointerDown={startNotesResize}
+                title="Kéo lên/xuống để thay đổi chiều cao ghi chú diễn giả"
+                className="h-1.5 w-full cursor-row-resize hover:bg-[#C43E1C]/50 transition-colors flex items-center justify-center"
+              >
+                <span className="h-0.5 w-10 rounded-full bg-white/20" />
+              </div>
+            )}
+            <div className="px-3.5 sm:px-5 py-1.5 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
-                <StickyNote className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
+                <StickyNote className="h-3.5 w-3.5 text-[#C43E1C] shrink-0" />
                 <span className="text-xs font-semibold text-slate-200 whitespace-nowrap">
                   Ghi chú diễn giả
                 </span>
                 <span className="text-[11px] text-slate-500 tabular-nums whitespace-nowrap">
                   (Slide {safeSlideIdx + 1})
                 </span>
+                {isReadOnly && (
+                  <span className="text-[10.5px] text-amber-300/90 whitespace-nowrap">
+                    · Chỉ xem
+                  </span>
+                )}
 
                 {!isNotesExpanded && currentSlide.speakerNote && (
                   <p className="hidden sm:block text-xs text-slate-400 truncate max-w-md ml-2">
@@ -4134,26 +6564,52 @@ export function SlideWorkspace({
             </div>
 
             {isNotesExpanded && (
-              <div className="px-3.5 sm:px-5 pb-3">
+              <div className="px-3.5 sm:px-5 pb-2.5">
                 <textarea
                   value={currentSlide.speakerNote ?? ''}
+                  disabled={isReadOnly}
                   onChange={(event) =>
                     handleSpeakerNoteChange(event.target.value)
                   }
-                  rows={2}
+                  style={{ height: `${notesHeightPx}px` }}
                   aria-label={`Nội dung ghi chú diễn giả cho Slide ${safeSlideIdx + 1}`}
-                  placeholder="Nhập ghi chú diễn giả cho slide này (được lưu và xuất kèm tệp .pptx)..."
-                  className="w-full h-[64px] sm:h-[74px] resize-none rounded-xl bg-[#181D27] border border-white/10 focus:border-indigo-400/70 focus:outline-none focus:ring-2 focus:ring-indigo-500/25 px-3.5 py-2 text-xs sm:text-[13px] text-slate-200 placeholder:text-slate-500 leading-relaxed transition-colors scrollbar-dark"
+                  placeholder={
+                    isReadOnly
+                      ? 'Slide này ở chế độ Chỉ xem.'
+                      : 'Nhập ghi chú diễn giả cho slide này (được lưu và xuất kèm tệp .pptx)...'
+                  }
+                  className="w-full resize-none rounded-xl bg-[#181D27] border border-white/10 focus:border-[#C43E1C]/70 focus:outline-none focus:ring-2 focus:ring-[#C43E1C]/25 px-3.5 py-2 text-xs sm:text-[13px] text-slate-200 placeholder:text-slate-500 leading-relaxed transition-colors scrollbar-dark disabled:opacity-70"
                 />
               </div>
             )}
-            <div className="pb-safe" />
           </section>
+
+          {/* Bottom PowerPoint Status Bar (25%-200% Zoom, View Switcher, Start Slideshow) */}
+          <div className={!isReadOnly && viewMode === 'edit' ? 'pb-12 md:pb-0' : ''}>
+            <OfficeStatusBar
+              variant="powerpoint"
+              theme="dark"
+              zoomPercent={zoomPct}
+              onZoomChange={setZoomPct}
+              onFitToWidth={() => setZoomPct(100)}
+              pageCurrent={safeSlideIdx + 1}
+              pageTotal={slides.length}
+              pptViewMode={pptViewMode}
+              onChangePptViewMode={setPptViewMode}
+              onStartSlideshow={() => startSlideshow(0)}
+            />
+          </div>
 
           {/* Floating Selection Formatting Toolbar (above selected text in slide frame) */}
           <FloatingSelectionToolbar
             containerRef={editorCanvasRef}
-            disabled={isLaserActive || isSlideshowActive || isModalOpen}
+            disabled={
+              isLaserActive ||
+              isSlideshowActive ||
+              isModalOpen ||
+              isReadOnly ||
+              viewMode === 'native'
+            }
             textColorSwatches={SLIDE_COLOR_SWATCHES}
             activeState={
               selectedBlock
@@ -4218,7 +6674,8 @@ export function SlideWorkspace({
             }}
           />
 
-          {/* Mobile Collapsed 1-Row Bottom Bar (md:hidden) */}
+          {/* Mobile Collapsed 1-Row Bottom Bar (md:hidden, only in edit mode) */}
+          {!isReadOnly && viewMode === 'edit' && (
           <div
             role="toolbar"
             aria-label="Thanh công cụ chỉnh sửa slide di động"
@@ -4422,9 +6879,10 @@ export function SlideWorkspace({
               <ChevronUp className="h-5 w-5" />
             </button>
           </div>
+          )}
 
           {/* Mobile Expanded Detail Bottom Sheet (md:hidden) */}
-          {isMobileSheetOpen && (
+          {!isReadOnly && viewMode === 'edit' && isMobileSheetOpen && (
             <div
               role="region"
               aria-label="Bảng công cụ chỉnh sửa slide chi tiết"
@@ -4864,6 +7322,90 @@ export function SlideWorkspace({
         </main>
       </div>
 
+      {/* Thumbnail Right-Click Context Menu */}
+      {thumbContextMenu && (
+        <div
+          role="menu"
+          aria-label="Tùy chọn slide"
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            left: `${thumbContextMenu.x}px`,
+            top: `${thumbContextMenu.y}px`,
+          }}
+          className="fixed z-50 w-48 rounded-xl bg-[#1C2331] border border-white/15 shadow-2xl py-1.5 text-xs text-slate-100"
+        >
+          <button
+            type="button"
+            disabled={isReadOnly}
+            onClick={() => {
+              setActiveSlideIdx(thumbContextMenu.slideIdx);
+              handleAddSlide();
+              setThumbContextMenu(null);
+            }}
+            className="w-full px-3 py-1.5 text-left hover:bg-[#C43E1C]/25 flex items-center gap-2 disabled:opacity-40"
+          >
+            <Plus className="h-3.5 w-3.5 text-orange-300" />
+            <span>Thêm slide mới</span>
+          </button>
+          <button
+            type="button"
+            disabled={isReadOnly}
+            onClick={() => {
+              handleDuplicateSlideAt(thumbContextMenu.slideIdx);
+              setThumbContextMenu(null);
+            }}
+            className="w-full px-3 py-1.5 text-left hover:bg-[#C43E1C]/25 flex items-center gap-2 disabled:opacity-40"
+          >
+            <Copy className="h-3.5 w-3.5 text-slate-300" />
+            <span>Nhân bản slide</span>
+          </button>
+          <button
+            type="button"
+            disabled={isReadOnly}
+            onClick={() => {
+              handleToggleHideSlide(thumbContextMenu.slideIdx);
+              setThumbContextMenu(null);
+            }}
+            className="w-full px-3 py-1.5 text-left hover:bg-[#C43E1C]/25 flex items-center gap-2 disabled:opacity-40"
+          >
+            <EyeOff className="h-3.5 w-3.5 text-amber-300" />
+            <span>
+              {slides[thumbContextMenu.slideIdx]?.hidden
+                ? 'Hiện slide khi chiếu'
+                : 'Ẩn slide khi chiếu'}
+            </span>
+          </button>
+          <div className="my-1 border-t border-white/10" />
+          <button
+            type="button"
+            disabled={isReadOnly || slides.length <= 1}
+            onClick={() => {
+              handleDeleteSlideAt(thumbContextMenu.slideIdx);
+              setThumbContextMenu(null);
+            }}
+            className="w-full px-3 py-1.5 text-left hover:bg-rose-500/20 text-rose-200 flex items-center gap-2 disabled:opacity-35"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            <span>Xóa slide</span>
+          </button>
+        </div>
+      )}
+
+      {/* Insert Chart Modal */}
+      <SlideChartInsertModal
+        isOpen={isChartModalOpen}
+        onClose={() => setIsChartModalOpen(false)}
+        onInsertChart={handleInsertChart}
+      />
+
+      {/* Insert Hyperlink / Video / Audio Modal */}
+      <SlideLinkMediaModal
+        mode={linkMediaModalMode}
+        onClose={() => setLinkMediaModalMode(null)}
+        onInsertLink={handleInsertLinkBlock}
+        onInsertMedia={handleInsertMediaBlock}
+      />
+
       {/* Real Fullscreen Slideshow Mode (#000000) */}
       {isSlideshowActive && (
         <div
@@ -4886,23 +7428,172 @@ export function SlideWorkspace({
   from { opacity: 0; }
   to { opacity: 1; }
 }
+@keyframes liteSlideWipeIn {
+  from { clip-path: inset(0 100% 0 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
+@keyframes liteSlideSplitIn {
+  from { clip-path: inset(0 50% 0 50%); opacity: 0.5; }
+  to { clip-path: inset(0 0 0 0); opacity: 1; }
+}
+@keyframes liteSlideZoomIn {
+  from { opacity: 0; transform: scale(0.84); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes liteObjFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes liteObjFlyIn {
+  from { opacity: 0; transform: translateY(24px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes liteObjZoomIn {
+  from { opacity: 0; transform: scale(0.75); }
+  to { opacity: 1; transform: scale(1); }
+}
 `}</style>
 
           {/* Proportional Fullscreen Slide Stage */}
           <div
+            ref={slideshowCanvasRef}
             key={`slideshow-${currentSlide.id}-${safeSlideIdx}`}
             onClick={() => {
-              if (isSlideshowLaser || isSlideshowGridOpen) {
+              if (justSwipedSlideshowRef.current) {
+                justSwipedSlideshowRef.current = false;
                 return;
               }
-              setSlideshowDirection(1);
-              setActiveSlideIdx((prev) =>
-                prev < slides.length - 1 ? prev + 1 : prev
-              );
+              if (
+                isSlideshowLaser ||
+                isSlideshowGridOpen ||
+                slideshowDrawTool !== 'none'
+              ) {
+                return;
+              }
+              advanceSlideshowStep();
             }}
-            onPointerMove={updateSlideshowLaserFromPointer}
-            onPointerDown={updateSlideshowLaserFromPointer}
+            onTouchStart={(event) => {
+              if (
+                isSlideshowLaser ||
+                isSlideshowGridOpen ||
+                slideshowDrawTool !== 'none' ||
+                event.touches.length !== 1
+              ) {
+                slideshowTouchStartRef.current = null;
+                return;
+              }
+              const touch = event.touches[0];
+              slideshowTouchStartRef.current = {
+                x: touch.clientX,
+                y: touch.clientY,
+              };
+            }}
+            onTouchEnd={(event) => {
+              const start = slideshowTouchStartRef.current;
+              slideshowTouchStartRef.current = null;
+              if (
+                !start ||
+                isSlideshowLaser ||
+                isSlideshowGridOpen ||
+                slideshowDrawTool !== 'none' ||
+                event.changedTouches.length === 0
+              ) {
+                return;
+              }
+              const touch = event.changedTouches[0];
+              const dx = touch.clientX - start.x;
+              const dy = touch.clientY - start.y;
+              if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+                justSwipedSlideshowRef.current = true;
+                if (dx < 0) {
+                  advanceSlideshowStep();
+                } else {
+                  retreatSlideshowStep();
+                }
+              }
+            }}
+            onPointerDown={(event) => {
+              updateSlideshowLaserFromPointer(event);
+              if (slideshowDrawTool === 'none' || isSlideshowGridOpen) {
+                return;
+              }
+              event.stopPropagation();
+              const rect = event.currentTarget.getBoundingClientRect();
+              if (rect.width <= 0 || rect.height <= 0) {
+                return;
+              }
+              const x = clampValue(((event.clientX - rect.left) / rect.width) * 100, 0, 100);
+              const y = clampValue(((event.clientY - rect.top) / rect.height) * 100, 0, 100);
+              if (slideshowDrawTool === 'eraser') {
+                setSlideshowStrokesBySlide((prev) => {
+                  const list = prev[currentSlide.id] ?? [];
+                  const filtered = list.filter(
+                    (st) => !st.points.some((pt) => Math.hypot(pt.x - x, pt.y - y) < 3.5)
+                  );
+                  return { ...prev, [currentSlide.id]: filtered };
+                });
+                return;
+              }
+              const strokeId = `ink-${Date.now()}-${Math.random()}`;
+              activeSlideshowStrokeIdRef.current = strokeId;
+              const newStroke: SlideshowStroke = {
+                id: strokeId,
+                tool: slideshowDrawTool,
+                color: slideshowDrawTool === 'highlighter' ? '#FACC15' : '#EF4444',
+                points: [{ x, y }],
+              };
+              setSlideshowStrokesBySlide((prev) => ({
+                ...prev,
+                [currentSlide.id]: [...(prev[currentSlide.id] ?? []), newStroke],
+              }));
+            }}
+            onPointerMove={(event) => {
+              updateSlideshowLaserFromPointer(event);
+              if (slideshowDrawTool === 'none' || isSlideshowGridOpen) {
+                return;
+              }
+              if (event.buttons === 0 && !activeSlideshowStrokeIdRef.current) {
+                return;
+              }
+              const rect = event.currentTarget.getBoundingClientRect();
+              if (rect.width <= 0 || rect.height <= 0) {
+                return;
+              }
+              const x = clampValue(((event.clientX - rect.left) / rect.width) * 100, 0, 100);
+              const y = clampValue(((event.clientY - rect.top) / rect.height) * 100, 0, 100);
+              if (slideshowDrawTool === 'eraser') {
+                if (event.buttons > 0) {
+                  setSlideshowStrokesBySlide((prev) => {
+                    const list = prev[currentSlide.id] ?? [];
+                    const filtered = list.filter(
+                      (st) => !st.points.some((pt) => Math.hypot(pt.x - x, pt.y - y) < 3.5)
+                    );
+                    return { ...prev, [currentSlide.id]: filtered };
+                  });
+                }
+                return;
+              }
+              const activeId = activeSlideshowStrokeIdRef.current;
+              if (!activeId) {
+                return;
+              }
+              setSlideshowStrokesBySlide((prev) => ({
+                ...prev,
+                [currentSlide.id]: (prev[currentSlide.id] ?? []).map((st) =>
+                  st.id === activeId
+                    ? { ...st, points: [...st.points, { x, y }] }
+                    : st
+                ),
+              }));
+            }}
+            onPointerUp={() => {
+              activeSlideshowStrokeIdRef.current = null;
+            }}
+            onPointerCancel={() => {
+              activeSlideshowStrokeIdRef.current = null;
+            }}
             onPointerLeave={() => {
+              activeSlideshowStrokeIdRef.current = null;
               if (slideshowLaserPos.visible) {
                 setSlideshowLaserPos((prev) => ({ ...prev, visible: false }));
               }
@@ -4915,7 +7606,9 @@ export function SlideWorkspace({
             className={`relative overflow-hidden shadow-2xl ${
               isSlideshowLaser
                 ? 'cursor-none touch-none'
-                : 'cursor-pointer'
+                : slideshowDrawTool !== 'none'
+                  ? 'cursor-crosshair touch-none'
+                  : 'cursor-pointer'
             }`}
           >
             <ReadOnlySlideStage
@@ -4923,9 +7616,32 @@ export function SlideWorkspace({
               slide={currentSlide}
               slideIndex={safeSlideIdx}
               totalSlides={slides.length}
-              stageWidthPx={slideshowFitWidthPx}
+              stageWidthPx={actualSlideshowStageWidth}
               underlinedBlockIds={underlinedBlockIds}
+              revealedAnimStep={revealedAnimStep}
             />
+
+            {/* Slideshow Ink Annotations Layer (Pen & Highlighter) */}
+            {(slideshowStrokesBySlide[currentSlide.id]?.length ?? 0) > 0 && (
+              <svg
+                viewBox="0 0 100 100"
+                preserveAspectRatio="none"
+                className="pointer-events-none absolute inset-0 w-full h-full z-20"
+              >
+                {(slideshowStrokesBySlide[currentSlide.id] ?? []).map((stroke) => (
+                  <polyline
+                    key={stroke.id}
+                    fill="none"
+                    stroke={stroke.color}
+                    strokeWidth={stroke.tool === 'highlighter' ? 2.2 : 0.45}
+                    strokeOpacity={stroke.tool === 'highlighter' ? 0.42 : 0.95}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    points={stroke.points.map((p) => `${p.x},${p.y}`).join(' ')}
+                  />
+                ))}
+              </svg>
+            )}
 
             {/* Slideshow Red Laser Pointer */}
             {isSlideshowLaser && slideshowLaserPos.visible && (
@@ -4957,7 +7673,7 @@ export function SlideWorkspace({
             >
               <div className="shrink-0 flex items-center justify-between gap-3 mb-4">
                 <div className="flex items-center gap-2.5">
-                  <LayoutGrid className="h-5 w-5 text-indigo-400" />
+                  <LayoutGrid className="h-5 w-5 text-[#C43E1C]" />
                   <h2 className="text-sm sm:text-base font-semibold text-white">
                     Lưới Slide ({slides.length} trang)
                   </h2>
@@ -4985,6 +7701,7 @@ export function SlideWorkspace({
                     underlinedBlockIds={underlinedBlockIds}
                     onSelect={() => {
                       setSlideshowDirection(idx >= safeSlideIdx ? 1 : -1);
+                      setRevealedAnimStep(0);
                       setActiveSlideIdx(idx);
                       setIsSlideshowGridOpen(false);
                     }}
@@ -4994,69 +7711,55 @@ export function SlideWorkspace({
             </div>
           )}
 
-          {/* Bottom Corner Translucent Slideshow Control HUD */}
+          {/* Bottom-Left Floating Translucent Slideshow Control Toolbar */}
           <div
             onClick={(event) => event.stopPropagation()}
             onPointerMove={(event) => event.stopPropagation()}
-            className="fixed bottom-4 left-1/2 -translate-x-1/2 sm:left-auto sm:translate-x-0 sm:right-5 z-50 max-w-[96vw] overflow-x-auto no-scrollbar rounded-2xl bg-slate-900/75 hover:bg-slate-900/90 backdrop-blur-md border border-white/15 px-2.5 py-1.5 shadow-2xl flex items-center gap-1.5 text-xs text-slate-100 transition-colors pb-safe"
+            className="fixed bottom-4 left-4 z-50 max-w-[94vw] overflow-x-auto no-scrollbar rounded-2xl bg-slate-900/75 hover:bg-slate-900/95 backdrop-blur-md border border-white/15 px-2.5 py-1.5 shadow-2xl flex items-center gap-1 text-xs text-slate-100 transition-colors"
           >
             <button
               type="button"
-              onClick={() => {
-                setSlideshowDirection(-1);
-                setActiveSlideIdx((prev) => (prev > 0 ? prev - 1 : prev));
-              }}
-              disabled={safeSlideIdx === 0}
+              onClick={retreatSlideshowStep}
+              disabled={safeSlideIdx === 0 && revealedAnimStep === 0}
               aria-label="Slide trước"
-              className="h-8 px-2.5 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-35 disabled:cursor-not-allowed inline-flex items-center gap-1 font-medium whitespace-nowrap"
+              className="h-8 px-2 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-35 disabled:cursor-not-allowed inline-flex items-center gap-1 font-medium whitespace-nowrap"
             >
               <ChevronLeft className="h-4 w-4" />
-              <span className="hidden sm:inline">Trước</span>
             </button>
 
-            <span className="px-2 font-semibold tabular-nums text-slate-200 whitespace-nowrap">
-              Slide {safeSlideIdx + 1} / {slides.length}
+            <span className="px-1.5 font-semibold tabular-nums text-slate-200 whitespace-nowrap">
+              {safeSlideIdx + 1} / {slides.length}
             </span>
 
             <button
               type="button"
-              onClick={() => {
-                setSlideshowDirection(1);
-                setActiveSlideIdx((prev) =>
-                  prev < slides.length - 1 ? prev + 1 : prev
-                );
-              }}
-              disabled={safeSlideIdx >= slides.length - 1}
+              onClick={advanceSlideshowStep}
+              disabled={
+                safeSlideIdx >= slides.length - 1 &&
+                revealedAnimStep >= getMaxAnimationStep(currentSlide)
+              }
               aria-label="Slide tiếp"
-              className="h-8 px-2.5 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-35 disabled:cursor-not-allowed inline-flex items-center gap-1 font-medium whitespace-nowrap"
+              className="h-8 px-2 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-35 disabled:cursor-not-allowed inline-flex items-center gap-1 font-medium whitespace-nowrap"
             >
-              <span className="hidden sm:inline">Sau</span>
               <ChevronRight className="h-4 w-4" />
             </button>
 
-            <span className="h-4 w-px bg-white/15 shrink-0" />
-
-            {/* Transition Mode Toggle: Trượt / Mờ */}
-            <button
-              type="button"
-              onClick={() =>
-                setSlideshowTransition((prev) =>
-                  prev === 'slide' ? 'fade' : 'slide'
-                )
-              }
-              title="Đổi hiệu ứng chuyển slide (Trượt / Mờ)"
-              className="h-8 px-2.5 rounded-xl bg-white/[0.07] hover:bg-white/15 border border-white/10 inline-flex items-center gap-1.5 font-medium whitespace-nowrap"
-            >
-              <Sparkles className="h-3.5 w-3.5 text-indigo-300" />
-              <span>{slideshowTransition === 'slide' ? 'Trượt' : 'Mờ'}</span>
-            </button>
+            <span className="h-4 w-px bg-white/15 shrink-0 mx-0.5" />
 
             {/* Red Laser Toggle */}
             <button
               type="button"
-              onClick={() => setIsSlideshowLaser((prev) => !prev)}
+              onClick={() => {
+                setIsSlideshowLaser((prev) => {
+                  const next = !prev;
+                  if (next) {
+                    setSlideshowDrawTool('none');
+                  }
+                  return next;
+                });
+              }}
               aria-pressed={isSlideshowLaser}
-              title="Bật / tắt bút Laser đỏ"
+              title="Bút Laser đỏ"
               className={`h-8 px-2.5 rounded-xl border inline-flex items-center gap-1.5 font-medium whitespace-nowrap transition-colors ${
                 isSlideshowLaser
                   ? 'bg-rose-500/30 border-rose-400/60 text-rose-100'
@@ -5068,23 +7771,99 @@ export function SlideWorkspace({
                   isSlideshowLaser ? 'bg-red-500 animate-ping' : 'bg-rose-400'
                 }`}
               />
-              <span>Laser</span>
+              <span className="hidden sm:inline">Laser</span>
             </button>
+
+            {/* Pen Tool */}
+            <button
+              type="button"
+              onClick={() => {
+                setIsSlideshowLaser(false);
+                setSlideshowDrawTool((prev) => (prev === 'pen' ? 'none' : 'pen'));
+              }}
+              aria-pressed={slideshowDrawTool === 'pen'}
+              title="Bút vẽ (Đỏ)"
+              className={`h-8 px-2.5 rounded-xl border inline-flex items-center gap-1 font-medium whitespace-nowrap transition-colors ${
+                slideshowDrawTool === 'pen'
+                  ? 'bg-[#C43E1C] border-orange-300 text-white'
+                  : 'bg-white/[0.07] hover:bg-white/15 border-white/10 text-slate-200'
+              }`}
+            >
+              <Pen className="h-3.5 w-3.5" />
+              <span className="hidden md:inline">Bút</span>
+            </button>
+
+            {/* Highlighter Tool */}
+            <button
+              type="button"
+              onClick={() => {
+                setIsSlideshowLaser(false);
+                setSlideshowDrawTool((prev) =>
+                  prev === 'highlighter' ? 'none' : 'highlighter'
+                );
+              }}
+              aria-pressed={slideshowDrawTool === 'highlighter'}
+              title="Bút tô sáng (Highlighter)"
+              className={`h-8 px-2.5 rounded-xl border inline-flex items-center gap-1 font-medium whitespace-nowrap transition-colors ${
+                slideshowDrawTool === 'highlighter'
+                  ? 'bg-amber-500/35 border-amber-300 text-amber-100'
+                  : 'bg-white/[0.07] hover:bg-white/15 border-white/10 text-slate-200'
+              }`}
+            >
+              <Highlighter className="h-3.5 w-3.5 text-amber-300" />
+              <span className="hidden md:inline">Tô sáng</span>
+            </button>
+
+            {/* Eraser Tool */}
+            <button
+              type="button"
+              onClick={() => {
+                setIsSlideshowLaser(false);
+                setSlideshowDrawTool((prev) =>
+                  prev === 'eraser' ? 'none' : 'eraser'
+                );
+              }}
+              aria-pressed={slideshowDrawTool === 'eraser'}
+              title="Cục tẩy nét vẽ"
+              className={`h-8 px-2 rounded-xl border inline-flex items-center gap-1 font-medium whitespace-nowrap transition-colors ${
+                slideshowDrawTool === 'eraser'
+                  ? 'bg-sky-500/30 border-sky-300 text-white'
+                  : 'bg-white/[0.07] hover:bg-white/15 border-white/10 text-slate-200'
+              }`}
+            >
+              <Eraser className="h-3.5 w-3.5" />
+            </button>
+
+            {(slideshowStrokesBySlide[currentSlide.id]?.length ?? 0) > 0 && (
+              <button
+                type="button"
+                onClick={() =>
+                  setSlideshowStrokesBySlide((prev) => ({
+                    ...prev,
+                    [currentSlide.id]: [],
+                  }))
+                }
+                title="Xóa hết nét vẽ trên slide này"
+                className="h-8 px-2 rounded-xl bg-white/[0.07] hover:bg-rose-500/25 border border-white/10 text-[11px] text-rose-200 whitespace-nowrap"
+              >
+                Xóa nét
+              </button>
+            )}
 
             {/* Slide Grid Toggle */}
             <button
               type="button"
               onClick={() => setIsSlideshowGridOpen((prev) => !prev)}
               aria-pressed={isSlideshowGridOpen}
-              title="Mở lưới chọn nhanh slide"
+              title="Nhảy nhanh tới slide (Grid)"
               className={`h-8 px-2.5 rounded-xl border inline-flex items-center gap-1.5 font-medium whitespace-nowrap transition-colors ${
                 isSlideshowGridOpen
-                  ? 'bg-indigo-600 border-indigo-400 text-white'
+                  ? 'bg-[#C43E1C] border-orange-300 text-white'
                   : 'bg-white/[0.07] hover:bg-white/15 border-white/10 text-slate-200'
               }`}
             >
               <LayoutGrid className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Lưới slide</span>
+              <span className="hidden sm:inline">Lưới</span>
             </button>
 
             {/* Exit Slideshow */}

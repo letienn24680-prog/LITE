@@ -4,10 +4,12 @@ import * as XLSX from 'xlsx';
 import type {
   DocumentItem,
   SlidePreviewItem,
+  SlideShapeKind,
   SlideTextBlock,
   SpreadsheetSheet,
 } from '../types/document';
 import { evaluateCellValue } from './formulaEvaluator';
+import { saveFileUniversal, type SaveFileResult } from './saveFileUniversal';
 
 function sanitizeFileName(title: string, fallback: string, stripExtRegex?: RegExp): string {
   let cleaned = (title || '').trim();
@@ -26,18 +28,15 @@ function sanitizeFileName(title: string, fallback: string, stripExtRegex?: RegEx
   return cleaned.length > 100 ? cleaned.slice(0, 100).trim() : cleaned;
 }
 
-function triggerBlobDownload(blob: Blob, fileName: string): void {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = fileName;
-  anchor.style.display = 'none';
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  window.setTimeout(() => {
-    URL.revokeObjectURL(url);
-  }, 1500);
+async function triggerBlobDownload(
+  blob: Blob,
+  fileName: string,
+  mimeType?: string
+): Promise<SaveFileResult> {
+  return saveFileUniversal(blob, fileName, {
+    mimeType: mimeType || blob.type || 'application/octet-stream',
+    shareTitle: fileName,
+  });
 }
 
 // ============================================================================
@@ -1213,10 +1212,13 @@ async function buildWordDocxBlob(htmlContent: string): Promise<Blob> {
   });
 }
 
-export async function exportWordToDocx(title: string, htmlContent: string): Promise<void> {
+export async function exportWordToDocx(
+  title: string,
+  htmlContent: string
+): Promise<SaveFileResult> {
   const blob = await buildWordDocxBlob(htmlContent);
   const safeTitle = sanitizeFileName(title, 'tai-lieu', /\.docx$/i);
-  triggerBlobDownload(blob, `${safeTitle}.docx`);
+  return triggerBlobDownload(blob, `${safeTitle}.docx`, DOCX_MIME_TYPE);
 }
 
 // ============================================================================
@@ -1316,27 +1318,84 @@ function buildExcelWorkbook(sheets: SpreadsheetSheet[]): XLSX.WorkBook {
       }
     }
 
-    // Set readable column widths
+    // Preserve merged cell ranges
+    if (Array.isArray(sheet.merges) && sheet.merges.length > 0) {
+      ws['!merges'] = sheet.merges.map((m) => ({
+        s: { r: m.s.r, c: m.s.c },
+        e: { r: m.e.r, c: m.e.c },
+      }));
+    }
+
+    // Preserve explicit column widths (px) & hidden columns
+    const hiddenColSet = new Set<number>(
+      Array.isArray(sheet.hiddenCols)
+        ? sheet.hiddenCols.filter(
+            (c): c is number => typeof c === 'number' && Number.isInteger(c) && c >= 0
+          )
+        : []
+    );
+    const maxHiddenCol =
+      hiddenColSet.size > 0 ? Math.max(...Array.from(hiddenColSet)) + 1 : 0;
     const colCount = Math.max(
       sheet.columns.length,
+      sheet.colWidths?.length ?? 0,
+      maxHiddenCol,
       ...safeRows.map((row) => row.length),
       1
     );
     const colWidths: XLSX.ColInfo[] = [];
     for (let c = 0; c < colCount; c++) {
-      let maxLen = 10;
-      for (let r = 0; r < safeRows.length; r++) {
-        const val = safeRows[r]?.[c];
-        if (val !== undefined && val !== null) {
-          const len = String(val).length;
-          if (len > maxLen) {
-            maxLen = len;
+      const explicitPx = sheet.colWidths?.[c];
+      const isHidden = hiddenColSet.has(c);
+      let colInfo: XLSX.ColInfo;
+      if (typeof explicitPx === 'number' && Number.isFinite(explicitPx) && explicitPx > 0) {
+        colInfo = { wpx: Math.round(explicitPx) };
+      } else {
+        let maxLen = 10;
+        for (let r = 0; r < safeRows.length; r++) {
+          const val = safeRows[r]?.[c];
+          if (val !== undefined && val !== null) {
+            const len = String(val).length;
+            if (len > maxLen) {
+              maxLen = len;
+            }
           }
         }
+        colInfo = { wch: Math.min(40, maxLen + 3) };
       }
-      colWidths.push({ wch: Math.min(40, maxLen + 3) });
+      if (isHidden) {
+        colInfo.hidden = true;
+      }
+      colWidths.push(colInfo);
     }
     ws['!cols'] = colWidths;
+
+    // Preserve explicit row heights (px) & hidden rows
+    const hiddenRowSet = new Set<number>(
+      Array.isArray(sheet.hiddenRows)
+        ? sheet.hiddenRows.filter(
+            (r): r is number => typeof r === 'number' && Number.isInteger(r) && r >= 0
+          )
+        : []
+    );
+    const maxHiddenRow =
+      hiddenRowSet.size > 0 ? Math.max(...Array.from(hiddenRowSet)) + 1 : 0;
+    const rowMetaCount = Math.max(sheet.rowHeights?.length ?? 0, maxHiddenRow);
+    if (rowMetaCount > 0) {
+      const rowMeta: XLSX.RowInfo[] = [];
+      for (let r = 0; r < rowMetaCount; r++) {
+        const hPx = sheet.rowHeights?.[r];
+        const info: XLSX.RowInfo = {};
+        if (typeof hPx === 'number' && Number.isFinite(hPx) && hPx > 0) {
+          info.hpx = Math.round(hPx);
+        }
+        if (hiddenRowSet.has(r)) {
+          info.hidden = true;
+        }
+        rowMeta.push(info);
+      }
+      ws['!rows'] = rowMeta;
+    }
 
     const uniqueName = buildUniqueSheetName(sheet.name, sheetIdx, usedSheetNames);
     XLSX.utils.book_append_sheet(wb, ws, uniqueName);
@@ -1345,10 +1404,24 @@ function buildExcelWorkbook(sheets: SpreadsheetSheet[]): XLSX.WorkBook {
   return wb;
 }
 
-export function exportExcelToXlsx(title: string, sheets: SpreadsheetSheet[]): void {
+function buildExcelBlob(sheets: SpreadsheetSheet[]): Blob {
   const wb = buildExcelWorkbook(sheets);
+  const output = XLSX.write(wb, {
+    type: 'array',
+    bookType: 'xlsx',
+  }) as ArrayBuffer | Uint8Array;
+  const bytes =
+    output instanceof Uint8Array ? new Uint8Array(output) : new Uint8Array(output);
+  return new Blob([bytes], { type: XLSX_MIME_TYPE });
+}
+
+export async function exportExcelToXlsx(
+  title: string,
+  sheets: SpreadsheetSheet[]
+): Promise<SaveFileResult> {
+  const blob = buildExcelBlob(sheets);
   const safeTitle = sanitizeFileName(title, 'bang-tinh', /\.xlsx$/i);
-  XLSX.writeFile(wb, `${safeTitle}.xlsx`);
+  return triggerBlobDownload(blob, `${safeTitle}.xlsx`, XLSX_MIME_TYPE);
 }
 
 // ============================================================================
@@ -1393,12 +1466,19 @@ async function imageUrlToDataUrl(src: string): Promise<string | null> {
   }
 }
 
+function isShapeBlock(block: SlideTextBlock): boolean {
+  return block.kind === 'shape' || Boolean(block.shapeKind);
+}
+
 function getEffectiveSlideBlocks(slide: SlidePreviewItem): SlideTextBlock[] {
   if (slide.blocks && slide.blocks.length > 0) {
     return slide.blocks.filter(
       (b) =>
-        b.text.trim().length > 0 ||
-        (b.kind === 'table' && Array.isArray(b.tableRows) && b.tableRows.length > 0)
+        (typeof b.text === 'string' && b.text.trim().length > 0) ||
+        isShapeBlock(b) ||
+        (b.kind === 'table' && Array.isArray(b.tableRows) && b.tableRows.length > 0) ||
+        (b.kind === 'chart' && Boolean(b.chartData && b.chartData.series.length > 0)) ||
+        (b.kind === 'media' && Boolean(b.mediaSrc))
     );
   }
 
@@ -1435,6 +1515,254 @@ function getEffectiveSlideBlocks(slide: SlidePreviewItem): SlideTextBlock[] {
     }
   }
   return fallback;
+}
+
+function mapShapeKindToPptxShape(
+  pptx: PptxGenJS,
+  shapeKind?: SlideShapeKind
+): PptxGenJS.SHAPE_NAME {
+  switch (shapeKind) {
+    case 'rect':
+      return pptx.ShapeType.rect;
+    case 'roundRect':
+      return pptx.ShapeType.roundRect;
+    case 'ellipse':
+      return pptx.ShapeType.ellipse;
+    case 'triangle':
+      return pptx.ShapeType.triangle;
+    case 'arrowRight':
+      return pptx.ShapeType.rightArrow;
+    case 'arrowLeft':
+      return pptx.ShapeType.leftArrow;
+    case 'arrowUp':
+      return pptx.ShapeType.upArrow;
+    case 'arrowDown':
+      return pptx.ShapeType.downArrow;
+    case 'star':
+      return pptx.ShapeType.star5;
+    case 'callout':
+      return pptx.ShapeType.wedgeRoundRectCallout;
+    case 'line':
+      return pptx.ShapeType.line;
+    default:
+      return pptx.ShapeType.rect;
+  }
+}
+
+function buildSafeHyperlink(url?: string): PptxGenJS.HyperlinkProps | undefined {
+  if (!url) {
+    return undefined;
+  }
+  const trimmed = url.trim();
+  if (/^https?:\/\//i.test(trimmed) || /^mailto:/i.test(trimmed)) {
+    return { url: trimmed };
+  }
+  return undefined;
+}
+
+function addShapeBlockToPptxSlide(
+  pptx: PptxGenJS,
+  slideObj: PptxGenJS.Slide,
+  block: SlideTextBlock,
+  box: { x: number; y: number; w: number; h: number },
+  defaultTextColor: string,
+  accentHex: string
+): void {
+  const shapeKind = block.shapeKind ?? 'rect';
+  const shapeName = mapShapeKindToPptxShape(pptx, shapeKind);
+  const fillHex = block.fillColor ? cssColorToHex6(block.fillColor) : undefined;
+  const borderHex = block.borderColor ? cssColorToHex6(block.borderColor) : undefined;
+  const lineWidth =
+    typeof block.borderWidthPx === 'number' &&
+    Number.isFinite(block.borderWidthPx) &&
+    block.borderWidthPx > 0
+      ? Math.max(0.5, Math.min(12, block.borderWidthPx * 0.75))
+      : undefined;
+  const rotate =
+    typeof block.rotationDeg === 'number' && Number.isFinite(block.rotationDeg)
+      ? Math.max(-360, Math.min(360, block.rotationDeg))
+      : undefined;
+  const hyperlink = buildSafeHyperlink(block.linkUrl);
+
+  try {
+    if (shapeKind === 'line') {
+      slideObj.addShape(pptx.ShapeType.line, {
+        x: box.x,
+        y: box.y + box.h / 2,
+        w: box.w,
+        h: 0,
+        line: {
+          color: borderHex || fillHex || accentHex || '475569',
+          width: lineWidth ?? 2,
+        },
+        ...(rotate !== undefined ? { rotate } : {}),
+        ...(hyperlink ? { hyperlink } : {}),
+      });
+      return;
+    }
+
+    const effectiveFillHex = fillHex ?? (!borderHex ? accentHex : undefined);
+    const shapeFill: PptxGenJS.ShapeFillProps | undefined = effectiveFillHex
+      ? { color: effectiveFillHex }
+      : undefined;
+    const shapeLine: PptxGenJS.ShapeLineProps = borderHex
+      ? { color: borderHex, width: lineWidth ?? 1.5 }
+      : { type: 'none' };
+    const shapeText = typeof block.text === 'string' ? block.text.trim() : '';
+
+    if (shapeText.length > 0) {
+      const autoContrastText = effectiveFillHex
+        ? getRelativeLuminance(effectiveFillHex) < 0.45
+          ? 'FFFFFF'
+          : '0F172A'
+        : defaultTextColor;
+      const textColor = normalizePptxHex(block.color, autoContrastText);
+      slideObj.addText(block.text, {
+        shape: shapeName,
+        x: box.x,
+        y: box.y,
+        w: box.w,
+        h: box.h,
+        fill: shapeFill,
+        line: shapeLine,
+        fontFace: block.fontFamily || 'Arial',
+        fontSize: Math.max(8, Math.min(72, Math.round(block.fontSize || 14))),
+        bold: Boolean(block.bold),
+        italic: Boolean(block.italic),
+        color: textColor,
+        align: block.align ?? 'center',
+        valign: block.valign ?? 'middle',
+        wrap: true,
+        margin: 0.06,
+        ...(shapeKind === 'roundRect' ? { rectRadius: 0.16 } : {}),
+        ...(rotate !== undefined ? { rotate } : {}),
+        ...(hyperlink ? { hyperlink } : {}),
+      });
+    } else {
+      slideObj.addShape(shapeName, {
+        x: box.x,
+        y: box.y,
+        w: box.w,
+        h: box.h,
+        fill: shapeFill,
+        line: shapeLine,
+        ...(shapeKind === 'roundRect' ? { rectRadius: 0.16 } : {}),
+        ...(rotate !== undefined ? { rotate } : {}),
+        ...(hyperlink ? { hyperlink } : {}),
+      });
+    }
+  } catch {
+    // Fallback cleanly to basic rectangle so export never crashes PptxGenJS
+    try {
+      slideObj.addShape(pptx.ShapeType.rect, {
+        x: box.x,
+        y: box.y,
+        w: Math.max(0.2, box.w),
+        h: Math.max(0.1, box.h),
+        fill: { color: fillHex ?? accentHex },
+        line: borderHex ? { color: borderHex, width: 1 } : { type: 'none' },
+      });
+    } catch {
+      // Ignore unrecoverable shape error
+    }
+  }
+}
+
+function addChartBlockToPptxSlide(
+  pptx: PptxGenJS,
+  slideObj: PptxGenJS.Slide,
+  block: SlideTextBlock,
+  box: { x: number; y: number; w: number; h: number },
+  accentHex: string
+): void {
+  const chart = block.chartData;
+  if (!chart || !Array.isArray(chart.series) || chart.series.length === 0) {
+    return;
+  }
+  try {
+    const categories =
+      Array.isArray(chart.categories) && chart.categories.length > 0
+        ? chart.categories.map((c) => String(c))
+        : chart.series[0].values.map((_, idx) => `Mục ${idx + 1}`);
+    const safeSeries = chart.series.map((s, idx) => ({
+      name: s.name || `Chuỗi ${idx + 1}`,
+      labels: categories,
+      values: categories.map((_, valIdx) => {
+        const n = s.values[valIdx];
+        return typeof n === 'number' && Number.isFinite(n) ? n : 0;
+      }),
+    }));
+    const chartColors = chart.series.map((s) => normalizePptxHex(s.color, accentHex));
+    const pptxChartType =
+      chart.chartType === 'line'
+        ? pptx.ChartType.line
+        : chart.chartType === 'pie'
+          ? pptx.ChartType.pie
+          : pptx.ChartType.bar;
+
+    slideObj.addChart(pptxChartType, safeSeries, {
+      x: box.x,
+      y: box.y,
+      w: Math.max(1.2, box.w),
+      h: Math.max(1.0, box.h),
+      ...(chart.title ? { title: chart.title, showTitle: true } : { showTitle: false }),
+      showLegend: true,
+      legendPos: 'b',
+      ...(chart.chartType === 'column' ? { barDir: 'col' } : {}),
+      chartColors,
+    });
+  } catch {
+    // Fallback cleanly to chart title placeholder if chart data is malformed
+    try {
+      slideObj.addText(chart.title || block.text || 'Biểu đồ', {
+        shape: pptx.ShapeType.roundRect,
+        x: box.x,
+        y: box.y,
+        w: box.w,
+        h: box.h,
+        fill: { color: 'F8FAFC' },
+        line: { color: 'CBD5E1', width: 1 },
+        color: '334155',
+        fontSize: 13,
+        align: 'center',
+        valign: 'middle',
+      });
+    } catch {
+      // Ignore fallback error
+    }
+  }
+}
+
+function addMediaBlockPlaceholderToPptxSlide(
+  pptx: PptxGenJS,
+  slideObj: PptxGenJS.Slide,
+  block: SlideTextBlock,
+  box: { x: number; y: number; w: number; h: number }
+): void {
+  const label =
+    (typeof block.text === 'string' && block.text.trim()) ||
+    (block.mediaKind === 'audio' ? 'Âm thanh nhúng' : 'Video nhúng');
+  const hyperlink = buildSafeHyperlink(block.mediaSrc || block.linkUrl);
+  try {
+    slideObj.addText(label, {
+      shape: pptx.ShapeType.roundRect,
+      x: box.x,
+      y: box.y,
+      w: box.w,
+      h: box.h,
+      fill: { color: '1E293B' },
+      line: { color: '475569', width: 1 },
+      color: 'F8FAFC',
+      fontSize: 13,
+      bold: true,
+      align: 'center',
+      valign: 'middle',
+      wrap: true,
+      ...(hyperlink ? { hyperlink } : {}),
+    });
+  } catch {
+    // Ignore media placeholder failure
+  }
 }
 
 function resolveSlideBackgroundHex(
@@ -1542,6 +1870,9 @@ async function buildPptxPresentation(
 
   for (const slide of sourceSlides) {
     const slideObj = pptx.addSlide();
+    if (slide.hidden === true) {
+      slideObj.hidden = true;
+    }
     const blocks = getEffectiveSlideBlocks(slide);
     const bgHex = resolveSlideBackgroundHex(slide, blocks);
     const isDarkBg = getRelativeLuminance(bgHex) < 0.45;
@@ -1595,9 +1926,14 @@ async function buildPptxPresentation(
       }
     }
 
-    const positionedBlocks = blocks.filter(
-      (b) => typeof b.xPct === 'number' && typeof b.yPct === 'number'
-    );
+    const positionedBlocks = blocks
+      .filter((b) => typeof b.xPct === 'number' && typeof b.yPct === 'number')
+      .map((block, index) => ({ block, index }))
+      .sort((a, b) => {
+        const zDiff = (a.block.zIndex ?? 0) - (b.block.zIndex ?? 0);
+        return zDiff !== 0 ? zDiff : a.index - b.index;
+      })
+      .map((item) => item.block);
     const unpositionedBlocks = blocks.filter(
       (b) => typeof b.xPct !== 'number' || typeof b.yPct !== 'number'
     );
@@ -1646,15 +1982,40 @@ async function buildPptxPresentation(
       }
     }
 
-    // 2. Export explicitly positioned text & table blocks (exact % -> inch mapping)
+    // 2. Export explicitly positioned text, shape, table, chart & media blocks (exact % -> inch mapping)
     for (const block of positionedBlocks) {
       const x = ((block.xPct ?? 0) / 100) * slideW;
       const y = ((block.yPct ?? 0) / 100) * slideH;
       const w = Math.max(0.4, ((block.wPct ?? 40) / 100) * slideW);
-      const h = Math.max(0.25, ((block.hPct ?? 12) / 100) * slideH);
+      const h = Math.max(
+        block.shapeKind === 'line' ? 0.05 : 0.25,
+        ((block.hPct ?? 12) / 100) * slideH
+      );
 
       if (block.kind === 'table' && block.tableRows && block.tableRows.length > 0) {
         addTableBlockToPptxSlide(slideObj, block, { x, y, w, h });
+        continue;
+      }
+
+      if (block.kind === 'chart' && block.chartData && block.chartData.series.length > 0) {
+        addChartBlockToPptxSlide(pptx, slideObj, block, { x, y, w, h }, accentHex);
+        continue;
+      }
+
+      if (block.kind === 'media') {
+        addMediaBlockPlaceholderToPptxSlide(pptx, slideObj, block, { x, y, w, h });
+        continue;
+      }
+
+      if (isShapeBlock(block)) {
+        addShapeBlockToPptxSlide(
+          pptx,
+          slideObj,
+          block,
+          { x, y, w, h },
+          defaultTextColor,
+          accentHex
+        );
         continue;
       }
 
@@ -1663,8 +2024,13 @@ async function buildPptxPresentation(
       const textColor = normalizePptxHex(block.color, fallbackColor);
       const fillHex = block.fillColor ? cssColorToHex6(block.fillColor) : undefined;
       const borderHex = block.borderColor ? cssColorToHex6(block.borderColor) : undefined;
+      const rotate =
+        typeof block.rotationDeg === 'number' && Number.isFinite(block.rotationDeg)
+          ? Math.max(-360, Math.min(360, block.rotationDeg))
+          : undefined;
+      const hyperlink = buildSafeHyperlink(block.linkUrl);
 
-      slideObj.addText(block.text, {
+      slideObj.addText(block.text ?? '', {
         x,
         y,
         w,
@@ -1680,6 +2046,8 @@ async function buildPptxPresentation(
         line: borderHex ? { color: borderHex, width: 1 } : undefined,
         wrap: true,
         margin: 0.04,
+        ...(rotate !== undefined ? { rotate } : {}),
+        ...(hyperlink ? { hyperlink } : {}),
       });
     }
 
@@ -1694,11 +2062,28 @@ async function buildPptxPresentation(
       const maxAvailableH = slideH * 0.86;
       const gap = 0.16;
 
-      const desiredHeights = unpositionedBlocks.map((block) =>
-        block.kind === 'table' && block.tableRows
-          ? Math.max(1.2, Math.min(3.5, block.tableRows.length * 0.42))
-          : estimateBlockHeightInches(block.text, block.fontSize, textW)
-      );
+      const desiredHeights = unpositionedBlocks.map((block) => {
+        if (block.kind === 'table' && block.tableRows) {
+          return Math.max(1.2, Math.min(3.5, block.tableRows.length * 0.42));
+        }
+        if (block.kind === 'chart') {
+          return 2.6;
+        }
+        if (block.kind === 'media') {
+          return 1.4;
+        }
+        if (isShapeBlock(block)) {
+          return block.shapeKind === 'line'
+            ? 0.24
+            : Math.max(
+                0.75,
+                block.text?.trim()
+                  ? estimateBlockHeightInches(block.text, block.fontSize, textW)
+                  : 1.0
+              );
+        }
+        return estimateBlockHeightInches(block.text ?? '', block.fontSize, textW);
+      });
       const totalDesiredH =
         desiredHeights.reduce((sum, h) => sum + h, 0) +
         gap * Math.max(0, unpositionedBlocks.length - 1);
@@ -1706,7 +2091,10 @@ async function buildPptxPresentation(
 
       let cursorY = startY;
       unpositionedBlocks.forEach((block, idx) => {
-        const scaledH = Math.max(0.35, desiredHeights[idx] * scale);
+        const scaledH = Math.max(
+          block.shapeKind === 'line' ? 0.15 : 0.35,
+          desiredHeights[idx] * scale
+        );
         if (block.kind === 'table' && block.tableRows && block.tableRows.length > 0) {
           addTableBlockToPptxSlide(slideObj, block, {
             x: textX,
@@ -1714,6 +2102,34 @@ async function buildPptxPresentation(
             w: textW,
             h: scaledH,
           });
+        } else if (
+          block.kind === 'chart' &&
+          block.chartData &&
+          block.chartData.series.length > 0
+        ) {
+          addChartBlockToPptxSlide(
+            pptx,
+            slideObj,
+            block,
+            { x: textX, y: cursorY, w: textW, h: scaledH },
+            accentHex
+          );
+        } else if (block.kind === 'media') {
+          addMediaBlockPlaceholderToPptxSlide(pptx, slideObj, block, {
+            x: textX,
+            y: cursorY,
+            w: textW,
+            h: scaledH,
+          });
+        } else if (isShapeBlock(block)) {
+          addShapeBlockToPptxSlide(
+            pptx,
+            slideObj,
+            block,
+            { x: textX, y: cursorY, w: textW, h: scaledH },
+            defaultTextColor,
+            accentHex
+          );
         } else {
           const scaledFont = Math.max(
             10,
@@ -1724,8 +2140,13 @@ async function buildPptxPresentation(
           const textColor = normalizePptxHex(block.color, fallbackColor);
           const fillHex = block.fillColor ? cssColorToHex6(block.fillColor) : undefined;
           const borderHex = block.borderColor ? cssColorToHex6(block.borderColor) : undefined;
+          const rotate =
+            typeof block.rotationDeg === 'number' && Number.isFinite(block.rotationDeg)
+              ? Math.max(-360, Math.min(360, block.rotationDeg))
+              : undefined;
+          const hyperlink = buildSafeHyperlink(block.linkUrl);
 
-          slideObj.addText(block.text, {
+          slideObj.addText(block.text ?? '', {
             x: textX,
             y: cursorY,
             w: textW,
@@ -1741,6 +2162,8 @@ async function buildPptxPresentation(
             line: borderHex ? { color: borderHex, width: 1 } : undefined,
             wrap: true,
             margin: 0.04,
+            ...(rotate !== undefined ? { rotate } : {}),
+            ...(hyperlink ? { hyperlink } : {}),
           });
         }
 
@@ -1805,14 +2228,32 @@ async function buildPptxPresentation(
   return pptx;
 }
 
+async function buildPptxBlob(
+  title: string,
+  slides: SlidePreviewItem[],
+  slideAspectRatio?: number
+): Promise<Blob> {
+  const pptx = await buildPptxPresentation(title, slides, slideAspectRatio);
+  const rawOut = await pptx.write({ outputType: 'blob' });
+  if (rawOut instanceof Blob) {
+    return rawOut.type === PPTX_MIME_TYPE
+      ? rawOut
+      : new Blob([rawOut], { type: PPTX_MIME_TYPE });
+  }
+  if (rawOut instanceof Uint8Array) {
+    return new Blob([new Uint8Array(rawOut)], { type: PPTX_MIME_TYPE });
+  }
+  return new Blob([rawOut], { type: PPTX_MIME_TYPE });
+}
+
 export async function exportSlidesToPptx(
   title: string,
   slides: SlidePreviewItem[],
   slideAspectRatio?: number
-): Promise<void> {
-  const pptx = await buildPptxPresentation(title, slides, slideAspectRatio);
+): Promise<SaveFileResult> {
+  const blob = await buildPptxBlob(title, slides, slideAspectRatio);
   const safeTitle = sanitizeFileName(title, 'bai-thuyet-trinh', /\.pptx$/i);
-  await pptx.writeFile({ fileName: `${safeTitle}.pptx` });
+  return triggerBlobDownload(blob, `${safeTitle}.pptx`, PPTX_MIME_TYPE);
 }
 
 // ============================================================================
@@ -1862,6 +2303,11 @@ export async function buildDocumentUploadPayload(
     const safeTitle = sanitizeFileName(doc.title, 'tai-lieu', /\.docx$/i);
     const fileName = `${safeTitle}.docx`;
 
+    if (!doc.hasLocalEdits && doc.rawArrayBuffer && doc.rawArrayBuffer.byteLength > 0) {
+      const mimeType = doc.originalMimeType || DOCX_MIME_TYPE;
+      const blob = new Blob([doc.rawArrayBuffer], { type: mimeType });
+      return { blob, fileName, mimeType };
+    }
     if (doc.wordHtml && doc.wordHtml.trim().length > 0) {
       const blob = await buildWordDocxBlob(doc.wordHtml);
       return { blob, fileName, mimeType: DOCX_MIME_TYPE };
@@ -1879,16 +2325,12 @@ export async function buildDocumentUploadPayload(
     const safeTitle = sanitizeFileName(doc.title, 'bang-tinh', /\.xlsx$/i);
     const fileName = `${safeTitle}.xlsx`;
 
-    const wb = buildExcelWorkbook(doc.sheets ?? []);
-    const output = XLSX.write(wb, {
-      type: 'array',
-      bookType: 'xlsx',
-    }) as ArrayBuffer | Uint8Array;
-    const bytes =
-      output instanceof Uint8Array
-        ? new Uint8Array(output)
-        : new Uint8Array(output);
-    const blob = new Blob([bytes], { type: XLSX_MIME_TYPE });
+    if (!doc.hasLocalEdits && doc.rawArrayBuffer && doc.rawArrayBuffer.byteLength > 0) {
+      const mimeType = doc.originalMimeType || XLSX_MIME_TYPE;
+      const blob = new Blob([doc.rawArrayBuffer], { type: mimeType });
+      return { blob, fileName, mimeType };
+    }
+    const blob = buildExcelBlob(doc.sheets ?? []);
     return { blob, fileName, mimeType: XLSX_MIME_TYPE };
   }
 
@@ -1896,29 +2338,27 @@ export async function buildDocumentUploadPayload(
     const safeTitle = sanitizeFileName(doc.title, 'bai-thuyet-trinh', /\.pptx$/i);
     const fileName = `${safeTitle}.pptx`;
 
-    const pptx = await buildPptxPresentation(
+    if (!doc.hasLocalEdits && doc.rawArrayBuffer && doc.rawArrayBuffer.byteLength > 0) {
+      const mimeType = doc.originalMimeType || PPTX_MIME_TYPE;
+      const blob = new Blob([doc.rawArrayBuffer], { type: mimeType });
+      return { blob, fileName, mimeType };
+    }
+    const blob = await buildPptxBlob(
       doc.title,
       doc.slidesPreview ?? [],
       doc.slideAspectRatio
     );
-    const rawOut = await pptx.write({ outputType: 'blob' });
-    let blob: Blob;
-    if (rawOut instanceof Blob) {
-      blob =
-        rawOut.type === PPTX_MIME_TYPE
-          ? rawOut
-          : new Blob([rawOut], { type: PPTX_MIME_TYPE });
-    } else if (rawOut instanceof Uint8Array) {
-      blob = new Blob([new Uint8Array(rawOut)], { type: PPTX_MIME_TYPE });
-    } else {
-      blob = new Blob([rawOut], { type: PPTX_MIME_TYPE });
-    }
     return { blob, fileName, mimeType: PPTX_MIME_TYPE };
   }
 
   // PDF
   const safeTitle = sanitizeFileName(doc.title, 'tai-lieu', /\.pdf$/i);
   const fileName = `${safeTitle}.pdf`;
+
+  if (doc.rawArrayBuffer && doc.rawArrayBuffer.byteLength > 0) {
+    const blob = new Blob([doc.rawArrayBuffer], { type: PDF_MIME_TYPE });
+    return { blob, fileName, mimeType: PDF_MIME_TYPE };
+  }
 
   if (doc.sourceFile) {
     const blob =
@@ -1944,12 +2384,90 @@ export async function buildDocumentUploadPayload(
     return { blob, fileName, mimeType: PDF_MIME_TYPE };
   }
 
-  if (doc.rawArrayBuffer && doc.rawArrayBuffer.byteLength > 0) {
-    const blob = new Blob([doc.rawArrayBuffer], { type: PDF_MIME_TYPE });
-    return { blob, fileName, mimeType: PDF_MIME_TYPE };
-  }
-
   throw new Error(
     'Tài liệu PDF mẫu chưa có tệp PDF nhị phân gốc để tải lên Google Drive. Vui lòng mở tệp .pdf thật từ máy của bạn.'
   );
+}
+
+function getDefaultMimeTypeForDocType(type: DocumentItem['type']): string {
+  switch (type) {
+    case 'docx':
+      return DOCX_MIME_TYPE;
+    case 'xlsx':
+      return XLSX_MIME_TYPE;
+    case 'pptx':
+      return PPTX_MIME_TYPE;
+    case 'pdf':
+      return PDF_MIME_TYPE;
+  }
+}
+
+function resolveOriginalDownloadFileName(doc: DocumentItem): string {
+  const defaultExt = `.${doc.type}`;
+  if (doc.originalFileName && doc.originalFileName.trim().length > 0) {
+    const cleanedOriginal = sanitizeFileName(doc.originalFileName, `tai-lieu${defaultExt}`);
+    return /\.[a-z0-9]{2,5}$/i.test(cleanedOriginal)
+      ? cleanedOriginal
+      : `${cleanedOriginal}${defaultExt}`;
+  }
+  const safeBase = sanitizeFileName(
+    doc.title,
+    'tai-lieu',
+    new RegExp(`\\.${doc.type}$`, 'i')
+  );
+  return `${safeBase}${defaultExt}`;
+}
+
+export async function exportOriginalDocumentBinary(
+  doc: DocumentItem,
+  binaryBuffer?: ArrayBuffer | null
+): Promise<SaveFileResult> {
+  const mimeType =
+    doc.originalMimeType ||
+    doc.sourceFile?.type ||
+    getDefaultMimeTypeForDocType(doc.type);
+  const fileName = resolveOriginalDownloadFileName(doc);
+
+  if (binaryBuffer && binaryBuffer.byteLength > 0) {
+    const blob = new Blob([binaryBuffer], { type: mimeType });
+    return saveFileUniversal(blob, fileName, { mimeType, shareTitle: doc.title });
+  }
+
+  if (doc.rawArrayBuffer && doc.rawArrayBuffer.byteLength > 0) {
+    const blob = new Blob([doc.rawArrayBuffer], { type: mimeType });
+    return saveFileUniversal(blob, fileName, { mimeType, shareTitle: doc.title });
+  }
+
+  if (doc.sourceFile && doc.sourceFile.size > 0) {
+    const blob =
+      doc.sourceFile.type === mimeType
+        ? doc.sourceFile
+        : new Blob([doc.sourceFile], { type: mimeType });
+    return saveFileUniversal(blob, fileName, { mimeType, shareTitle: doc.title });
+  }
+
+  if (doc.type === 'pdf') {
+    const pdfUrl = doc.fileUrl ?? doc.objectUrl;
+    if (pdfUrl) {
+      const response = await fetch(pdfUrl);
+      if (response.ok) {
+        const fetchedBlob = await response.blob();
+        const blob =
+          fetchedBlob.type === PDF_MIME_TYPE
+            ? fetchedBlob
+            : new Blob([fetchedBlob], { type: PDF_MIME_TYPE });
+        return saveFileUniversal(blob, fileName, {
+          mimeType: PDF_MIME_TYPE,
+          shareTitle: doc.title,
+        });
+      }
+    }
+  }
+
+  // Fallback for sample/newly authored documents without a stored original binary
+  const payload = await buildDocumentUploadPayload(doc);
+  return saveFileUniversal(payload.blob, payload.fileName, {
+    mimeType: payload.mimeType,
+    shareTitle: doc.title,
+  });
 }

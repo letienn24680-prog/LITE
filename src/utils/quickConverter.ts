@@ -1,12 +1,46 @@
 import html2canvas from 'html2canvas';
 import { PDFDocument } from 'pdf-lib';
-import type { DocumentItem, SlidePreviewItem, SpreadsheetSheet } from '../types/document';
-import { evaluateSheetMatrix } from './formulaEvaluator';
+import type {
+  CellStyle,
+  DocumentItem,
+  SlidePreviewItem,
+  SpreadsheetSheet,
+} from '../types/document';
+import { columnIndexToLetter, evaluateSheetMatrix } from './formulaEvaluator';
+import { saveFileUniversal } from './saveFileUniversal';
+import type { SaveFileResult } from './saveFileUniversal';
 
 const A4_PORTRAIT_WIDTH_PT = 595.28;
 const A4_PORTRAIT_HEIGHT_PT = 841.89;
 const A4_LANDSCAPE_WIDTH_PT = 841.89;
 const A4_LANDSCAPE_HEIGHT_PT = 595.28;
+
+export interface PdfDownloadResult {
+  blob: Blob;
+  fileName: string;
+  method: SaveFileResult['method'];
+  savedPath?: string;
+  message: string;
+}
+
+export interface MergePdfResult {
+  blob: Blob;
+  fileName: string;
+  totalPages: number;
+  method?: SaveFileResult['method'];
+  savedPath?: string;
+  message: string;
+}
+
+export interface SplitPdfResult {
+  blob: Blob;
+  fileName: string;
+  pageCount: number;
+  totalSourcePages: number;
+  method?: SaveFileResult['method'];
+  savedPath?: string;
+  message: string;
+}
 
 function sanitizePdfFileName(title: string, fallback: string): string {
   const cleaned = (title || '')
@@ -20,18 +54,18 @@ function sanitizePdfFileName(title: string, fallback: string): string {
   return `${truncated}.pdf`;
 }
 
-export function triggerBlobDownload(blob: Blob, fileName: string): void {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = fileName;
-  anchor.style.display = 'none';
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  window.setTimeout(() => {
-    URL.revokeObjectURL(url);
-  }, 1500);
+/**
+ * Universal blob download helper (replaces legacy 1.5s revokeObjectURL approach).
+ * Safe on Web (60s URL retain + fallback), Electron IPC, and Capacitor Android.
+ */
+export async function triggerBlobDownload(
+  blob: Blob,
+  fileName: string
+): Promise<SaveFileResult> {
+  return saveFileUniversal(blob, fileName, {
+    mimeType: blob.type || 'application/pdf',
+    shareTitle: fileName,
+  });
 }
 
 function escapeHtml(text: string): string {
@@ -75,7 +109,9 @@ function buildFallbackWordHtml(doc: DocumentItem): string {
     parts.push(
       `<h2>${escapeHtml(section.romanIndex)}. ${escapeHtml(section.title)}</h2>`
     );
-    const paragraphs = doc.wordParagraphs?.[section.id] ?? (section.summary ? [section.summary] : []);
+    const paragraphs =
+      doc.wordParagraphs?.[section.id] ??
+      (section.summary ? [section.summary] : []);
     for (const p of paragraphs) {
       parts.push(`<p>${escapeHtml(p)}</p>`);
     }
@@ -88,26 +124,67 @@ function buildFallbackWordHtml(doc: DocumentItem): string {
   return parts.join('');
 }
 
-function createOffscreenHost(widthPx: number, extraCss = ''): HTMLDivElement {
+/**
+ * Mounts an offscreen capture host at viewport origin (0, 0) wrapped in a 1x1 hidden veil.
+ * Keeping the target at (0, 0) with opacity: 1 prevents blank rasterization on Android WebView
+ * and Chromium builds that skip off-viewport layers at left: -12000px.
+ */
+function createOffscreenHost(
+  widthPx: number,
+  extraCss = ''
+): { wrapper: HTMLDivElement; host: HTMLDivElement } {
+  const wrapper = document.createElement('div');
+  wrapper.style.position = 'fixed';
+  wrapper.style.left = '0';
+  wrapper.style.top = '0';
+  wrapper.style.width = '1px';
+  wrapper.style.height = '1px';
+  wrapper.style.overflow = 'hidden';
+  wrapper.style.opacity = '0.001';
+  wrapper.style.pointerEvents = 'none';
+  wrapper.style.zIndex = '-9999';
+
   const host = document.createElement('div');
-  host.style.position = 'fixed';
-  host.style.left = '-12000px';
-  host.style.top = '0';
+  host.style.position = 'relative';
   host.style.width = `${widthPx}px`;
   host.style.backgroundColor = '#ffffff';
   host.style.color = '#1e293b';
-  host.style.zIndex = '-1';
-  host.style.pointerEvents = 'none';
+  host.style.opacity = '1';
+
   if (extraCss) {
     const styleEl = document.createElement('style');
     styleEl.textContent = extraCss;
     host.appendChild(styleEl);
   }
-  document.body.appendChild(host);
-  return host;
+
+  wrapper.appendChild(host);
+  document.body.appendChild(wrapper);
+  return { wrapper, host };
 }
 
-async function waitForImagesAndFonts(root: HTMLElement): Promise<void> {
+function preloadImageUrl(src: string | undefined): Promise<void> {
+  if (!src) {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    const done = () => {
+      img.onload = null;
+      img.onerror = null;
+      resolve();
+    };
+    img.onload = done;
+    img.onerror = done;
+    img.src = src;
+    window.setTimeout(done, 2500);
+  });
+}
+
+async function waitForPaintAndAssets(
+  root: HTMLElement,
+  extraImageUrls: string[] = []
+): Promise<void> {
   if (document.fonts?.ready) {
     try {
       await document.fonts.ready;
@@ -116,11 +193,11 @@ async function waitForImagesAndFonts(root: HTMLElement): Promise<void> {
     }
   }
   const images = Array.from(root.querySelectorAll('img'));
-  await Promise.all(
-    images.map(
+  await Promise.all([
+    ...images.map(
       (img) =>
         new Promise<void>((resolve) => {
-          if (img.complete) {
+          if (img.complete && img.naturalWidth > 0) {
             resolve();
             return;
           }
@@ -133,8 +210,27 @@ async function waitForImagesAndFonts(root: HTMLElement): Promise<void> {
           img.addEventListener('error', done);
           window.setTimeout(done, 2500);
         })
-    )
-  );
+    ),
+    ...extraImageUrls.map((url) => preloadImageUrl(url)),
+  ]);
+
+  await new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => resolve());
+    });
+  });
+}
+
+function computeSafeCaptureScale(
+  targetEl: HTMLElement,
+  desiredScale = 2
+): number {
+  const h = Math.max(1, targetEl.scrollHeight || targetEl.offsetHeight);
+  const w = Math.max(1, targetEl.scrollWidth || targetEl.offsetWidth);
+  // Keep canvas within safe WebView GPU limits (<= 14,000 px tall and <= 40M pixels)
+  const maxHeightScale = 14000 / h;
+  const maxAreaScale = Math.sqrt(36_000_000 / (w * h));
+  return Math.max(1, Math.min(desiredScale, maxHeightScale, maxAreaScale));
 }
 
 async function appendCanvasSlicedToPdf(
@@ -144,6 +240,10 @@ async function appendCanvasSlicedToPdf(
   pageHeightPt: number,
   marginPt = 0
 ): Promise<void> {
+  if (canvas.width <= 0 || canvas.height <= 0) {
+    throw new Error('Khung hình xuất PDF bị rỗng. Vui lòng thử lại.');
+  }
+
   const contentWidthPt = pageWidthPt - marginPt * 2;
   const contentHeightPt = pageHeightPt - marginPt * 2;
   const pxPerPt = canvas.width / contentWidthPt;
@@ -151,7 +251,10 @@ async function appendCanvasSlicedToPdf(
 
   let offsetY = 0;
   while (offsetY < canvas.height) {
-    const currentSliceHeight = Math.min(sliceHeightPx, canvas.height - offsetY);
+    const currentSliceHeight = Math.min(
+      sliceHeightPx,
+      canvas.height - offsetY
+    );
     const sliceCanvas = document.createElement('canvas');
     sliceCanvas.width = canvas.width;
     sliceCanvas.height = currentSliceHeight;
@@ -184,6 +287,10 @@ async function appendCanvasSlicedToPdf(
       width: contentWidthPt,
       height: drawHeightPt,
     });
+
+    // Release temporary slice canvas memory immediately
+    sliceCanvas.width = 0;
+    sliceCanvas.height = 0;
 
     offsetY += currentSliceHeight;
   }
@@ -222,21 +329,24 @@ async function renderWordDocumentToPdf(
     .lite-pdf-word img { max-width: 100%; height: auto; margin: 10px 0; border-radius: 6px; }
   `;
 
-  const host = createOffscreenHost(794, printCss);
+  const { wrapper, host } = createOffscreenHost(794, printCss);
   try {
     const bodyContainer = document.createElement('div');
     bodyContainer.className = 'lite-pdf-word';
     bodyContainer.innerHTML = htmlBody;
     host.appendChild(bodyContainer);
 
-    await waitForImagesAndFonts(bodyContainer);
+    await waitForPaintAndAssets(bodyContainer);
 
+    const captureScale = computeSafeCaptureScale(bodyContainer, 2);
     const canvas = await html2canvas(bodyContainer, {
-      scale: 2,
+      scale: captureScale,
       useCORS: true,
       backgroundColor: '#ffffff',
       logging: false,
       windowWidth: 794,
+      scrollX: 0,
+      scrollY: 0,
     });
 
     await appendCanvasSlicedToPdf(
@@ -247,8 +357,138 @@ async function renderWordDocumentToPdf(
       0
     );
   } finally {
-    host.remove();
+    wrapper.remove();
   }
+}
+
+function formatExcelPdfCellValue(
+  val: string | number | undefined,
+  numFmt?: string
+): string {
+  if (val === undefined || val === null) {
+    return '';
+  }
+  if (typeof val !== 'number') {
+    return String(val);
+  }
+  if (!Number.isFinite(val)) {
+    return '';
+  }
+  const fmt = numFmt?.trim();
+  if (!fmt || fmt === 'General' || fmt === '@') {
+    return new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 2 }).format(
+      val
+    );
+  }
+  const first = fmt.split(';')[0] ?? fmt;
+  const currencyTag = /\[\$([^\]-]+)(?:-[^\]]+)?\]/.exec(first);
+  const stripped = first
+    .replace(/"[^"]*"/g, '')
+    .replace(/\[[^\]]*\]/g, '')
+    .trim();
+
+  if (stripped.includes('%')) {
+    const decMatch = /\.([0#]+)/.exec(stripped);
+    const dec = decMatch ? Math.min(4, decMatch[1].length) : 0;
+    return `${new Intl.NumberFormat('vi-VN', {
+      minimumFractionDigits: dec,
+      maximumFractionDigits: dec,
+    }).format(val * 100)}%`;
+  }
+
+  if (/[dy]/i.test(stripped) && !/[0#]/.test(stripped) && val >= 1 && val <= 2_958_465) {
+    const utcMs = Date.UTC(1899, 11, 30) + Math.floor(val) * 86_400_000;
+    const d = new Date(utcMs);
+    if (!Number.isNaN(d.getTime())) {
+      const dd = String(d.getUTCDate()).padStart(2, '0');
+      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+      return `${dd}/${mm}/${d.getUTCFullYear()}`;
+    }
+  }
+
+  const currencySym =
+    currencyTag?.[1] ??
+    /([₫$€£¥])/.exec(first)?.[1] ??
+    (/\bVND\b/i.test(first) ? 'VND' : null);
+  const decMatch = /\.([0#]+)/.exec(stripped);
+  const dec = decMatch ? Math.min(4, decMatch[1].length) : 0;
+  if (currencySym) {
+    const numStr = new Intl.NumberFormat('vi-VN', {
+      minimumFractionDigits: dec,
+      maximumFractionDigits: dec,
+    }).format(val);
+    const symIdx = first.indexOf(currencySym);
+    const digitIdx = first.search(/[0#]/);
+    return symIdx >= 0 && digitIdx >= 0 && symIdx < digitIdx
+      ? `${currencySym}${numStr}`
+      : `${numStr} ${currencySym}`;
+  }
+  if (/[0#]/.test(stripped)) {
+    return new Intl.NumberFormat('vi-VN', {
+      minimumFractionDigits: dec,
+      maximumFractionDigits: dec,
+    }).format(val);
+  }
+  return new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 2 }).format(
+    val
+  );
+}
+
+function buildExcelCellCss(
+  style: CellStyle | undefined,
+  isNum: boolean
+): string {
+  const parts: string[] = [];
+  const align = style?.align ?? (isNum ? 'right' : 'left');
+  parts.push(`text-align:${align};`);
+  if (style?.valign) {
+    parts.push(`vertical-align:${style.valign};`);
+  } else {
+    parts.push('vertical-align:middle;');
+  }
+  if (style?.bold) {
+    parts.push('font-weight:700;');
+  }
+  if (style?.italic) {
+    parts.push('font-style:italic;');
+  }
+  if (style?.underline) {
+    parts.push('text-decoration:underline;');
+  }
+  if (style?.bgColor) {
+    parts.push(`background-color:${style.bgColor};`);
+  }
+  if (style?.textColor) {
+    parts.push(`color:${style.textColor};`);
+  }
+  if (
+    typeof style?.fontSize === 'number' &&
+    Number.isFinite(style.fontSize) &&
+    style.fontSize > 0
+  ) {
+    parts.push(
+      `font-size:${Math.max(9, Math.min(36, Math.round(style.fontSize)))}px;`
+    );
+  }
+  if (style?.fontFamily) {
+    parts.push(`font-family:${style.fontFamily};`);
+  }
+  if (style?.wrapText) {
+    parts.push('white-space:pre-wrap;word-break:break-word;');
+  }
+  if (style?.borderTop) {
+    parts.push(`border-top:${style.borderTop};`);
+  }
+  if (style?.borderRight) {
+    parts.push(`border-right:${style.borderRight};`);
+  }
+  if (style?.borderBottom) {
+    parts.push(`border-bottom:${style.borderBottom};`);
+  }
+  if (style?.borderLeft) {
+    parts.push(`border-left:${style.borderLeft};`);
+  }
+  return parts.join('');
 }
 
 async function renderExcelSheetsToPdf(
@@ -273,12 +513,66 @@ async function renderExcelSheetsToPdf(
       ...sheet.rows.map((r) => r.length),
       1
     );
-    const useLandscape = colCount > 5;
+    const totalColWidthPx =
+      sheet.colWidths && sheet.colWidths.length > 0
+        ? sheet.colWidths.reduce((sum, w) => sum + (w > 20 ? w : 100), 36)
+        : colCount * 120 + 36;
+    const useLandscape = colCount > 5 || totalColWidthPx > 720;
     const hostWidthPx = useLandscape ? 1122 : 794;
     const pageW = useLandscape ? A4_LANDSCAPE_WIDTH_PT : A4_PORTRAIT_WIDTH_PT;
     const pageH = useLandscape ? A4_LANDSCAPE_HEIGHT_PT : A4_PORTRAIT_HEIGHT_PT;
 
     const evaluated = evaluateSheetMatrix(sheet.rows);
+
+    // Build merge lookup respecting sheet.merges
+    const mergeOrigins = new Map<string, { rowSpan: number; colSpan: number }>();
+    const mergeCovered = new Set<string>();
+    if (sheet.merges && sheet.merges.length > 0) {
+      const maxRow = Math.max(0, evaluated.length - 1);
+      const maxCol = colCount - 1;
+      for (const m of sheet.merges) {
+        const sR = Math.max(0, Math.min(maxRow, m.s.r));
+        const eR = Math.max(sR, Math.min(maxRow, m.e.r));
+        const sC = Math.max(0, Math.min(maxCol, m.s.c));
+        const eC = Math.max(sC, Math.min(maxCol, m.e.c));
+        if (eR === sR && eC === sC) {
+          continue;
+        }
+        const originKey = `${sR}:${sC}`;
+        if (mergeCovered.has(originKey)) {
+          continue;
+        }
+        mergeOrigins.set(originKey, {
+          rowSpan: eR - sR + 1,
+          colSpan: eC - sC + 1,
+        });
+        for (let r = sR; r <= eR; r += 1) {
+          for (let c = sC; c <= eC; c += 1) {
+            if (r === sR && c === sC) {
+              continue;
+            }
+            mergeCovered.add(`${r}:${c}`);
+          }
+        }
+      }
+    }
+
+    const colgroupHtml = (() => {
+      const cols: string[] = ['<col style="width:36px;" />'];
+      const availableW = hostWidthPx - 80 - 36;
+      const rawWidths = Array.from({ length: colCount }, (_, idx) => {
+        const w = sheet.colWidths?.[idx];
+        return typeof w === 'number' && Number.isFinite(w) && w > 20 ? w : 110;
+      });
+      const sumW = rawWidths.reduce((acc, w) => acc + w, 0) || 1;
+      for (const w of rawWidths) {
+        const pct = ((w / sumW) * 100).toFixed(2);
+        const scaledPx = Math.max(42, Math.round((w / sumW) * availableW));
+        cols.push(`<col style="width:${pct}%;min-width:${scaledPx}px;" />`);
+      }
+      return `<colgroup>${cols.join('')}</colgroup>`;
+    })();
+
     const printCss = `
       .lite-pdf-sheet {
         width: ${hostWidthPx}px;
@@ -298,41 +592,48 @@ async function renderExcelSheetsToPdf(
       }
       .lite-pdf-sheet-title { font-size: 18px; font-weight: 700; color: #0f172a; margin: 0; }
       .lite-pdf-sheet-sub { font-size: 12px; font-weight: 600; color: #15803d; }
-      .lite-pdf-sheet table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-      .lite-pdf-sheet th, .lite-pdf-sheet td { border: 1px solid #cbd5e1; padding: 6px 8px; word-break: break-word; }
+      .lite-pdf-sheet table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
+      .lite-pdf-sheet th, .lite-pdf-sheet td { border: 1px solid #cbd5e1; padding: 5px 7px; word-break: break-word; overflow-wrap: break-word; }
       .lite-pdf-sheet thead th { background: #f1f5f9; color: #475569; font-weight: 700; text-align: center; font-size: 11px; }
-      .lite-pdf-sheet tbody td.row-num { background: #f8fafc; color: #64748b; text-align: center; font-weight: 600; width: 34px; }
+      .lite-pdf-sheet tbody td.row-num { background: #f8fafc; color: #64748b; text-align: center; font-weight: 600; width: 36px; }
     `;
 
-    const host = createOffscreenHost(hostWidthPx, printCss);
+    const { wrapper, host } = createOffscreenHost(hostWidthPx, printCss);
     try {
       const container = document.createElement('div');
       container.className = 'lite-pdf-sheet';
 
       const headerRowHtml = Array.from({ length: colCount }, (_, cIdx) => {
-        const letter = sheet.columns[cIdx] ?? String.fromCharCode(65 + cIdx);
+        const letter = sheet.columns[cIdx] ?? columnIndexToLetter(cIdx);
         return `<th>${escapeHtml(letter)}</th>`;
       }).join('');
 
       const rowsHtml = evaluated
         .map((row, rIdx) => {
+          const rowHeight = sheet.rowHeights?.[rIdx];
+          const trStyle =
+            typeof rowHeight === 'number' && rowHeight > 16
+              ? ` style="height:${Math.round(rowHeight)}px;"`
+              : '';
           const cells = Array.from({ length: colCount }, (__, cIdx) => {
+            const key = `${rIdx}:${cIdx}`;
+            if (mergeCovered.has(key)) {
+              return '';
+            }
+            const span = mergeOrigins.get(key);
+            const spanAttrs = span
+              ? `${span.rowSpan > 1 ? ` rowspan="${span.rowSpan}"` : ''}${
+                  span.colSpan > 1 ? ` colspan="${span.colSpan}"` : ''
+                }`
+              : '';
             const val = row[cIdx];
-            const style = sheet.cellStyles?.[`${rIdx}:${cIdx}`];
+            const style = sheet.cellStyles?.[key];
             const isNum = typeof val === 'number';
-            const align = style?.align ?? (isNum ? 'right' : 'left');
-            const weight = style?.bold ? 'font-weight:700;' : '';
-            const formatted =
-              val === undefined || val === null
-                ? ''
-                : isNum
-                  ? new Intl.NumberFormat('vi-VN', {
-                      maximumFractionDigits: 2,
-                    }).format(val)
-                  : String(val);
-            return `<td style="text-align:${align};${weight}">${escapeHtml(formatted)}</td>`;
+            const cellCss = buildExcelCellCss(style, isNum);
+            const formatted = formatExcelPdfCellValue(val, style?.numFmt);
+            return `<td${spanAttrs} style="${cellCss}">${escapeHtml(formatted)}</td>`;
           }).join('');
-          return `<tr><td class="row-num">${rIdx + 1}</td>${cells}</tr>`;
+          return `<tr${trStyle}><td class="row-num">${rIdx + 1}</td>${cells}</tr>`;
         })
         .join('');
 
@@ -342,27 +643,62 @@ async function renderExcelSheetsToPdf(
           <span class="lite-pdf-sheet-sub">${escapeHtml(sheet.name)}</span>
         </div>
         <table>
+          ${colgroupHtml}
           <thead><tr><th>#</th>${headerRowHtml}</tr></thead>
           <tbody>${rowsHtml}</tbody>
         </table>
       `;
       host.appendChild(container);
 
-      await waitForImagesAndFonts(container);
+      await waitForPaintAndAssets(container);
 
+      const captureScale = computeSafeCaptureScale(container, 2);
       const canvas = await html2canvas(container, {
-        scale: 2,
+        scale: captureScale,
         useCORS: true,
         backgroundColor: '#ffffff',
         logging: false,
         windowWidth: hostWidthPx,
+        scrollX: 0,
+        scrollY: 0,
       });
 
       await appendCanvasSlicedToPdf(pdfDoc, canvas, pageW, pageH, 0);
     } finally {
-      host.remove();
+      wrapper.remove();
     }
   }
+}
+
+function renderRichParagraphsMarkup(
+  block: NonNullable<SlidePreviewItem['blocks']>[number],
+  scaleRatio: number
+): string {
+  if (!block.richParagraphs || block.richParagraphs.length === 0) {
+    return escapeHtml(block.text);
+  }
+  return block.richParagraphs
+    .map((para) => {
+      const pAlign = para.align ?? block.align ?? 'left';
+      const bullet = para.bullet ? `${escapeHtml(para.bullet)} ` : '';
+      const indentPx = para.level && para.level > 0 ? para.level * 18 : 0;
+      const runsHtml = para.runs
+        .map((run) => {
+          const fs = Math.max(
+            10,
+            Math.round((run.fontSize || block.fontSize || 16) * scaleRatio)
+          );
+          const fw = run.bold ?? block.bold ? 700 : 400;
+          const fst = run.italic ?? block.italic ? 'italic' : 'normal';
+          const td = run.underline ? 'underline' : 'none';
+          const col = run.color ?? block.color ?? '#FFFFFF';
+          const ff = run.fontFamily ?? block.fontFamily ?? "'Be Vietnam Pro','Inter',sans-serif";
+          return `<span style="font-size:${fs}px;font-weight:${fw};font-style:${fst};text-decoration:${td};color:${col};font-family:${ff};">${escapeHtml(run.text)}</span>`;
+        })
+        .join('');
+      return `<div style="text-align:${pAlign};padding-left:${indentPx}px;margin-bottom:4px;line-height:1.35;">${bullet}${runsHtml}</div>`;
+    })
+    .join('');
 }
 
 function buildSlideHtmlMarkup(
@@ -373,7 +709,7 @@ function buildSlideHtmlMarkup(
 ): string {
   const accent = slide.accentColor || '#4F46E5';
   const bgStyle = slide.backgroundImageSrc
-    ? `background-image:url('${slide.backgroundImageSrc}');background-size:cover;background-position:center;`
+    ? `background-color:${slide.backgroundColor || '#ffffff'};background-image:url('${slide.backgroundImageSrc}');background-size:cover;background-position:center;`
     : slide.backgroundGradient
       ? `background-image:${slide.backgroundGradient};`
       : slide.backgroundColor
@@ -385,6 +721,8 @@ function buildSlideHtmlMarkup(
     Boolean(slide.blocks?.some((b) => b.xPct !== undefined && b.yPct !== undefined)) ||
     Boolean(slide.images?.some((img) => img.xPct !== undefined && img.yPct !== undefined));
 
+  const scaleRatio = widthPx / 960;
+
   if (hasPositionedContent) {
     const imagesHtml = (slide.images ?? [])
       .map((img) => {
@@ -392,7 +730,8 @@ function buildSlideHtmlMarkup(
         const y = img.yPct ?? 18;
         const w = img.wPct ?? 36;
         const h = img.hPct ?? 52;
-        return `<img src="${escapeHtml(img.src)}" alt="${escapeHtml(img.alt ?? '')}" style="position:absolute;left:${x}%;top:${y}%;width:${w}%;height:${h}%;object-fit:contain;border-radius:${img.borderRadius ?? '6px'};" />`;
+        const rot = img.rotationDeg ? `transform:rotate(${img.rotationDeg}deg);` : '';
+        return `<img src="${escapeHtml(img.src)}" alt="${escapeHtml(img.alt ?? '')}" style="position:absolute;left:${x}%;top:${y}%;width:${w}%;height:${h}%;object-fit:contain;border-radius:${img.borderRadius ?? '6px'};${rot}" />`;
       })
       .join('');
 
@@ -427,10 +766,13 @@ function buildSlideHtmlMarkup(
               return `<tr>${cells}</tr>`;
             })
             .join('');
-          return `<div style="position:absolute;left:${x}%;top:${y}%;width:${w}%;height:${h}%;overflow:hidden;"><table style="width:100%;height:100%;border-collapse:collapse;font-size:${Math.round((block.fontSize || 14) * (widthPx / 960))}px;">${rowsMarkup}</table></div>`;
+          return `<div style="position:absolute;left:${x}%;top:${y}%;width:${w}%;min-height:${h}%;overflow:visible;"><table style="width:100%;border-collapse:collapse;font-size:${Math.round((block.fontSize || 14) * scaleRatio)}px;">${rowsMarkup}</table></div>`;
         }
 
-        const scaledFont = Math.round((block.fontSize || 18) * (widthPx / 960));
+        const scaledFont = Math.max(
+          11,
+          Math.round((block.fontSize || 18) * scaleRatio)
+        );
         const borderCss = block.borderColor
           ? `border:${block.borderWidthPx ?? 1}px solid ${block.borderColor};`
           : '';
@@ -439,8 +781,12 @@ function buildSlideHtmlMarkup(
           : block.fillColor
             ? `background-color:${block.fillColor};`
             : '';
+        const rotCss = block.rotationDeg
+          ? `transform:rotate(${block.rotationDeg}deg);`
+          : '';
+        const innerContent = renderRichParagraphsMarkup(block, scaleRatio);
 
-        return `<div style="position:absolute;left:${x}%;top:${y}%;width:${w}%;height:${h}%;display:flex;flex-direction:column;justify-content:${justifyV};padding:6px 10px;box-sizing:border-box;overflow:hidden;border-radius:${block.borderRadius ?? '6px'};${fillCss}${borderCss}font-family:${block.fontFamily ?? "'Be Vietnam Pro','Inter',sans-serif"};font-size:${scaledFont}px;font-weight:${block.bold ? 700 : 400};font-style:${block.italic ? 'italic' : 'normal'};color:${block.color ?? '#FFFFFF'};text-align:${block.align ?? 'left'};white-space:pre-wrap;line-height:1.3;">${escapeHtml(block.text)}</div>`;
+        return `<div style="position:absolute;left:${x}%;top:${y}%;width:${w}%;min-height:${h}%;display:flex;flex-direction:column;justify-content:${justifyV};padding:6px 10px;box-sizing:border-box;overflow:visible;border-radius:${block.borderRadius ?? '6px'};${fillCss}${borderCss}${rotCss}font-family:${block.fontFamily ?? "'Be Vietnam Pro','Inter',sans-serif"};font-size:${scaledFont}px;font-weight:${block.bold ? 700 : 400};font-style:${block.italic ? 'italic' : 'normal'};color:${block.color ?? '#FFFFFF'};text-align:${block.align ?? 'left'};white-space:pre-wrap;word-break:break-word;line-height:1.35;">${innerContent}</div>`;
       })
       .join('');
 
@@ -490,29 +836,46 @@ async function renderSlidesToPdf(
 
   const baseWidthPx = 1280;
   for (const slide of slides) {
-    const ratio = slide.slideWidthRatio ?? doc.slideAspectRatio ?? 16 / 9;
+    const rawRatio = slide.slideWidthRatio ?? doc.slideAspectRatio ?? 16 / 9;
+    const ratio =
+      Number.isFinite(rawRatio) && rawRatio >= 1.1 && rawRatio <= 2.4
+        ? rawRatio
+        : 16 / 9;
     const heightPx = Math.max(480, Math.round(baseWidthPx / ratio));
-    const pageW = 960;
-    const pageH = Math.round(pageW / ratio);
+    const pageW = A4_LANDSCAPE_WIDTH_PT;
+    const pageH = Math.round((A4_LANDSCAPE_WIDTH_PT / ratio) * 100) / 100;
 
-    const host = createOffscreenHost(baseWidthPx);
+    const { wrapper, host } = createOffscreenHost(baseWidthPx);
     try {
       const slideEl = document.createElement('div');
-      slideEl.innerHTML = buildSlideHtmlMarkup(slide, doc, baseWidthPx, heightPx);
+      slideEl.innerHTML = buildSlideHtmlMarkup(
+        slide,
+        doc,
+        baseWidthPx,
+        heightPx
+      );
       const targetNode = (slideEl.firstElementChild as HTMLElement) ?? slideEl;
       host.appendChild(targetNode);
 
-      await waitForImagesAndFonts(targetNode);
+      const bgUrls = slide.backgroundImageSrc ? [slide.backgroundImageSrc] : [];
+      await waitForPaintAndAssets(targetNode, bgUrls);
 
       const canvas = await html2canvas(targetNode, {
-        scale: 1.75,
+        scale: 2,
         useCORS: true,
-        backgroundColor: '#161D2E',
+        backgroundColor: '#ffffff',
         logging: false,
         windowWidth: baseWidthPx,
+        windowHeight: heightPx,
+        scrollX: 0,
+        scrollY: 0,
       });
 
-      const jpgDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+      if (canvas.width <= 0 || canvas.height <= 0) {
+        throw new Error(`Không thể chụp nội dung Slide ${slide.index}.`);
+      }
+
+      const jpgDataUrl = canvas.toDataURL('image/jpeg', 0.93);
       const embedded = await pdfDoc.embedJpg(jpgDataUrl);
       const pdfPage = pdfDoc.addPage([pageW, pageH]);
       pdfPage.drawImage(embedded, {
@@ -522,7 +885,7 @@ async function renderSlidesToPdf(
         height: pageH,
       });
     } finally {
-      host.remove();
+      wrapper.remove();
     }
   }
 }
@@ -533,6 +896,13 @@ export async function exportDocumentToPdf(
   const fileName = sanitizePdfFileName(doc.title, 'tai-lieu');
 
   if (doc.type === 'pdf') {
+    if (doc.sourceFile) {
+      const buffer = await doc.sourceFile.arrayBuffer();
+      return {
+        blob: new Blob([buffer], { type: 'application/pdf' }),
+        fileName,
+      };
+    }
     if (doc.rawArrayBuffer && doc.rawArrayBuffer.byteLength > 0) {
       return {
         blob: new Blob([doc.rawArrayBuffer.slice(0)], {
@@ -575,10 +945,19 @@ export async function exportDocumentToPdf(
 
 export async function downloadDocumentAsPdf(
   doc: DocumentItem
-): Promise<{ blob: Blob; fileName: string }> {
+): Promise<PdfDownloadResult> {
   const result = await exportDocumentToPdf(doc);
-  triggerBlobDownload(result.blob, result.fileName);
-  return result;
+  const saveRes = await saveFileUniversal(result.blob, result.fileName, {
+    mimeType: 'application/pdf',
+    shareTitle: doc.title || result.fileName,
+  });
+  return {
+    blob: result.blob,
+    fileName: result.fileName,
+    method: saveRes.method,
+    savedPath: saveRes.savedPath,
+    message: saveRes.message,
+  };
 }
 
 export async function inspectPdfPageCount(file: File): Promise<number> {
@@ -589,8 +968,9 @@ export async function inspectPdfPageCount(file: File): Promise<number> {
 
 export async function mergePdfFiles(
   files: File[],
-  outputTitle = 'Tai-lieu-gop'
-): Promise<{ blob: Blob; fileName: string; totalPages: number }> {
+  outputTitle = 'Tai-lieu-gop',
+  options?: { download?: boolean }
+): Promise<MergePdfResult> {
   if (files.length < 2) {
     throw new Error('Vui lòng chọn ít nhất 2 tệp PDF để gộp.');
   }
@@ -608,10 +988,29 @@ export async function mergePdfFiles(
   const blob = new Blob([new Uint8Array(pdfBytes)], {
     type: 'application/pdf',
   });
+  const fileName = sanitizePdfFileName(outputTitle, 'Tai-lieu-gop');
+  const totalPages = mergedPdf.getPageCount();
+
+  if (options?.download) {
+    const saveRes = await saveFileUniversal(blob, fileName, {
+      mimeType: 'application/pdf',
+      shareTitle: fileName,
+    });
+    return {
+      blob,
+      fileName,
+      totalPages,
+      method: saveRes.method,
+      savedPath: saveRes.savedPath,
+      message: saveRes.message,
+    };
+  }
+
   return {
     blob,
-    fileName: sanitizePdfFileName(outputTitle, 'Tai-lieu-gop'),
-    totalPages: mergedPdf.getPageCount(),
+    fileName,
+    totalPages,
+    message: `Đã gộp ${totalPages} trang thành tệp "${fileName}".`,
   };
 }
 
@@ -650,7 +1049,11 @@ export function parsePageRangeExpression(
         );
       }
       const step = start <= end ? 1 : -1;
-      for (let page = start; step > 0 ? page <= end : page >= end; page += step) {
+      for (
+        let page = start;
+        step > 0 ? page <= end : page >= end;
+        page += step
+      ) {
         const zeroIdx = page - 1;
         if (!zeroBasedSet.has(zeroIdx)) {
           zeroBasedSet.add(zeroIdx);
@@ -689,17 +1092,16 @@ export function parsePageRangeExpression(
 
 export async function splitPdfFileByRanges(
   file: File,
-  rangeInput: string
-): Promise<{
-  blob: Blob;
-  fileName: string;
-  pageCount: number;
-  totalSourcePages: number;
-}> {
+  rangeInput: string,
+  options?: { download?: boolean }
+): Promise<SplitPdfResult> {
   const buffer = await file.arrayBuffer();
   const srcPdf = await PDFDocument.load(buffer, { ignoreEncryption: true });
   const totalSourcePages = srcPdf.getPageCount();
-  const zeroBasedIndices = parsePageRangeExpression(rangeInput, totalSourcePages);
+  const zeroBasedIndices = parsePageRangeExpression(
+    rangeInput,
+    totalSourcePages
+  );
 
   const outPdf = await PDFDocument.create();
   const copiedPages = await outPdf.copyPages(srcPdf, zeroBasedIndices);
@@ -710,11 +1112,30 @@ export async function splitPdfFileByRanges(
     type: 'application/pdf',
   });
   const baseName = file.name.replace(/\.pdf$/i, '') || 'tai-lieu';
+  const fileName = sanitizePdfFileName(`${baseName}-tach-trang`, 'tai-lieu-tach');
+  const pageCount = outPdf.getPageCount();
+
+  if (options?.download) {
+    const saveRes = await saveFileUniversal(blob, fileName, {
+      mimeType: 'application/pdf',
+      shareTitle: fileName,
+    });
+    return {
+      blob,
+      fileName,
+      pageCount,
+      totalSourcePages,
+      method: saveRes.method,
+      savedPath: saveRes.savedPath,
+      message: saveRes.message,
+    };
+  }
 
   return {
     blob,
-    fileName: sanitizePdfFileName(`${baseName}-tach-trang`, 'tai-lieu-tach'),
-    pageCount: outPdf.getPageCount(),
+    fileName,
+    pageCount,
     totalSourcePages,
+    message: `Đã tách ${pageCount}/${totalSourcePages} trang thành tệp "${fileName}".`,
   };
 }

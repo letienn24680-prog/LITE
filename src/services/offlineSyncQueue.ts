@@ -1,10 +1,11 @@
 import type { DocumentItem, SlidePreviewItem } from '../types/document';
 
 const DB_NAME = 'lite_offline_sync_db_v1';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_DRAFTS = 'drafts';
 const STORE_PENDING = 'pendingUploads';
 const STORE_VERSIONS = 'versions';
+const STORE_ORIGINAL_BINARIES = 'originalBinaries';
 const MAX_VERSIONS_PER_DOC = 10;
 
 export type PendingUploadTarget = 'supabase' | 'drive' | 'both';
@@ -41,10 +42,21 @@ export interface DocumentVersionRecord {
   documentSnapshot: DocumentItem;
 }
 
+export interface OriginalBinaryRecord {
+  docKey: string;
+  userId: string;
+  docId: string;
+  fileName: string;
+  mimeType: string;
+  buffer: ArrayBuffer;
+  savedAt: string;
+}
+
 // In-memory fallback when IndexedDB is unavailable (private mode / tests)
 const memoryDrafts = new Map<string, LocalDraftRecord>();
 const memoryPending = new Map<string, PendingUploadTask>();
 const memoryVersions = new Map<string, DocumentVersionRecord>();
+const memoryOriginalBinaries = new Map<string, OriginalBinaryRecord>();
 
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 
@@ -203,6 +215,13 @@ function openOfflineDb(): Promise<IDBDatabase | null> {
           });
           versionsStore.createIndex('docKey', 'docKey', { unique: false });
           versionsStore.createIndex('userId', 'userId', { unique: false });
+        }
+        if (!db.objectStoreNames.contains(STORE_ORIGINAL_BINARIES)) {
+          const binaryStore = db.createObjectStore(STORE_ORIGINAL_BINARIES, {
+            keyPath: 'docKey',
+          });
+          binaryStore.createIndex('userId', 'userId', { unique: false });
+          binaryStore.createIndex('docId', 'docId', { unique: false });
         }
       };
 
@@ -639,4 +658,106 @@ export async function listDocumentVersions(
     .filter((item) => item.docKey === docKey)
     .sort((a, b) => Date.parse(b.savedAt) - Date.parse(a.savedAt))
     .slice(0, MAX_VERSIONS_PER_DOC);
+}
+
+export async function saveOriginalFileBinary(
+  userId: string | null | undefined,
+  docId: string,
+  buffer: ArrayBuffer,
+  fileName: string,
+  mimeType: string
+): Promise<void> {
+  const safeBuffer = cloneArrayBufferSafe(buffer);
+  if (!safeBuffer) {
+    return;
+  }
+
+  const normalizedUser = normalizeSyncUserId(userId);
+  const docKey = makeUserDocKey(normalizedUser, docId);
+  const record: OriginalBinaryRecord = {
+    docKey,
+    userId: normalizedUser,
+    docId,
+    fileName: fileName.trim() || `${docId}`,
+    mimeType: mimeType.trim() || 'application/octet-stream',
+    buffer: safeBuffer,
+    savedAt: new Date().toISOString(),
+  };
+
+  memoryOriginalBinaries.set(docKey, record);
+
+  const db = await openOfflineDb();
+  if (!db) {
+    return;
+  }
+
+  try {
+    const tx = db.transaction(STORE_ORIGINAL_BINARIES, 'readwrite');
+    tx.objectStore(STORE_ORIGINAL_BINARIES).put(record);
+    await waitForTransaction(tx);
+  } catch {
+    // Keep memory fallback
+  }
+}
+
+export async function loadOriginalFileBinary(
+  userId: string | null | undefined,
+  docId: string
+): Promise<OriginalBinaryRecord | null> {
+  const docKey = makeUserDocKey(userId, docId);
+  const db = await openOfflineDb();
+
+  if (db) {
+    try {
+      const tx = db.transaction(STORE_ORIGINAL_BINARIES, 'readonly');
+      const record = await runIdbRequest<OriginalBinaryRecord | undefined>(
+        tx.objectStore(STORE_ORIGINAL_BINARIES).get(docKey)
+      );
+      if (record && record.buffer instanceof ArrayBuffer) {
+        const cloned = cloneArrayBufferSafe(record.buffer);
+        if (cloned) {
+          return {
+            ...record,
+            buffer: cloned,
+          };
+        }
+      }
+    } catch {
+      // Fallback to memory map
+    }
+  }
+
+  const cached = memoryOriginalBinaries.get(docKey);
+  if (!cached) {
+    return null;
+  }
+  const cloned = cloneArrayBufferSafe(cached.buffer);
+  if (!cloned) {
+    return null;
+  }
+  return {
+    ...cached,
+    buffer: cloned,
+  };
+}
+
+export async function deleteOriginalFileBinary(
+  userId: string | null | undefined,
+  docId: string
+): Promise<void> {
+  const docKey = makeUserDocKey(userId, docId);
+  memoryOriginalBinaries.delete(docKey);
+
+  const db = await openOfflineDb();
+  if (!db) {
+    return;
+  }
+
+  try {
+    const tx = db.transaction(STORE_ORIGINAL_BINARIES, 'readwrite');
+    tx.objectStore(STORE_ORIGINAL_BINARIES).delete(docKey);
+    await waitForTransaction(tx);
+  } catch {
+    // Ignore cleanup errors
+  }
 }
