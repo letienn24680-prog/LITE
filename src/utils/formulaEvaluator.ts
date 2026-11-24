@@ -1472,6 +1472,73 @@ class FormulaParser {
       return parsedDate.year;
     }
 
+    // --- FINANCIAL FUNCTIONS ---
+
+    if (fnName === 'PMT' || fnName === 'FV' || fnName === 'PV') {
+      const argGroups = this.sliceArgumentTokenGroups();
+      if (argGroups.length < 3 || argGroups.length > 5) {
+        throw new FormulaError('#ERROR!');
+      }
+      const rate = coerceToNumber(this.evaluateSubTokens(argGroups[0]));
+      const nper = coerceToNumber(this.evaluateSubTokens(argGroups[1]));
+      const arg3 = coerceToNumber(this.evaluateSubTokens(argGroups[2]));
+      const arg4 =
+        argGroups.length >= 4 && argGroups[3].length > 0
+          ? coerceToNumber(this.evaluateSubTokens(argGroups[3]))
+          : 0;
+      const rawType =
+        argGroups.length === 5 && argGroups[4].length > 0
+          ? coerceToNumber(this.evaluateSubTokens(argGroups[4]))
+          : 0;
+      const payType = rawType !== 0 ? 1 : 0;
+
+      if (fnName === 'PMT') {
+        if (nper === 0) {
+          throw new FormulaError('#DIV/0!');
+        }
+        const pv = arg3;
+        const fv = arg4;
+        if (rate === 0) {
+          return normalizeNumber(-(pv + fv) / nper);
+        }
+        const pvif = (1 + rate) ** nper;
+        const denom = (1 + rate * payType) * (pvif - 1);
+        if (!Number.isFinite(pvif) || !Number.isFinite(denom) || denom === 0) {
+          throw new FormulaError('#DIV/0!');
+        }
+        return normalizeNumber((-rate * (pv * pvif + fv)) / denom);
+      }
+
+      if (fnName === 'FV') {
+        const pmt = arg3;
+        const pv = arg4;
+        if (rate === 0) {
+          return normalizeNumber(-(pv + pmt * nper));
+        }
+        const pvif = (1 + rate) ** nper;
+        if (!Number.isFinite(pvif)) {
+          throw new FormulaError('#ERROR!');
+        }
+        return normalizeNumber(
+          -(pv * pvif + pmt * (1 + rate * payType) * ((pvif - 1) / rate))
+        );
+      }
+
+      // PV(rate, nper, pmt, [fv], [type])
+      const pmt = arg3;
+      const fv = arg4;
+      if (rate === 0) {
+        return normalizeNumber(-(fv + pmt * nper));
+      }
+      const pvif = (1 + rate) ** nper;
+      if (!Number.isFinite(pvif) || pvif === 0) {
+        throw new FormulaError('#DIV/0!');
+      }
+      return normalizeNumber(
+        -(fv + pmt * (1 + rate * payType) * ((pvif - 1) / rate)) / pvif
+      );
+    }
+
     // --- LOOKUP FUNCTIONS ---
 
     if (fnName === 'VLOOKUP') {

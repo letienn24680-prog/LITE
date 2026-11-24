@@ -23,8 +23,8 @@ export function useDocumentPinchZoom(
   onZoomChange: (nextZoom: number) => void,
   options?: UseDocumentPinchZoomOptions
 ): void {
-  const minZoom = options?.min ?? 25;
-  const maxZoom = options?.max ?? 200;
+  const minZoom = options?.min ?? 10;
+  const maxZoom = options?.max ?? 300;
   const disabled = options?.disabled ?? false;
 
   const zoomRef = useRef<number>(zoomPercent);
@@ -70,28 +70,24 @@ export function useDocumentPinchZoom(
     };
 
     const handleTouchStart = (event: TouchEvent) => {
-      if (optionsRef.current.disabled) {
+      if (optionsRef.current.disabled || event.touches.length !== 2) {
         pinchStartDistance = null;
         return;
       }
-      if (event.touches.length === 2) {
-        const dist = getTouchDistance(event.touches[0], event.touches[1]);
-        if (dist > 0) {
-          pinchStartDistance = dist;
-          pinchStartZoom = zoomRef.current;
-        }
-      } else {
-        pinchStartDistance = null;
+      const dist = getTouchDistance(event.touches[0], event.touches[1]);
+      if (dist > 0) {
+        pinchStartDistance = dist;
+        pinchStartZoom = zoomRef.current;
       }
     };
 
     const handleTouchMove = (event: TouchEvent) => {
       const { min, max, disabled: isDisabled } = optionsRef.current;
-      if (
-        isDisabled ||
-        pinchStartDistance === null ||
-        event.touches.length !== 2
-      ) {
+      if (event.touches.length !== 2) {
+        pinchStartDistance = null;
+        return;
+      }
+      if (isDisabled || pinchStartDistance === null) {
         return;
       }
 
@@ -110,7 +106,7 @@ export function useDocumentPinchZoom(
     };
 
     const handleTouchEnd = (event: TouchEvent) => {
-      if (event.touches.length < 2) {
+      if (event.touches.length !== 2) {
         pinchStartDistance = null;
       }
     };

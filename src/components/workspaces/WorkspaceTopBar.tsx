@@ -84,6 +84,11 @@ interface FormatVisualConfig {
   iconBoxDark: string;
   badgeLight: string;
   badgeDark: string;
+  modeActiveLight: string;
+  modeActiveDark: string;
+  saveDirtyClass: string;
+  shareButtonLight: string;
+  focusInputLight: string;
 }
 
 type DriveUploadStatus =
@@ -97,34 +102,54 @@ const FORMAT_VISUALS: Record<DocumentType, FormatVisualConfig> = {
   pptx: {
     label: 'PPTX',
     Icon: Presentation,
-    iconBoxLight: 'bg-orange-50 text-orange-600 border-orange-200/80',
-    iconBoxDark: 'bg-orange-500/15 text-orange-300 border-orange-400/25',
-    badgeLight: 'bg-orange-50 text-orange-700 border-orange-200/80',
-    badgeDark: 'bg-orange-500/15 text-orange-300 border-orange-400/25',
+    iconBoxLight: 'bg-[#FFF4ED] text-[#C43E1C] border-[#C43E1C]/25',
+    iconBoxDark: 'bg-[#C43E1C]/20 text-orange-300 border-[#C43E1C]/40',
+    badgeLight: 'bg-[#FFF4ED] text-[#C43E1C] border-[#C43E1C]/25',
+    badgeDark: 'bg-[#C43E1C]/20 text-orange-300 border-[#C43E1C]/40',
+    modeActiveLight: 'bg-white text-[#C43E1C] shadow-sm ring-1 ring-[#C43E1C]/20',
+    modeActiveDark: 'bg-[#C43E1C]/30 text-orange-100 shadow-sm ring-1 ring-[#C43E1C]/55',
+    saveDirtyClass: 'bg-[#C43E1C] hover:bg-[#9E3014] border-[#C43E1C] text-white shadow-sm',
+    shareButtonLight: 'bg-[#FFF4ED] hover:bg-[#FFE6D5] border-[#C43E1C]/25 text-[#C43E1C]',
+    focusInputLight: 'bg-white border-[#C43E1C] text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-[#C43E1C]/20',
   },
   docx: {
     label: 'DOCX',
     Icon: FileText,
-    iconBoxLight: 'bg-blue-50 text-blue-600 border-blue-200/80',
-    iconBoxDark: 'bg-blue-500/15 text-blue-300 border-blue-400/25',
-    badgeLight: 'bg-blue-50 text-blue-700 border-blue-200/80',
-    badgeDark: 'bg-blue-500/15 text-blue-300 border-blue-400/25',
+    iconBoxLight: 'bg-[#EEF4FF] text-[#185ABD] border-[#185ABD]/25',
+    iconBoxDark: 'bg-[#185ABD]/20 text-blue-300 border-[#185ABD]/40',
+    badgeLight: 'bg-[#EEF4FF] text-[#185ABD] border-[#185ABD]/25',
+    badgeDark: 'bg-[#185ABD]/20 text-blue-300 border-[#185ABD]/40',
+    modeActiveLight: 'bg-white text-[#185ABD] shadow-sm ring-1 ring-[#185ABD]/20',
+    modeActiveDark: 'bg-[#185ABD]/30 text-blue-100 shadow-sm ring-1 ring-[#185ABD]/55',
+    saveDirtyClass: 'bg-[#185ABD] hover:bg-[#10489A] border-[#185ABD] text-white shadow-sm',
+    shareButtonLight: 'bg-[#EEF4FF] hover:bg-[#DFEAFE] border-[#185ABD]/25 text-[#185ABD]',
+    focusInputLight: 'bg-white border-[#185ABD] text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-[#185ABD]/20',
   },
   xlsx: {
     label: 'XLSX',
     Icon: FileSpreadsheet,
-    iconBoxLight: 'bg-green-50 text-green-700 border-green-200/80',
-    iconBoxDark: 'bg-emerald-500/15 text-emerald-300 border-emerald-400/25',
-    badgeLight: 'bg-green-50 text-green-800 border-green-200/80',
-    badgeDark: 'bg-emerald-500/15 text-emerald-300 border-emerald-400/25',
+    iconBoxLight: 'bg-[#ECFDF5] text-[#107C41] border-[#107C41]/25',
+    iconBoxDark: 'bg-[#107C41]/20 text-emerald-300 border-[#107C41]/40',
+    badgeLight: 'bg-[#ECFDF5] text-[#107C41] border-[#107C41]/25',
+    badgeDark: 'bg-[#107C41]/20 text-emerald-300 border-[#107C41]/40',
+    modeActiveLight: 'bg-white text-[#107C41] shadow-sm ring-1 ring-[#107C41]/20',
+    modeActiveDark: 'bg-[#107C41]/30 text-emerald-100 shadow-sm ring-1 ring-[#107C41]/55',
+    saveDirtyClass: 'bg-[#107C41] hover:bg-[#0B5E31] border-[#107C41] text-white shadow-sm',
+    shareButtonLight: 'bg-[#ECFDF5] hover:bg-[#D1FAE5] border-[#107C41]/25 text-[#107C41]',
+    focusInputLight: 'bg-white border-[#107C41] text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-[#107C41]/20',
   },
   pdf: {
     label: 'PDF',
     Icon: BookOpen,
-    iconBoxLight: 'bg-pink-50 text-pink-600 border-pink-200/80',
-    iconBoxDark: 'bg-pink-500/15 text-pink-300 border-pink-400/25',
-    badgeLight: 'bg-pink-50 text-pink-700 border-pink-200/80',
-    badgeDark: 'bg-pink-500/15 text-pink-300 border-pink-400/25',
+    iconBoxLight: 'bg-[#FDF2F8] text-[#C81E68] border-[#C81E68]/25',
+    iconBoxDark: 'bg-[#C81E68]/20 text-pink-300 border-[#C81E68]/40',
+    badgeLight: 'bg-[#FDF2F8] text-[#C81E68] border-[#C81E68]/25',
+    badgeDark: 'bg-[#C81E68]/20 text-pink-300 border-[#C81E68]/40',
+    modeActiveLight: 'bg-white text-[#C81E68] shadow-sm ring-1 ring-[#C81E68]/20',
+    modeActiveDark: 'bg-[#C81E68]/30 text-pink-100 shadow-sm ring-1 ring-[#C81E68]/55',
+    saveDirtyClass: 'bg-[#C81E68] hover:bg-[#9D174D] border-[#C81E68] text-white shadow-sm',
+    shareButtonLight: 'bg-[#FDF2F8] hover:bg-[#FCE7F3] border-[#C81E68]/25 text-[#C81E68]',
+    focusInputLight: 'bg-white border-[#C81E68] text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-[#C81E68]/20',
   },
 };
 
@@ -641,20 +666,20 @@ export function WorkspaceTopBar({
             ? 'bg-rose-500/20 border-rose-400/40 text-rose-200 hover:bg-rose-500/25'
             : 'bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100/80'
           : saveVisualState === 'dirty'
-            ? 'bg-indigo-600 hover:bg-indigo-700 border-indigo-600 text-white shadow-sm'
+            ? visual.saveDirtyClass
             : isDark
               ? 'bg-white/[0.06] hover:bg-white/[0.12] border-white/12 text-slate-200'
-              : 'bg-[#FAF8F5] hover:bg-[#F2EFEA] border-[#E5E0D8] text-slate-700';
+              : 'bg-slate-50/90 hover:bg-slate-100 border-slate-200/80 text-slate-700';
 
   const countSummary = resolveDocumentCountSummary(document);
 
   return (
     <>
       <header
-        className={`h-13 sm:h-14 shrink-0 w-full px-1.5 sm:px-3.5 flex items-center justify-between gap-1 sm:gap-2 overflow-visible border-b transition-colors duration-200 z-20 relative ${
+        className={`h-[52px] shrink-0 w-full px-1.5 sm:px-3.5 flex items-center justify-between gap-1 sm:gap-2 overflow-visible border-b transition-colors duration-200 z-20 relative ${
           isDark
             ? 'bg-[#141923] border-white/10 text-slate-100'
-            : 'bg-[#FFFFFF] border-[#EAE6DF] text-slate-900'
+            : 'bg-white border-slate-200/80 shadow-[0_1px_2px_rgba(15,23,42,0.03)] text-slate-900'
         }`}
       >
         {/* 1. LEFT CLUSTER: Back + leftExtra + Truncated File Title (no pencil icon) */}
@@ -667,7 +692,7 @@ export function WorkspaceTopBar({
             className={`shrink-0 inline-flex items-center justify-center gap-1.5 h-8 sm:h-9 w-8 sm:w-auto sm:px-2.5 rounded-xl text-xs font-medium border transition-colors whitespace-nowrap ${
               isDark
                 ? 'bg-white/[0.05] hover:bg-white/[0.12] border-white/10 text-slate-200 hover:text-white'
-                : 'bg-[#FAF8F5] hover:bg-[#F2EFEA] border-[#E7E2DA] text-slate-700 hover:text-slate-950'
+                : 'bg-slate-50/90 hover:bg-slate-100 border-slate-200/80 text-slate-700 hover:text-slate-950'
             }`}
           >
             <ArrowLeft className="h-4 w-4 shrink-0" />
@@ -702,7 +727,7 @@ export function WorkspaceTopBar({
                 className={`min-w-[100px] w-full max-w-[260px] h-8 px-2.5 rounded-lg border text-[13.5px] sm:text-sm font-semibold tracking-tight outline-none transition-all ${
                   isDark
                     ? 'bg-[#1C2333] border-indigo-400 text-white placeholder:text-slate-500 focus:ring-2 focus:ring-indigo-400/25'
-                    : 'bg-white border-indigo-500 text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500/20'
+                    : visual.focusInputLight
                 }`}
               />
             ) : onRenameTitle && !isReadOnlyCollab ? (
@@ -714,7 +739,7 @@ export function WorkspaceTopBar({
                 className={`min-w-0 max-w-full inline-flex items-center px-1.5 py-1 -mx-1 rounded-lg text-left transition-colors ${
                   isDark
                     ? 'hover:bg-white/[0.08] text-white'
-                    : 'hover:bg-[#F3F1EC] text-slate-900'
+                    : 'hover:bg-slate-100/80 text-slate-900'
                 }`}
               >
                 <h1 className="truncate text-[13.5px] sm:text-sm font-semibold tracking-tight">
@@ -752,7 +777,7 @@ export function WorkspaceTopBar({
                 className={`shrink-0 inline-flex items-center p-0.5 rounded-xl border ${
                   isDark
                     ? 'bg-white/[0.04] border-white/10'
-                    : 'bg-[#F5F2EC] border-[#E5E0D8]'
+                    : 'bg-slate-100/90 border-slate-200/80'
                 }`}
               >
                 <button
@@ -767,8 +792,8 @@ export function WorkspaceTopBar({
                   className={`inline-flex items-center gap-1 h-7 sm:h-[30px] px-1.5 sm:px-2.5 rounded-[9px] text-[11px] sm:text-xs font-semibold transition-all whitespace-nowrap shrink-0 ${
                     modeSwitch.mode === 'original'
                       ? isDark
-                        ? 'bg-indigo-500/25 text-indigo-100 shadow-sm ring-1 ring-indigo-400/40'
-                        : 'bg-white text-indigo-700 shadow-sm ring-1 ring-indigo-200/80'
+                        ? visual.modeActiveDark
+                        : visual.modeActiveLight
                       : isDark
                         ? 'text-slate-300 hover:text-white'
                         : 'text-slate-600 hover:text-slate-900'
@@ -789,11 +814,11 @@ export function WorkspaceTopBar({
                       ? 'Tài liệu đang ở chế độ chỉ xem'
                       : 'Chuyển sang Chỉnh sửa nhanh')
                   }
-                  className={`inline-flex items-center gap-1 min-h-[30px] px-2 sm:px-2.5 rounded-[10px] text-xs font-semibold transition-all whitespace-nowrap shrink-0 disabled:opacity-45 disabled:cursor-not-allowed ${
+                  className={`inline-flex items-center gap-1 h-7 sm:h-[30px] px-1.5 sm:px-2.5 rounded-[9px] text-[11px] sm:text-xs font-semibold transition-all whitespace-nowrap shrink-0 disabled:opacity-45 disabled:cursor-not-allowed ${
                     modeSwitch.mode === 'edit' && !isReadOnlyCollab
                       ? isDark
-                        ? 'bg-indigo-500/25 text-indigo-100 shadow-sm ring-1 ring-indigo-400/40'
-                        : 'bg-white text-indigo-700 shadow-sm ring-1 ring-indigo-200/80'
+                        ? visual.modeActiveDark
+                        : visual.modeActiveLight
                       : isDark
                         ? 'text-slate-300 hover:text-white'
                         : 'text-slate-600 hover:text-slate-900'
@@ -831,7 +856,7 @@ export function WorkspaceTopBar({
               disabled={isSaving || isSavingLocal}
               title={saveButtonTooltip}
               aria-label={saveButtonTooltip}
-              className={`shrink-0 inline-flex items-center justify-center gap-1.5 h-8 sm:h-9 w-8 sm:w-auto sm:px-3 rounded-xl text-xs font-semibold border transition-all whitespace-nowrap disabled:opacity-70 ${saveButtonClass}`}
+              className={`shrink-0 inline-flex items-center justify-center gap-1.5 h-8 w-8 p-0 overflow-hidden md:h-9 md:w-auto md:px-3 rounded-xl text-xs font-semibold border transition-all whitespace-nowrap disabled:opacity-70 ${saveButtonClass}`}
             >
               {saveVisualState === 'saving' ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
@@ -845,7 +870,7 @@ export function WorkspaceTopBar({
                 <span className="relative flex items-center justify-center shrink-0">
                   <Save className="h-3.5 w-3.5 shrink-0" />
                   {isDirty && (
-                    <span className="sm:hidden absolute -top-1 -right-1 h-2 w-2 rounded-full bg-amber-400 ring-1 ring-indigo-600" />
+                    <span className="md:hidden absolute -top-1 -right-1 h-2 w-2 rounded-full bg-amber-400 ring-1 ring-white" />
                   )}
                 </span>
               )}
@@ -858,10 +883,10 @@ export function WorkspaceTopBar({
             onClick={onShare}
             aria-label="Chia sẻ"
             title="Chia sẻ"
-            className={`shrink-0 inline-flex items-center justify-center gap-1.5 h-8 sm:h-9 w-8 sm:w-auto sm:px-3 rounded-xl text-xs font-semibold border transition-all whitespace-nowrap ${
+            className={`shrink-0 inline-flex items-center justify-center gap-1.5 h-8 w-8 p-0 overflow-hidden md:h-9 md:w-auto md:px-3 rounded-xl text-xs font-semibold border transition-all whitespace-nowrap ${
               isDark
                 ? 'bg-white/[0.1] hover:bg-white/[0.18] border-white/15 text-white'
-                : 'bg-indigo-50 hover:bg-indigo-100 border-indigo-200/80 text-indigo-700'
+                : visual.shareButtonLight
             }`}
           >
             <Share2 className="h-3.5 w-3.5 shrink-0" />
@@ -881,10 +906,10 @@ export function WorkspaceTopBar({
                 isMoreMenuOpen
                   ? isDark
                     ? 'bg-white/[0.16] border-white/25 text-white'
-                    : 'bg-[#EFECE6] border-[#DDD7CC] text-slate-950'
+                    : 'bg-slate-200/80 border-slate-300 text-slate-950'
                   : isDark
                     ? 'bg-white/[0.06] hover:bg-white/[0.14] border-white/12 text-slate-200 hover:text-white'
-                    : 'bg-[#FAF8F5] hover:bg-[#F2EFEA] border-[#E5E0D8] text-slate-700 hover:text-slate-950'
+                    : 'bg-slate-50/90 hover:bg-slate-100 border-slate-200/80 text-slate-700 hover:text-slate-950'
               }`}
             >
               <MoreVertical className="h-4 w-4 shrink-0" />

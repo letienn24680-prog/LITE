@@ -73,6 +73,8 @@ export type SlideShapeKind =
   | 'arrowLeft'
   | 'arrowUp'
   | 'arrowDown'
+  | 'plus'
+  | 'arrowDouble'
   | 'star'
   | 'callout'
   | 'line';
@@ -91,7 +93,7 @@ export interface SlideChartData {
 }
 
 export interface SlideAnimationConfig {
-  type: 'none' | 'appear' | 'fadeIn' | 'flyIn' | 'zoomIn';
+  type: 'none' | 'appear' | 'fadeIn' | 'flyIn' | 'zoomIn' | 'pulse';
   order?: number;
 }
 
@@ -106,8 +108,14 @@ export interface SlideTextBlock {
   fontSize: number;
   bold?: boolean;
   italic?: boolean;
+  underline?: boolean;
+  strikethrough?: boolean;
   color?: string;
-  align?: 'left' | 'center' | 'right';
+  highlightColor?: string;
+  textScript?: 'normal' | 'super' | 'sub';
+  lineHeight?: number;
+  textColumns?: 1 | 2;
+  align?: 'left' | 'center' | 'right' | 'justify';
   role?: 'title' | 'subtitle' | 'body';
   xPct?: number;
   yPct?: number;
@@ -138,6 +146,21 @@ export interface SlideTextBlock {
   fontScalePct?: number;
 }
 
+export interface SlideDrawingStroke {
+  id: string;
+  tool: 'pen' | 'highlighter';
+  color: string;
+  width: number;
+  points: Array<{ x: number; y: number }>;
+}
+
+export interface SlideCommentItem {
+  id: string;
+  text: string;
+  author: string;
+  createdAt: string;
+}
+
 export interface SlideImageItem {
   id: string;
   src: string;
@@ -165,6 +188,10 @@ export interface SlidePreviewItem {
   speakerNote?: string;
   blocks?: SlideTextBlock[];
   images?: SlideImageItem[];
+  drawings?: SlideDrawingStroke[];
+  comments?: SlideCommentItem[];
+  footerText?: string;
+  showSlideNumber?: boolean;
   backgroundColor?: string;
   backgroundGradient?: string;
   backgroundImageSrc?: string;
@@ -187,14 +214,17 @@ export interface CellStyle {
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
+  strike?: boolean;
   fontSize?: number;
   fontFamily?: string;
   textColor?: string;
   bgColor?: string;
-  align?: 'left' | 'center' | 'right';
+  align?: 'left' | 'center' | 'right' | 'justify';
   valign?: 'top' | 'middle' | 'bottom';
   wrapText?: boolean;
   numFmt?: string;
+  textRotation?: 'horizontal' | 'vertical' | 'up45' | 'down45';
+  hyperlink?: string;
   borderTop?: string;
   borderRight?: string;
   borderBottom?: string;
@@ -229,6 +259,36 @@ export interface ExcelChartItem {
   series: ExcelChartSeries[];
 }
 
+export interface ExcelDrawingStroke {
+  id: string;
+  tool: 'pen' | 'highlighter';
+  color: string;
+  width: number;
+  points: Array<{ x: number; y: number }>;
+}
+
+export interface ExcelFloatingObject {
+  id: string;
+  kind: 'image' | 'shape' | 'textbox';
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  src?: string;
+  text?: string;
+  shapeKind?: 'rect' | 'roundRect' | 'ellipse' | 'arrowRight' | 'star' | 'callout';
+  fillColor?: string;
+  borderColor?: string;
+}
+
+export interface ExcelPageSetup {
+  margins: 'normal' | 'narrow' | 'wide';
+  orientation: 'portrait' | 'landscape';
+  paperSize: 'A4' | 'A5' | 'Letter';
+  printArea?: string;
+  printGridlines?: boolean;
+}
+
 export interface SpreadsheetSheet {
   id: string;
   name: string;
@@ -247,6 +307,13 @@ export interface SpreadsheetSheet {
   dataValidations?: Record<string, string[]>;
   conditionalFormats?: ExcelConditionalFormat[];
   charts?: ExcelChartItem[];
+  cellComments?: Record<string, string>;
+  drawings?: ExcelDrawingStroke[];
+  floatingObjects?: ExcelFloatingObject[];
+  pageSetup?: ExcelPageSetup;
+  isProtected?: boolean;
+  lockedRanges?: string[];
+  showGridlines?: boolean;
 }
 
 export interface WordCommentItem {
@@ -255,6 +322,14 @@ export interface WordCommentItem {
   text: string;
   author: string;
   createdAt: string;
+}
+
+export interface WordDrawingStroke {
+  id: string;
+  tool: 'pen' | 'highlighter';
+  color: string;
+  width: number;
+  points: Array<{ x: number; y: number }>;
 }
 
 export interface PdfPageItem {
@@ -392,4 +467,7 @@ export interface DocumentItem {
   collabPermission?: 'owner' | 'edit' | 'view';
   sharedOwnerId?: string;
   wordComments?: WordCommentItem[];
+  wordDrawings?: WordDrawingStroke[];
+  wordProtected?: boolean;
+  slideProtected?: boolean;
 }

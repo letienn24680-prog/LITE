@@ -13,64 +13,88 @@ import type {
 } from 'react';
 import {
   AlignCenter,
+  AlignJustify,
   AlignLeft,
   AlignRight,
+  ArrowDownToLine,
+  ArrowUpToLine,
   BarChart3,
   Bold,
   BringToFront,
-  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  Clipboard,
   CloudDownload,
-  Columns2,
+  Columns,
   Copy,
+  CopyPlus,
   Crosshair,
-  Download,
   Eraser,
   ExternalLink,
   Eye,
   EyeOff,
   FileDown,
+  FileOutput,
+  FileText,
   Group,
+  Hash,
   Highlighter,
+  History,
   Image,
   ImagePlus,
+  IndentDecrease,
+  IndentIncrease,
+  Info,
   Italic,
   Layers,
   LayoutGrid,
   LayoutTemplate,
   Link2,
+  List,
+  ListOrdered,
   Loader2,
+  Lock,
+  MessageSquare,
   MonitorPlay,
   Move,
   Music,
   PaintBucket,
+  Paintbrush,
   Palette,
   Pause,
   Pen,
-  Pencil,
   Play,
   Plus,
   Presentation,
+  Printer,
   QrCode,
   RefreshCw,
   RotateCcw,
   RotateCw,
   Save,
+  Scissors,
   SendToBack,
   Shapes,
+  ShieldCheck,
   Sparkles,
   StickyNote,
+  Strikethrough,
+  Subscript,
+  Superscript,
   Table2,
   Trash2,
   Type,
   Underline,
+  Undo2,
   Ungroup,
+  Unlock,
   Video,
   Wand2,
   X,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import { createThumbnailDataUri } from '../../data/mockDocuments';
 import type {
@@ -79,6 +103,8 @@ import type {
   OutlineSection,
   SlideAnimationConfig,
   SlideChartData,
+  SlideCommentItem,
+  SlideDrawingStroke,
   SlideImageItem,
   SlidePreviewItem,
   SlideTextBlock,
@@ -88,6 +114,7 @@ import {
   exportOriginalDocumentBinary,
   exportSlidesToPptx,
 } from '../../utils/fileExporter';
+import { downloadDocumentAsPdf } from '../../utils/quickConverter';
 import { useWorkspaceSync } from '../../contexts/WorkspaceSyncContext';
 import type {
   CollaboratorPresence,
@@ -102,6 +129,7 @@ import {
 import { OfficeStatusBar } from './OfficeStatusBar';
 import {
   PPT_COLOR_THEMES,
+  PPT_QUICK_SHAPES_10,
   PPT_SHAPE_OPTIONS,
   PPT_SLIDE_LAYOUTS,
   SlideChartInsertModal,
@@ -113,6 +141,12 @@ import {
   type PptShapeKind,
   type PptSlideLayoutId,
 } from './SlideInsertChartShapes';
+import {
+  SlideAiToolsModal,
+  SlideCommentsPanel,
+  SlideDrawingOverlay,
+  SlideFileInfoModal,
+} from './SlideOnlyOfficePanels';
 import { WorkspaceTopBar } from './WorkspaceTopBar';
 
 export interface SlideWorkspaceProps {
@@ -147,7 +181,18 @@ interface LaserPosition {
 
 type SlideshowTransition = 'slide' | 'fade';
 type SlideWorkspaceViewMode = 'native' | 'edit';
-type PptRibbonTab = 'home' | 'insert' | 'design' | 'transitions' | 'slideshow';
+type PptRibbonTab =
+  | 'file'
+  | 'home'
+  | 'insert'
+  | 'draw'
+  | 'design'
+  | 'transitions'
+  | 'animations'
+  | 'collab'
+  | 'protect'
+  | 'view'
+  | 'ai';
 type SlideshowDrawTool = 'none' | 'pen' | 'highlighter' | 'eraser';
 
 interface SlideshowStroke {
@@ -163,35 +208,60 @@ interface SmartGuidesState {
 }
 
 const PPT_RIBBON_TABS: ReadonlyArray<{ id: PptRibbonTab; label: string }> = [
-  { id: 'home', label: 'Trang đầu' },
+  { id: 'file', label: 'Tệp' },
+  { id: 'home', label: 'Trang chủ' },
   { id: 'insert', label: 'Chèn' },
+  { id: 'draw', label: 'Vẽ' },
   { id: 'design', label: 'Thiết kế' },
-  { id: 'transitions', label: 'Chuyển cảnh & Hoạt ảnh' },
-  { id: 'slideshow', label: 'Trình chiếu' },
+  { id: 'transitions', label: 'Chuyển cảnh' },
+  { id: 'animations', label: 'Hoạt hình' },
+  { id: 'collab', label: 'Cộng tác' },
+  { id: 'protect', label: 'Bảo vệ' },
+  { id: 'view', label: 'Xem' },
+  { id: 'ai', label: 'AI Tools' },
 ];
 
 const PPT_TRANSITION_OPTIONS: ReadonlyArray<{
   type: SlideTransitionConfig['type'];
   label: string;
 }> = [
-  { type: 'none', label: 'Không' },
-  { type: 'fade', label: 'Làm mờ' },
+  { type: 'none', label: 'Không có' },
+  { type: 'fade', label: 'Mờ dần' },
   { type: 'push', label: 'Đẩy sang' },
-  { type: 'wipe', label: 'Quét ngang' },
+  { type: 'wipe', label: 'Gạt ngang' },
   { type: 'split', label: 'Tách đôi' },
-  { type: 'zoom', label: 'Phóng to' },
+  { type: 'zoom', label: 'Thu phóng' },
 ];
 
 const PPT_ANIMATION_OPTIONS: ReadonlyArray<{
   type: SlideAnimationConfig['type'];
   label: string;
 }> = [
-  { type: 'none', label: 'Không' },
+  { type: 'none', label: 'Không có' },
   { type: 'appear', label: 'Xuất hiện' },
-  { type: 'fadeIn', label: 'Mờ dần vào' },
+  { type: 'fadeIn', label: 'Mờ dần' },
   { type: 'flyIn', label: 'Bay vào' },
   { type: 'zoomIn', label: 'Phóng vào' },
+  { type: 'pulse', label: 'Nhịp đập' },
 ];
+
+const PPT_HIGHLIGHT_SWATCHES = [
+  { label: 'Vàng chanh', value: '#FEF08A' },
+  { label: 'Xanh lá sáng', value: '#BBF7D0' },
+  { label: 'Xanh dương nhạt', value: '#BAE6FD' },
+  { label: 'Hồng phấn', value: '#FBCFE8' },
+  { label: 'Cam nhạt', value: '#FED7AA' },
+] as const;
+
+const PPT_DRAW_COLORS = [
+  '#EF4444',
+  '#C43E1C',
+  '#F59E0B',
+  '#10B981',
+  '#2563EB',
+  '#7C3AED',
+  '#0F172A',
+] as const;
 
 const PPT_GRADIENT_PRESETS: ReadonlyArray<{ label: string; value: string }> = [
   {
@@ -215,10 +285,32 @@ const PPT_GRADIENT_PRESETS: ReadonlyArray<{ label: string; value: string }> = [
 const PPT_FONT_FAMILIES = [
   { label: 'Inter', value: "'Inter', 'Segoe UI', system-ui, sans-serif" },
   { label: 'Segoe UI', value: "'Segoe UI', Roboto, sans-serif" },
+  { label: 'Arial', value: 'Arial, Helvetica, sans-serif' },
+  { label: 'Calibri', value: 'Calibri, Candara, Segoe UI, sans-serif' },
   { label: 'Georgia', value: 'Georgia, serif' },
   { label: 'Times New Roman', value: "'Times New Roman', serif" },
   { label: 'Mono', value: "'JetBrains Mono', monospace" },
 ] as const;
+
+function buildTextDecorationCss(
+  underline?: boolean,
+  strikethrough?: boolean
+): string {
+  const parts: string[] = [];
+  if (underline) parts.push('underline');
+  if (strikethrough) parts.push('line-through');
+  return parts.length > 0 ? parts.join(' ') : 'none';
+}
+
+function buildStaticSlideStrokePath(points: Array<{ x: number; y: number }>): string {
+  if (points.length === 0) return '';
+  if (points.length === 1) {
+    const p = points[0];
+    return `M ${p.x} ${p.y} L ${p.x + 0.2} ${p.y + 0.2}`;
+  }
+  const [first, ...rest] = points;
+  return `M ${first.x} ${first.y} ${rest.map((p) => `L ${p.x} ${p.y}`).join(' ')}`;
+}
 
 function sanitizeExternalUrl(url: string | undefined): string | null {
   if (!url) {
@@ -261,6 +353,9 @@ function getSlideshowAnimStyle(
   }
   if (anim.type === 'zoomIn') {
     return { animation: 'liteObjZoomIn 320ms cubic-bezier(0.22, 1, 0.36, 1) both' };
+  }
+  if (anim.type === 'pulse') {
+    return { animation: 'liteObjPulse 560ms ease-in-out both' };
   }
   return {};
 }
@@ -332,7 +427,7 @@ interface ActiveDragState {
 }
 
 const REFERENCE_SLIDE_WIDTH_PT = 960; // 13.333in * 72pt
-const SLIDE_FONT_SIZES = [12, 14, 18, 24, 32, 40] as const;
+const SLIDE_FONT_SIZES = [12, 14, 18, 24, 32, 40, 48] as const;
 
 const SLIDE_COLOR_SWATCHES = [
   { label: 'Trắng', value: '#FFFFFF' },
@@ -679,8 +774,13 @@ interface AutoGrowTextareaProps {
   bold: boolean;
   italic: boolean;
   underline?: boolean;
+  strikethrough?: boolean;
+  highlightColor?: string;
+  textScript?: 'normal' | 'super' | 'sub';
+  lineHeight?: number;
+  textColumns?: 1 | 2;
   color: string;
-  align: 'left' | 'center' | 'right';
+  align: 'left' | 'center' | 'right' | 'justify';
   fontFamily?: string;
   autoFocus?: boolean;
   maxHeightFull?: boolean;
@@ -723,7 +823,9 @@ function RichTextFittedView({
   const paragraphs = block.richParagraphs;
 
   if (!paragraphs || paragraphs.length === 0) {
-    const scaledPx = Math.max(4, (block.fontSize || 18) * effectiveScale);
+    const scriptScale =
+      block.textScript === 'super' || block.textScript === 'sub' ? 0.72 : 1;
+    const scaledPx = Math.max(4, (block.fontSize || 18) * effectiveScale * scriptScale);
     return (
       <div
         ref={containerRef}
@@ -736,12 +838,25 @@ function RichTextFittedView({
         className="w-full h-full overflow-hidden flex flex-col justify-center"
       >
         <p
-          className="whitespace-pre-wrap break-words leading-[1.18] tracking-tight"
+          className="whitespace-pre-wrap break-words tracking-tight"
           style={{
             fontSize: `${scaledPx.toFixed(2)}px`,
             fontWeight: block.bold || block.role === "title" ? 700 : 400,
             fontStyle: block.italic ? "italic" : "normal",
-            textDecoration: underlined ? "underline" : "none",
+            textDecoration: buildTextDecorationCss(
+              Boolean(underlined || block.underline),
+              block.strikethrough
+            ),
+            backgroundColor: block.highlightColor,
+            lineHeight: block.lineHeight ?? 1.18,
+            columnCount: block.textColumns === 2 ? 2 : undefined,
+            columnGap: block.textColumns === 2 ? '1em' : undefined,
+            transform:
+              block.textScript === 'super'
+                ? 'translateY(-0.22em)'
+                : block.textScript === 'sub'
+                  ? 'translateY(0.18em)'
+                  : undefined,
             color: textColor,
             textAlign: block.align ?? "left",
             fontFamily: block.fontFamily || "'Inter', 'Segoe UI', system-ui, sans-serif",
@@ -762,6 +877,10 @@ function RichTextFittedView({
           onActivateEdit();
         }
       }}
+      style={{
+        columnCount: block.textColumns === 2 ? 2 : undefined,
+        columnGap: block.textColumns === 2 ? '1em' : undefined,
+      }}
       className="w-full max-h-full overflow-hidden space-y-[0.22em]"
     >
       {paragraphs.map((para, pIdx) => {
@@ -770,9 +889,10 @@ function RichTextFittedView({
         return (
           <p
             key={`${block.id}-rp-${pIdx}`}
-            className="whitespace-pre-wrap break-words leading-[1.18] tracking-tight"
+            className="whitespace-pre-wrap break-words tracking-tight"
             style={{
               textAlign: para.align ?? block.align ?? "left",
+              lineHeight: block.lineHeight ?? 1.18,
               paddingLeft: para.level ? `${para.level * 1.1}em` : undefined,
             }}
           >
@@ -797,7 +917,11 @@ function RichTextFittedView({
                     fontSize: `${rPx.toFixed(2)}px`,
                     fontWeight: (run.bold ?? block.bold ?? block.role === "title") ? 700 : 400,
                     fontStyle: (run.italic ?? block.italic) ? "italic" : "normal",
-                    textDecoration: (run.underline || underlined) ? "underline" : "none",
+                    textDecoration: buildTextDecorationCss(
+                      Boolean(run.underline || underlined || block.underline),
+                      block.strikethrough
+                    ),
+                    backgroundColor: block.highlightColor,
                     color: run.color ?? textColor,
                     fontFamily: run.fontFamily || block.fontFamily || "'Inter', 'Segoe UI', system-ui, sans-serif",
                   }}
@@ -883,6 +1007,11 @@ function AutoGrowTextarea({
   bold,
   italic,
   underline = false,
+  strikethrough = false,
+  highlightColor,
+  textScript = 'normal',
+  lineHeight,
+  textColumns = 1,
   color,
   align,
   fontFamily,
@@ -898,7 +1027,7 @@ function AutoGrowTextarea({
     }
     el.style.height = '0px';
     el.style.height = `${Math.max(el.scrollHeight, Math.ceil(scaledFontPx * 1.35))}px`;
-  }, [value, scaledFontPx, bold, italic, underline, align, fontFamily]);
+  }, [value, scaledFontPx, bold, italic, underline, strikethrough, lineHeight, align, fontFamily]);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -914,6 +1043,11 @@ function AutoGrowTextarea({
       observer.disconnect();
     };
   }, [scaledFontPx]);
+
+  const effectiveScriptFontPx =
+    textScript === 'super' || textScript === 'sub'
+      ? Math.max(4, scaledFontPx * 0.72)
+      : scaledFontPx;
 
   return (
     <textarea
@@ -932,16 +1066,29 @@ function AutoGrowTextarea({
       placeholder={placeholder}
       aria-label={ariaLabel}
       style={{
-        fontSize: `${scaledFontPx.toFixed(2)}px`,
+        fontSize: `${effectiveScriptFontPx.toFixed(2)}px`,
         color,
         textAlign: align,
         fontWeight: bold ? 700 : 400,
         fontStyle: italic ? 'italic' : 'normal',
-        textDecoration: underline ? 'underline' : 'none',
+        textDecoration: buildTextDecorationCss(underline, strikethrough),
+        backgroundColor:
+          highlightColor && highlightColor !== 'transparent'
+            ? highlightColor
+            : undefined,
+        lineHeight: lineHeight ?? 1.16,
+        columnCount: textColumns === 2 ? 2 : undefined,
+        columnGap: textColumns === 2 ? '1em' : undefined,
+        transform:
+          textScript === 'super'
+            ? 'translateY(-0.22em)'
+            : textScript === 'sub'
+              ? 'translateY(0.18em)'
+              : undefined,
         fontFamily: fontFamily || "'Inter', 'Segoe UI', system-ui, sans-serif",
         maxHeight: maxHeightFull ? '100%' : undefined,
       }}
-      className={`w-full bg-transparent border-0 outline-none resize-none leading-[1.16] tracking-tight placeholder:opacity-45 disabled:pointer-events-none ${
+      className={`w-full bg-transparent border-0 outline-none resize-none tracking-tight placeholder:opacity-45 disabled:pointer-events-none ${
         maxHeightFull ? 'overflow-y-auto no-scrollbar' : 'overflow-hidden'
       }`}
     />
@@ -956,6 +1103,7 @@ interface PositionedReadOnlySlideProps {
   stageWidthPx: number;
   underlinedBlockIds?: Record<string, boolean>;
   revealedAnimStep?: number;
+  onActivateEditBlock?: (blockId?: string) => void;
 }
 
 function ReadOnlySlideStage({
@@ -966,6 +1114,7 @@ function ReadOnlySlideStage({
   stageWidthPx,
   underlinedBlockIds,
   revealedAnimStep,
+  onActivateEditBlock,
 }: PositionedReadOnlySlideProps) {
   const fontScale =
     stageWidthPx > 0 ? stageWidthPx / REFERENCE_SLIDE_WIDTH_PT : 1;
@@ -1197,6 +1346,14 @@ function ReadOnlySlideStage({
           return (
             <div
               key={block.id}
+              onDoubleClick={
+                onActivateEditBlock
+                  ? (e) => {
+                      e.stopPropagation();
+                      onActivateEditBlock(block.id);
+                    }
+                  : undefined
+              }
               onClick={
                 safeLink
                   ? (e) => {
@@ -1236,23 +1393,41 @@ function ReadOnlySlideStage({
                   block={block}
                   fontScale={fontScale}
                   textColor={safeLink ? '#38BDF8' : textColor}
-                  underlined={Boolean(underlinedBlockIds?.[block.id] || safeLink)}
+                  underlined={Boolean(
+                    underlinedBlockIds?.[block.id] || block.underline || safeLink
+                  )}
                 />
               ) : (
                 <p
-                  className="whitespace-pre-wrap break-words leading-[1.16] tracking-tight"
+                  className="whitespace-pre-wrap break-words tracking-tight"
                   style={{
                     fontSize: `${Math.max(
                       3.5,
-                      scaledFontPx * ((block.fontScalePct ?? 100) / 100)
+                      scaledFontPx *
+                        ((block.fontScalePct ?? 100) / 100) *
+                        (block.textScript === 'super' || block.textScript === 'sub'
+                          ? 0.72
+                          : 1)
                     ).toFixed(2)}px`,
                     fontWeight:
                       block.bold || block.role === 'title' ? 700 : 400,
                     fontStyle: block.italic ? 'italic' : 'normal',
-                    textDecoration:
-                      underlinedBlockIds?.[block.id] || safeLink
-                        ? 'underline'
-                        : 'none',
+                    textDecoration: buildTextDecorationCss(
+                      Boolean(
+                        underlinedBlockIds?.[block.id] || block.underline || safeLink
+                      ),
+                      block.strikethrough
+                    ),
+                    backgroundColor: block.highlightColor,
+                    lineHeight: block.lineHeight ?? 1.16,
+                    columnCount: block.textColumns === 2 ? 2 : undefined,
+                    columnGap: block.textColumns === 2 ? '1em' : undefined,
+                    transform:
+                      block.textScript === 'super'
+                        ? 'translateY(-0.22em)'
+                        : block.textScript === 'sub'
+                          ? 'translateY(0.18em)'
+                          : undefined,
                     color: safeLink ? '#38BDF8' : textColor,
                     textAlign: block.align ?? 'left',
                     fontFamily:
@@ -1289,6 +1464,52 @@ function ReadOnlySlideStage({
             )}
           </div>
         ))}
+
+        {/* Static Vector Drawings Layer (Pen / Highlighter strokes) */}
+        {(slide.drawings?.length ?? 0) > 0 && (
+          <svg
+            viewBox="0 0 1000 1000"
+            preserveAspectRatio="none"
+            className="pointer-events-none absolute inset-0 w-full h-full z-20"
+          >
+            {(slide.drawings ?? []).map((stroke) => {
+              const isHighlighter = stroke.tool === 'highlighter';
+              return (
+                <path
+                  key={stroke.id}
+                  d={buildStaticSlideStrokePath(stroke.points)}
+                  fill="none"
+                  stroke={stroke.color}
+                  strokeWidth={
+                    isHighlighter
+                      ? Math.max(14, stroke.width * 2.5)
+                      : Math.max(1.5, stroke.width)
+                  }
+                  strokeOpacity={isHighlighter ? 0.36 : 0.95}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              );
+            })}
+          </svg>
+        )}
+
+        {/* Slide Footer & Number Strip */}
+        {(slide.footerText || slide.showSlideNumber) && (
+          <div
+            className={`pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-center justify-between gap-2 px-3 py-1 ${
+              hasLightBg ? 'text-slate-600' : 'text-slate-300/90'
+            }`}
+            style={{ fontSize: `${Math.max(6, 10.5 * fontScale).toFixed(1)}px` }}
+          >
+            <span className="truncate">{slide.footerText ?? ''}</span>
+            {slide.showSlideNumber && (
+              <span className="shrink-0 font-semibold tabular-nums">
+                {slideIndex + 1} / {totalSlides}
+              </span>
+            )}
+          </div>
+        )}
       </div>
     );
   }
@@ -1354,14 +1575,19 @@ function ReadOnlySlideStage({
             {blocks.map((block) => (
               <p
                 key={block.id}
-                className="whitespace-pre-wrap break-words leading-[1.16]"
+                className="whitespace-pre-wrap break-words"
                 style={{
                   fontSize: `${Math.max(5, (block.fontSize || 18) * fontScale)}px`,
                   fontWeight: block.bold || block.role === 'title' ? 700 : 400,
                   fontStyle: block.italic ? 'italic' : 'normal',
-                  textDecoration: underlinedBlockIds?.[block.id]
-                    ? 'underline'
-                    : 'none',
+                  textDecoration: buildTextDecorationCss(
+                    Boolean(block.underline || underlinedBlockIds?.[block.id]),
+                    Boolean(block.strikethrough)
+                  ),
+                  backgroundColor: block.highlightColor || 'transparent',
+                  padding: block.highlightColor ? '1px 4px' : undefined,
+                  borderRadius: block.highlightColor ? '3px' : undefined,
+                  lineHeight: block.lineHeight ?? 1.16,
                   color: block.color ?? (hasLightBg ? '#0F172A' : '#FFFFFF'),
                   textAlign: block.align ?? 'left',
                   fontFamily: block.fontFamily || "'Inter', 'Segoe UI', system-ui, sans-serif",
@@ -1437,15 +1663,62 @@ function ReadOnlySlideStage({
             }}
           />
         </div>
-        <span
-          className={`truncate max-w-[45%] ${
-            hasLightBg ? 'text-slate-500' : 'text-slate-400'
-          }`}
-          style={{ fontSize: `${Math.max(5, 11 * fontScale)}px` }}
-        >
-          {doc.title}
-        </span>
+        {(slide.footerText || slide.showSlideNumber) ? (
+          <div
+            className={`flex items-center gap-2 truncate max-w-[60%] ${
+              hasLightBg ? 'text-slate-500' : 'text-slate-400'
+            }`}
+            style={{ fontSize: `${Math.max(5, 10.5 * fontScale)}px` }}
+          >
+            {slide.footerText && <span className="truncate">{slide.footerText}</span>}
+            {slide.showSlideNumber && (
+              <span className="shrink-0 font-semibold tabular-nums">
+                {slideIndex + 1} / {totalSlides}
+              </span>
+            )}
+          </div>
+        ) : (
+          <span
+            className={`truncate max-w-[45%] ${
+              hasLightBg ? 'text-slate-500' : 'text-slate-400'
+            }`}
+            style={{ fontSize: `${Math.max(5, 11 * fontScale)}px` }}
+          >
+            {doc.title}
+          </span>
+        )}
       </div>
+
+      {/* Static Ink Drawings Overlay (Legacy Flow Stage) */}
+      {(slide.drawings?.length ?? 0) > 0 && (
+        <svg
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          className="pointer-events-none absolute inset-0 z-20 w-full h-full"
+        >
+          {slide.drawings!.map((stroke) => {
+            const d = buildStaticSlideStrokePath(stroke.points);
+            if (!d) return null;
+            const isHighlighter = stroke.tool === 'highlighter';
+            return (
+              <path
+                key={stroke.id}
+                d={d}
+                fill="none"
+                stroke={stroke.color}
+                strokeWidth={
+                  isHighlighter
+                    ? Math.max(14, stroke.width * 2.5)
+                    : Math.max(1.5, stroke.width)
+                }
+                strokeOpacity={isHighlighter ? 0.36 : 0.95}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            );
+          })}
+        </svg>
+      )}
     </div>
   );
 }
@@ -1551,12 +1824,18 @@ export function SlideWorkspace({
   incomingRemotePatch = null,
 }: SlideWorkspaceProps) {
   const isReadOnly = collabPermission === 'view';
-  const { onDownloadOriginalFile } = useWorkspaceSync();
+  const workspaceSync = useWorkspaceSync();
+  const [isPresentationProtected, setIsPresentationProtected] =
+    useState<boolean>(() => Boolean(document.slideProtected));
+  const isEditingLocked = isReadOnly || isPresentationProtected;
+  const hasOriginalBinary = Boolean(
+    document.rawArrayBuffer ||
+      document.isUploaded ||
+      document.storagePath ||
+      document.r2ObjectKey
+  );
   const [viewMode, setViewMode] = useState<SlideWorkspaceViewMode>(() =>
-    collabPermission === 'view' ||
-    Boolean(document.rawArrayBuffer || document.isUploaded)
-      ? 'native'
-      : 'edit'
+    collabPermission === 'view' ? 'native' : 'edit'
   );
   const [hasLocalEdits, setHasLocalEdits] = useState<boolean>(() =>
     Boolean(document.hasLocalEdits)
@@ -1564,10 +1843,16 @@ export function SlideWorkspace({
   const [slides, setSlides] = useState<SlidePreviewItem[]>(() =>
     initializeDeckSlides(document)
   );
+  const [deckAspectRatio, setDeckAspectRatio] = useState<number | undefined>(
+    () => document.slideAspectRatio
+  );
   const [activeSlideIdx, setActiveSlideIdx] = useState<number>(0);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
   const [zoomPct, setZoomPct] = useState<number>(100);
+  const setZoomPctClamped = useCallback((nextZoom: number) => {
+    setZoomPct(Math.max(10, Math.min(300, Math.round(nextZoom))));
+  }, []);
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [newlyAddedBlockId, setNewlyAddedBlockId] = useState<string | null>(
     null
@@ -1589,11 +1874,6 @@ export function SlideWorkspace({
   const [isDirty, setIsDirty] = useState<boolean>(false);
   const [saveFeedback, setSaveFeedback] = useState<boolean>(false);
   const [isExporting, setIsExporting] = useState<boolean>(false);
-  const [isDownloadingOriginal, setIsDownloadingOriginal] =
-    useState<boolean>(false);
-  const [downloadOriginalNotice, setDownloadOriginalNotice] = useState<
-    string | null
-  >(null);
   const [exportError, setExportError] = useState<string | null>(null);
 
   // ResizeObserver measured sizes
@@ -1612,6 +1892,7 @@ export function SlideWorkspace({
 
   // Fullscreen Slideshow & PowerPoint Pro Ribbon State
   const [activeRibbonTab, setActiveRibbonTab] = useState<PptRibbonTab>('home');
+  const [isRibbonCollapsed, setIsRibbonCollapsed] = useState<boolean>(false);
   const [pptViewMode, setPptViewMode] = useState<'normal' | 'sorter'>('normal');
   const [selectedBlockIds, setSelectedBlockIds] = useState<string[]>([]);
   const [smartGuides, setSmartGuides] = useState<SmartGuidesState>({
@@ -1626,8 +1907,34 @@ export function SlideWorkspace({
   const [draggedSlideIdx, setDraggedSlideIdx] = useState<number | null>(null);
   const [dragOverSlideIdx, setDragOverSlideIdx] = useState<number | null>(null);
   const [notesHeightPx, setNotesHeightPx] = useState<number>(72);
-  const [isLayoutPickerOpen, setIsLayoutPickerOpen] = useState<boolean>(false);
+  const [layoutPickerMode, setLayoutPickerMode] = useState<
+    'add' | 'change' | null
+  >(null);
   const [isShapePickerOpen, setIsShapePickerOpen] = useState<boolean>(false);
+  const [isCaseMenuOpen, setIsCaseMenuOpen] = useState<boolean>(false);
+  const [isHighlightMenuOpen, setIsHighlightMenuOpen] =
+    useState<boolean>(false);
+  const [clipboardItem, setClipboardItem] = useState<
+    | { kind: 'block'; data: SlideTextBlock }
+    | { kind: 'image'; data: SlideImageItem }
+    | null
+  >(null);
+  const [copiedBlockStyle, setCopiedBlockStyle] =
+    useState<Partial<SlideTextBlock> | null>(null);
+  const [activeDrawTool, setActiveDrawTool] = useState<
+    'pen' | 'highlighter' | 'eraser' | null
+  >(null);
+  const [drawColor, setDrawColor] = useState<string>('#EF4444');
+  const [drawWidth, setDrawWidth] = useState<number>(4);
+  const [previewTransitionKey, setPreviewTransitionKey] = useState<number>(0);
+  const [previewAnimKey, setPreviewAnimKey] = useState<number>(0);
+  const [isPreviewingAnims, setIsPreviewingAnims] = useState<boolean>(false);
+  const [isCommentsOpen, setIsCommentsOpen] = useState<boolean>(false);
+  const [isFileInfoOpen, setIsFileInfoOpen] = useState<boolean>(false);
+  const [aiModalState, setAiModalState] = useState<{
+    isOpen: boolean;
+    initialTab: 'generate' | 'summarize' | 'notes';
+  }>({ isOpen: false, initialTab: 'generate' });
   const [isChartModalOpen, setIsChartModalOpen] = useState<boolean>(false);
   const [linkMediaModalMode, setLinkMediaModalMode] = useState<
     'link' | 'video' | 'audio' | null
@@ -1674,7 +1981,6 @@ export function SlideWorkspace({
   const slideshowCanvasRef = useRef<HTMLDivElement | null>(null);
   const slideshowTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   const justSwipedSlideshowRef = useRef<boolean>(false);
-  const downloadNoticeTimerRef = useRef<number | null>(null);
   const enteredFullscreenRef = useRef<boolean>(false);
   const justDraggedRef = useRef<boolean>(false);
   const activeDragCleanupRef = useRef<(() => void) | null>(null);
@@ -1709,12 +2015,9 @@ export function SlideWorkspace({
     if (isNewDoc) {
       loadedDocIdRef.current = document.id;
       setSlides(initializeDeckSlides(document));
-      setViewMode(
-        collabPermission === 'view' ||
-          Boolean(document.rawArrayBuffer || document.isUploaded)
-          ? 'native'
-          : 'edit'
-      );
+      setDeckAspectRatio(document.slideAspectRatio);
+      setIsPresentationProtected(Boolean(document.slideProtected));
+      setViewMode(collabPermission === 'view' ? 'native' : 'edit');
       setHasLocalEdits(Boolean(document.hasLocalEdits));
       setActiveSlideIdx(0);
       setSelectedBlockId(null);
@@ -1725,10 +2028,20 @@ export function SlideWorkspace({
       setSmartGuides({ xPct: null, yPct: null });
       setThumbContextMenu(null);
       setPptViewMode('normal');
+      setLayoutPickerMode(null);
+      setIsShapePickerOpen(false);
+      setIsCaseMenuOpen(false);
+      setIsHighlightMenuOpen(false);
+      setCopiedBlockStyle(null);
+      setActiveDrawTool(null);
+      setPreviewTransitionKey(0);
+      setIsPreviewingAnims(false);
+      setIsCommentsOpen(false);
+      setIsFileInfoOpen(false);
+      setAiModalState({ isOpen: false, initialTab: 'generate' });
       setRevealedAnimStep(0);
       setSlideshowDrawTool('none');
       setSlideshowStrokesBySlide({});
-      setDownloadOriginalNotice(null);
       setIsLaserActive(false);
       setLaserPos({ x: 50, y: 50, visible: false });
       setElapsedSeconds(0);
@@ -1764,6 +2077,19 @@ export function SlideWorkspace({
     }
   }, [document, isHydratingCloudFile]);
 
+  // Auto-reset active draw tool outside Draw tab or when locked/in Sorter/Slideshow/Native
+  useEffect(() => {
+    if (
+      activeRibbonTab !== 'draw' ||
+      isEditingLocked ||
+      pptViewMode === 'sorter' ||
+      isSlideshowActive ||
+      viewMode === 'native'
+    ) {
+      setActiveDrawTool(null);
+    }
+  }, [activeRibbonTab, isEditingLocked, pptViewMode, isSlideshowActive, viewMode]);
+
   // Clear selection/mobile sheet and force native view if switched to read-only permission
   useEffect(() => {
     if (isReadOnly) {
@@ -1772,17 +2098,20 @@ export function SlideWorkspace({
       setEditingBlockId(null);
       setSelectedImageId(null);
       setIsMobileSheetOpen(false);
+      setCopiedBlockStyle(null);
     }
   }, [isReadOnly]);
 
-  // Pinch / Ctrl+Wheel zoom strictly scoped to the slide viewport (25% - 200%)
-  useDocumentPinchZoom(editorViewportRef, zoomPct, setZoomPct, {
-    min: 25,
-    max: 200,
+  // Pinch / Ctrl+Wheel zoom strictly scoped to the slide viewport (10% - 300%)
+  useDocumentPinchZoom(editorViewportRef, zoomPct, setZoomPctClamped, {
+    min: 10,
+    max: 300,
     disabled:
       isSlideshowActive ||
       isModalOpen ||
       isChartModalOpen ||
+      isFileInfoOpen ||
+      aiModalState.isOpen ||
       linkMediaModalMode !== null ||
       pptViewMode === 'sorter',
   });
@@ -1936,9 +2265,6 @@ export function SlideWorkspace({
       if (exportErrorTimerRef.current !== null) {
         window.clearTimeout(exportErrorTimerRef.current);
       }
-      if (downloadNoticeTimerRef.current !== null) {
-        window.clearTimeout(downloadNoticeTimerRef.current);
-      }
       if (broadcastThrottleTimerRef.current !== null) {
         window.clearTimeout(broadcastThrottleTimerRef.current);
       }
@@ -2073,13 +2399,14 @@ export function SlideWorkspace({
     currentBlocks.find((block) => block.id === selectedBlockId) ?? null;
   const selectedImage =
     currentImages.find((img) => img.id === selectedImageId) ?? null;
-  const accentColor = currentSlide.accentColor || '#4F46E5';
+  const accentColor = currentSlide.accentColor || '#C43E1C';
   const hasLightSlideBg = isLightHexBackground(currentSlide.backgroundColor);
-  const currentAspectRatio = getSafeAspectRatio(currentSlide, document);
+  const currentAspectRatio =
+    deckAspectRatio ?? getSafeAspectRatio(currentSlide, document);
   const isPositionedSlide = isSlideMasterPositioned(currentSlide);
 
   const editorFitWidthPx = Math.max(
-    240,
+    160,
     Math.min(
       editorViewportSize.width,
       editorViewportSize.height * currentAspectRatio,
@@ -2091,6 +2418,53 @@ export function SlideWorkspace({
   const actualEditorCanvasWidth =
     measuredEditorCanvasWidth > 0 ? measuredEditorCanvasWidth : zoomedWidthPx;
   const editorFontScale = actualEditorCanvasWidth / REFERENCE_SLIDE_WIDTH_PT;
+
+  const handleFitToWidth = useCallback(() => {
+    const vp = editorViewportRef.current;
+    if (!vp || editorFitWidthPx <= 0) {
+      setZoomPctClamped(100);
+      return;
+    }
+    const vw = Math.max(120, vp.clientWidth - 16);
+    const vh = Math.max(100, vp.clientHeight - 16);
+    const naturalH = editorFitWidthPx / currentAspectRatio;
+    const fitScale = Math.min(vw / editorFitWidthPx, vh / naturalH);
+    setZoomPctClamped(Math.floor(fitScale * 100));
+  }, [currentAspectRatio, editorFitWidthPx, setZoomPctClamped]);
+
+  const handleSwitchViewMode = useCallback(
+    (nextMode: SlideWorkspaceViewMode) => {
+      if (nextMode === 'native') {
+        setSelectedBlockId(null);
+        setSelectedBlockIds([]);
+        setEditingBlockId(null);
+        setSelectedImageId(null);
+        setIsMobileSheetOpen(false);
+        setViewMode('native');
+        return;
+      }
+      if (!isEditingLocked) {
+        setViewMode('edit');
+      }
+    },
+    [isEditingLocked]
+  );
+
+  const handleUnlockDirectEdit = useCallback(
+    (blockId?: string) => {
+      if (isEditingLocked) {
+        return;
+      }
+      setViewMode('edit');
+      if (blockId) {
+        setSelectedBlockId(blockId);
+        setSelectedBlockIds([blockId]);
+        setEditingBlockId(blockId);
+        setSelectedImageId(null);
+      }
+    },
+    [isEditingLocked]
+  );
 
   const slideshowFitWidthPx = Math.max(
     240,
@@ -2124,16 +2498,18 @@ export function SlideWorkspace({
       slidesPreview: syncedSlides,
       outline: derivedOutline.length > 0 ? derivedOutline : baseDoc.outline,
       pageCount: syncedSlides.length,
+      slideAspectRatio: deckAspectRatio ?? baseDoc.slideAspectRatio,
+      slideProtected: isPresentationProtected,
       hasLocalEdits: hasLocalEdits || Boolean(baseDoc.hasLocalEdits),
       contentPreview:
         syncedSlides[0]?.bullets[0] ??
         syncedSlides[0]?.title ??
         baseDoc.contentPreview,
     };
-  }, [hasLocalEdits, slides]);
+  }, [deckAspectRatio, hasLocalEdits, isPresentationProtected, slides]);
 
   const handleSave = useCallback(() => {
-    if (isReadOnly) {
+    if (isEditingLocked) {
       return;
     }
     const updatedDoc = buildLiveDocument();
@@ -2148,11 +2524,11 @@ export function SlideWorkspace({
       setSaveFeedback(false);
       saveTimerRef.current = null;
     }, 2200);
-  }, [buildLiveDocument, isReadOnly, onSaveDocument]);
+  }, [buildLiveDocument, isEditingLocked, onSaveDocument]);
 
   const handleRenameTitle = useCallback(
     (newTitle: string) => {
-      if (isReadOnly) {
+      if (isEditingLocked) {
         return;
       }
       const liveDoc = buildLiveDocument();
@@ -2179,12 +2555,12 @@ export function SlideWorkspace({
         saveTimerRef.current = null;
       }, 2200);
     },
-    [accentColor, buildLiveDocument, document.type, isReadOnly, onSaveDocument]
+    [accentColor, buildLiveDocument, document.type, isEditingLocked, onSaveDocument]
   );
 
   // Auto-save with 1800ms debounce when autoSaveEnabled is on
   useEffect(() => {
-    if (isReadOnly || !autoSaveEnabled || !isDirty) {
+    if (isEditingLocked || !autoSaveEnabled || !isDirty) {
       return;
     }
     const timerId = window.setTimeout(() => {
@@ -2193,7 +2569,7 @@ export function SlideWorkspace({
     return () => {
       window.clearTimeout(timerId);
     };
-  }, [autoSaveEnabled, isDirty, isReadOnly, slides, handleSave]);
+  }, [autoSaveEnabled, isDirty, isEditingLocked, slides, handleSave]);
 
   const getMaxAnimationStep = useCallback((slide: SlidePreviewItem | undefined): number => {
     if (!slide?.blocks) {
@@ -2320,7 +2696,13 @@ export function SlideWorkspace({
   // Keyboard navigation + Slideshow shortcuts + Ctrl/Cmd+S save
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (isModalOpen || isChartModalOpen || linkMediaModalMode !== null) {
+      if (
+        isModalOpen ||
+        isChartModalOpen ||
+        isFileInfoOpen ||
+        aiModalState.isOpen ||
+        linkMediaModalMode !== null
+      ) {
         return;
       }
 
@@ -2364,7 +2746,7 @@ export function SlideWorkspace({
 
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
         event.preventDefault();
-        if (!isReadOnly) {
+        if (!isEditingLocked) {
           handleSave();
         }
         return;
@@ -2375,9 +2757,24 @@ export function SlideWorkspace({
           setThumbContextMenu(null);
           return;
         }
-        if (isLayoutPickerOpen || isShapePickerOpen) {
-          setIsLayoutPickerOpen(false);
+        if (copiedBlockStyle) {
+          setCopiedBlockStyle(null);
+          return;
+        }
+        if (activeDrawTool) {
+          setActiveDrawTool(null);
+          return;
+        }
+        if (
+          layoutPickerMode !== null ||
+          isShapePickerOpen ||
+          isCaseMenuOpen ||
+          isHighlightMenuOpen
+        ) {
+          setLayoutPickerMode(null);
           setIsShapePickerOpen(false);
+          setIsCaseMenuOpen(false);
+          setIsHighlightMenuOpen(false);
           return;
         }
         if (isMobileSheetOpen) {
@@ -2437,16 +2834,22 @@ export function SlideWorkspace({
     isLaserActive,
     isModalOpen,
     isChartModalOpen,
+    isFileInfoOpen,
+    aiModalState.isOpen,
     linkMediaModalMode,
-    isLayoutPickerOpen,
+    layoutPickerMode,
     isShapePickerOpen,
+    isCaseMenuOpen,
+    isHighlightMenuOpen,
+    copiedBlockStyle,
+    activeDrawTool,
     thumbContextMenu,
     isSlideshowActive,
     isSlideshowGridOpen,
     selectedBlockId,
     selectedBlockIds.length,
     selectedImageId,
-    isReadOnly,
+    isEditingLocked,
     startSlideshow,
     advanceSlideshowStep,
     retreatSlideshowStep,
@@ -2462,7 +2865,7 @@ export function SlideWorkspace({
 
   const mutateSlideAt = useCallback(
     (targetIdx: number, updater: (slide: SlidePreviewItem) => SlidePreviewItem) => {
-      if (isReadOnly) {
+      if (isEditingLocked) {
         return;
       }
       localMutationPendingRef.current = true;
@@ -2476,11 +2879,11 @@ export function SlideWorkspace({
       setSaveFeedback(false);
       notifyTypingActivity(true);
     },
-    [isReadOnly, notifyTypingActivity]
+    [isEditingLocked, notifyTypingActivity]
   );
 
   const handleAddSlide = () => {
-    if (isReadOnly) {
+    if (isEditingLocked) {
       return;
     }
     localMutationPendingRef.current = true;
@@ -2556,7 +2959,7 @@ export function SlideWorkspace({
   };
 
   const handleDuplicateSlide = () => {
-    if (isReadOnly) {
+    if (isEditingLocked) {
       return;
     }
     localMutationPendingRef.current = true;
@@ -2599,7 +3002,7 @@ export function SlideWorkspace({
   };
 
   const handleDeleteSlide = () => {
-    if (isReadOnly || slides.length <= 1) {
+    if (isEditingLocked || slides.length <= 1) {
       return;
     }
     localMutationPendingRef.current = true;
@@ -2616,7 +3019,7 @@ export function SlideWorkspace({
   };
 
   const handleAddTextBlock = () => {
-    if (isReadOnly) {
+    if (isEditingLocked) {
       return;
     }
     setViewMode('edit');
@@ -2655,7 +3058,7 @@ export function SlideWorkspace({
   };
 
   const handleTriggerAddImage = () => {
-    if (isReadOnly) {
+    if (isEditingLocked) {
       return;
     }
     setViewMode('edit');
@@ -2755,16 +3158,18 @@ export function SlideWorkspace({
   };
 
   const handleToggleBlockUnderline = (blockId: string) => {
-    if (isReadOnly) {
+    if (isEditingLocked) {
       return;
     }
+    const targetBlock = currentBlocks.find((b) => b.id === blockId);
+    const nextUnderline = !(
+      Boolean(targetBlock?.underline) || Boolean(underlinedBlockIds[blockId])
+    );
+    handleUpdateBlock(blockId, { underline: nextUnderline });
     setUnderlinedBlockIds((prev) => ({
       ...prev,
-      [blockId]: !prev[blockId],
+      [blockId]: nextUnderline,
     }));
-    setIsDirty(true);
-    setHasLocalEdits(true);
-    setSaveFeedback(false);
   };
 
   const handleApplyBlockPreset = (
@@ -2785,6 +3190,12 @@ export function SlideWorkspace({
     handleUpdateBlock(blockId, {
       bold: false,
       italic: false,
+      underline: false,
+      strikethrough: false,
+      highlightColor: undefined,
+      textScript: 'normal',
+      lineHeight: undefined,
+      textColumns: 1,
       fillColor: undefined,
       color: defaultTextColor,
     });
@@ -2822,7 +3233,7 @@ export function SlideWorkspace({
   };
 
   const handleDuplicateSlideAt = (targetIdx: number) => {
-    if (isReadOnly) {
+    if (isEditingLocked) {
       return;
     }
     const targetSlide = slides[targetIdx];
@@ -2869,7 +3280,7 @@ export function SlideWorkspace({
   };
 
   const handleDeleteSlideAt = (targetIdx: number) => {
-    if (isReadOnly || slides.length <= 1) {
+    if (isEditingLocked || slides.length <= 1) {
       return;
     }
     localMutationPendingRef.current = true;
@@ -2892,7 +3303,7 @@ export function SlideWorkspace({
   };
 
   const handleToggleHideSlide = (targetIdx: number) => {
-    if (isReadOnly) {
+    if (isEditingLocked) {
       return;
     }
     mutateSlideAt(targetIdx, (slide) => ({
@@ -2902,7 +3313,7 @@ export function SlideWorkspace({
   };
 
   const handleReorderSlide = (fromIdx: number, toIdx: number) => {
-    if (isReadOnly || fromIdx === toIdx) {
+    if (isEditingLocked || fromIdx === toIdx) {
       return;
     }
     localMutationPendingRef.current = true;
@@ -2934,12 +3345,53 @@ export function SlideWorkspace({
   };
 
   const handleApplySlideLayout = (layoutId: PptSlideLayoutId) => {
-    if (isReadOnly) {
+    if (isEditingLocked) {
       return;
     }
     setViewMode('edit');
-    setIsLayoutPickerOpen(false);
+    const mode = layoutPickerMode ?? 'change';
+    setLayoutPickerMode(null);
     const isLight = isLightHexBackground(currentSlide.backgroundColor);
+    if (mode === 'add') {
+      uidRef.current += 1;
+      const newSlideId = `${document.id}-lay-slide-${Date.now()}-${uidRef.current}`;
+      const layBlocks = createBlocksForSlideLayout(layoutId, newSlideId, {
+        titleColor: isLight ? '#0F172A' : '#FFFFFF',
+        bodyColor: isLight ? '#334155' : '#E2E8F0',
+        accentColor,
+      });
+      const newSlide: SlidePreviewItem = syncSlideSummary(
+        {
+          id: newSlideId,
+          index: safeSlideIdx + 2,
+          title: 'Slide mới',
+          bullets: [],
+          accentColor,
+          speakerNote: '',
+          isMasterPositioned: true,
+          slideWidthRatio: currentAspectRatio,
+          backgroundColor: currentSlide.backgroundColor ?? '#161D2E',
+          backgroundGradient: currentSlide.backgroundGradient,
+          blocks: layBlocks,
+        },
+        safeSlideIdx + 1
+      );
+      localMutationPendingRef.current = true;
+      setHasLocalEdits(true);
+      setSlides((prev) => {
+        const insertAt = Math.min(safeSlideIdx + 1, prev.length);
+        const next = [...prev.slice(0, insertAt), newSlide, ...prev.slice(insertAt)];
+        return next.map((item, idx) => ({ ...item, index: idx + 1 }));
+      });
+      setActiveSlideIdx(safeSlideIdx + 1);
+      setSelectedBlockId(layBlocks[0]?.id ?? null);
+      setSelectedBlockIds(layBlocks[0] ? [layBlocks[0].id] : []);
+      setSelectedImageId(null);
+      setIsDirty(true);
+      setSaveFeedback(false);
+      return;
+    }
+
     const newBlocks = createBlocksForSlideLayout(
       layoutId,
       `${currentSlide.id}-${Date.now()}`,
@@ -2959,8 +3411,44 @@ export function SlideWorkspace({
     setSelectedImageId(null);
   };
 
+  const handleResetCurrentSlide = () => {
+    if (isEditingLocked) {
+      return;
+    }
+    const isLight = isLightHexBackground(currentSlide.backgroundColor);
+    const existingTitle =
+      currentBlocks.find((b) => b.role === 'title')?.text || currentSlide.title;
+    const existingBody = currentBlocks
+      .filter((b) => b.role !== 'title' && b.kind !== 'shape' && b.kind !== 'chart' && b.kind !== 'media')
+      .map((b) => b.text)
+      .filter(Boolean)
+      .join('\n');
+    const resetBlocks = createBlocksForSlideLayout(
+      'title_content',
+      `${currentSlide.id}-reset-${Date.now()}`,
+      {
+        titleColor: isLight ? '#0F172A' : '#FFFFFF',
+        bodyColor: isLight ? '#334155' : '#E2E8F0',
+        accentColor,
+      }
+    );
+    if (resetBlocks[0] && existingTitle) {
+      resetBlocks[0] = { ...resetBlocks[0], text: existingTitle };
+    }
+    if (resetBlocks[1] && existingBody) {
+      resetBlocks[1] = { ...resetBlocks[1], text: existingBody };
+    }
+    mutateSlideAt(safeSlideIdx, (slide) => ({
+      ...slide,
+      isMasterPositioned: true,
+      blocks: resetBlocks,
+    }));
+    setSelectedBlockId(resetBlocks[0]?.id ?? null);
+    setSelectedBlockIds(resetBlocks[0] ? [resetBlocks[0].id] : []);
+  };
+
   const handleInsertShape = (shapeKind: PptShapeKind) => {
-    if (isReadOnly) {
+    if (isEditingLocked) {
       return;
     }
     setViewMode('edit');
@@ -2998,7 +3486,7 @@ export function SlideWorkspace({
   };
 
   const handleInsertTable = (rows = 3, cols = 3) => {
-    if (isReadOnly) {
+    if (isEditingLocked) {
       return;
     }
     setViewMode('edit');
@@ -3035,7 +3523,7 @@ export function SlideWorkspace({
   };
 
   const handleInsertChart = (chartData: SlideChartData) => {
-    if (isReadOnly) {
+    if (isEditingLocked) {
       return;
     }
     setViewMode('edit');
@@ -3065,7 +3553,7 @@ export function SlideWorkspace({
   };
 
   const handleInsertLinkBlock = (label: string, url: string) => {
-    if (isReadOnly) {
+    if (isEditingLocked) {
       return;
     }
     setViewMode('edit');
@@ -3102,7 +3590,7 @@ export function SlideWorkspace({
     src: string,
     label: string
   ) => {
-    if (isReadOnly) {
+    if (isEditingLocked) {
       return;
     }
     setViewMode('edit');
@@ -3133,30 +3621,42 @@ export function SlideWorkspace({
   };
 
   const handleApplyColorTheme = (theme: PptColorTheme) => {
-    if (isReadOnly) {
+    if (isEditingLocked) {
       return;
     }
     setViewMode('edit');
-    mutateSlideAt(safeSlideIdx, (slide) => ({
-      ...slide,
-      backgroundColor: theme.bgColor,
-      backgroundGradient: theme.bgGradient,
-      backgroundImageSrc: undefined,
-      accentColor: theme.accentColor,
-      blocks: (slide.blocks ?? []).map((blk) =>
-        blk.kind === 'shape' || blk.kind === 'chart' || blk.kind === 'media'
-          ? blk
-          : {
-              ...blk,
-              color:
-                blk.role === 'title' ? theme.titleColor : theme.bodyColor,
-            }
-      ),
-    }));
+    localMutationPendingRef.current = true;
+    setHasLocalEdits(true);
+    setSlides((prev) =>
+      prev.map((slide, idx) =>
+        syncSlideSummary(
+          {
+            ...slide,
+            backgroundColor: theme.bgColor,
+            backgroundGradient: theme.bgGradient,
+            backgroundImageSrc: undefined,
+            accentColor: theme.accentColor,
+            blocks: (slide.blocks ?? []).map((blk) =>
+              blk.kind === 'shape' || blk.kind === 'chart' || blk.kind === 'media'
+                ? blk
+                : {
+                    ...blk,
+                    color:
+                      blk.role === 'title' ? theme.titleColor : theme.bodyColor,
+                  }
+            ),
+          },
+          idx
+        )
+      )
+    );
+    setIsDirty(true);
+    setSaveFeedback(false);
+    notifyTypingActivity(true);
   };
 
   const handleApplySlideGradient = (gradient: string) => {
-    if (isReadOnly) {
+    if (isEditingLocked) {
       return;
     }
     setViewMode('edit');
@@ -3174,7 +3674,7 @@ export function SlideWorkspace({
   ) => {
     const file = event.target.files?.[0];
     event.target.value = '';
-    if (!file || isReadOnly) {
+    if (!file || isEditingLocked) {
       return;
     }
     try {
@@ -3190,7 +3690,7 @@ export function SlideWorkspace({
   };
 
   const handleApplyBackgroundToAll = () => {
-    if (isReadOnly) {
+    if (isEditingLocked) {
       return;
     }
     localMutationPendingRef.current = true;
@@ -3214,7 +3714,7 @@ export function SlideWorkspace({
   };
 
   const handleApplyTransitionToAll = () => {
-    if (isReadOnly) {
+    if (isEditingLocked) {
       return;
     }
     const baseTransition = currentSlide.transition ?? {
@@ -3239,7 +3739,7 @@ export function SlideWorkspace({
   };
 
   const handleBringToFront = (blockId: string) => {
-    if (isReadOnly) {
+    if (isEditingLocked) {
       return;
     }
     const maxZ = currentBlocks.reduce(
@@ -3250,7 +3750,7 @@ export function SlideWorkspace({
   };
 
   const handleSendToBack = (blockId: string) => {
-    if (isReadOnly) {
+    if (isEditingLocked) {
       return;
     }
     const minZ = currentBlocks.reduce(
@@ -3261,7 +3761,7 @@ export function SlideWorkspace({
   };
 
   const handleGroupSelected = () => {
-    if (isReadOnly || selectedBlockIds.length < 2) {
+    if (isEditingLocked || selectedBlockIds.length < 2) {
       return;
     }
     const newGroupId = `grp-${Date.now()}`;
@@ -3275,7 +3775,7 @@ export function SlideWorkspace({
   };
 
   const handleUngroupSelected = () => {
-    if (isReadOnly || !selectedBlock?.groupId) {
+    if (isEditingLocked || !selectedBlock?.groupId) {
       return;
     }
     const targetGrp = selectedBlock.groupId;
@@ -3287,51 +3787,444 @@ export function SlideWorkspace({
     }));
   };
 
+  // --- ONLYOFFICE 11-Tab Pro Suite Handlers ---
+
+  const handleCopyObject = () => {
+    if (selectedBlock) {
+      setClipboardItem({
+        kind: 'block',
+        data: {
+          ...selectedBlock,
+          tableRows: selectedBlock.tableRows
+            ? selectedBlock.tableRows.map((r) => [...r])
+            : undefined,
+        },
+      });
+    } else if (selectedImage) {
+      setClipboardItem({ kind: 'image', data: { ...selectedImage } });
+    }
+  };
+
+  const handleCutObject = () => {
+    if (isEditingLocked) {
+      return;
+    }
+    handleCopyObject();
+    if (selectedBlock) {
+      handleDeleteBlock(selectedBlock.id);
+    } else if (selectedImage) {
+      handleDeleteImage(selectedImage.id);
+    }
+  };
+
+  const handlePasteObject = () => {
+    if (isEditingLocked || !clipboardItem) {
+      return;
+    }
+    setViewMode('edit');
+    uidRef.current += 1;
+    if (clipboardItem.kind === 'block') {
+      const pasteId = `${currentSlide.id}-paste-${Date.now()}-${uidRef.current}`;
+      const pasted: SlideTextBlock = {
+        ...clipboardItem.data,
+        id: pasteId,
+        xPct: Math.min(80, (clipboardItem.data.xPct ?? 12) + 3),
+        yPct: Math.min(80, (clipboardItem.data.yPct ?? 18) + 3),
+        zIndex: currentBlocks.length + 1,
+      };
+      mutateSlideAt(safeSlideIdx, (s) => ({
+        ...s,
+        isMasterPositioned: true,
+        blocks: [...(s.blocks ?? []), pasted],
+      }));
+      setSelectedBlockId(pasteId);
+      setSelectedBlockIds([pasteId]);
+      setSelectedImageId(null);
+    } else {
+      const pasteImgId = `${currentSlide.id}-paste-img-${Date.now()}-${uidRef.current}`;
+      const pastedImg: SlideImageItem = {
+        ...clipboardItem.data,
+        id: pasteImgId,
+        xPct: Math.min(75, (clipboardItem.data.xPct ?? 24) + 3),
+        yPct: Math.min(75, (clipboardItem.data.yPct ?? 20) + 3),
+      };
+      mutateSlideAt(safeSlideIdx, (s) => ({
+        ...s,
+        isMasterPositioned: true,
+        images: [...(s.images ?? []), pastedImg],
+      }));
+      setSelectedImageId(pasteImgId);
+      setSelectedBlockId(null);
+    }
+  };
+
+  const handleToggleFormatPainter = () => {
+    if (isEditingLocked) {
+      return;
+    }
+    if (copiedBlockStyle) {
+      setCopiedBlockStyle(null);
+      return;
+    }
+    if (!selectedBlock) {
+      return;
+    }
+    setCopiedBlockStyle({
+      fontSize: selectedBlock.fontSize,
+      fontFamily: selectedBlock.fontFamily,
+      bold: selectedBlock.bold,
+      italic: selectedBlock.italic,
+      underline: Boolean(
+        selectedBlock.underline || underlinedBlockIds[selectedBlock.id]
+      ),
+      strikethrough: selectedBlock.strikethrough,
+      color: selectedBlock.color,
+      highlightColor: selectedBlock.highlightColor,
+      align: selectedBlock.align,
+      valign: selectedBlock.valign,
+      lineHeight: selectedBlock.lineHeight,
+      textColumns: selectedBlock.textColumns,
+      fillColor: selectedBlock.fillColor,
+      borderColor: selectedBlock.borderColor,
+    });
+  };
+
+  const applyCopiedStyleToBlock = (targetBlockId: string): boolean => {
+    if (!copiedBlockStyle || isEditingLocked) {
+      return false;
+    }
+    handleUpdateBlock(targetBlockId, copiedBlockStyle);
+    if (typeof copiedBlockStyle.underline === 'boolean') {
+      setUnderlinedBlockIds((prev) => ({
+        ...prev,
+        [targetBlockId]: Boolean(copiedBlockStyle.underline),
+      }));
+    }
+    setCopiedBlockStyle(null);
+    return true;
+  };
+
+  const handleTransformBlockCase = (
+    mode: 'upper' | 'lower' | 'sentence' | 'title'
+  ) => {
+    if (isEditingLocked || !selectedBlock) {
+      return;
+    }
+    setIsCaseMenuOpen(false);
+    const src = selectedBlock.text;
+    let nextText = src;
+    if (mode === 'upper') {
+      nextText = src.toLocaleUpperCase('vi-VN');
+    } else if (mode === 'lower') {
+      nextText = src.toLocaleLowerCase('vi-VN');
+    } else if (mode === 'sentence') {
+      const lower = src.toLocaleLowerCase('vi-VN');
+      nextText = lower.replace(/(^\s*|[.!?]\s+)(\p{L})/gu, (_, p1: string, ch: string) => `${p1}${ch.toLocaleUpperCase('vi-VN')}`);
+    } else {
+      nextText = src
+        .toLocaleLowerCase('vi-VN')
+        .replace(/(^|\s)(\p{L})/gu, (_, sp: string, ch: string) => `${sp}${ch.toLocaleUpperCase('vi-VN')}`);
+    }
+    handleUpdateBlock(selectedBlock.id, { text: nextText, richParagraphs: undefined });
+  };
+
+  const handleToggleBlockLinesList = (mode: 'bullet' | 'number') => {
+    if (isEditingLocked || !selectedBlock) {
+      return;
+    }
+    const lines = selectedBlock.text.split('\n');
+    const allMatch =
+      mode === 'bullet'
+        ? lines.every((l) => !l.trim() || /^\s*[•\-*]\s+/.test(l))
+        : lines.every((l) => !l.trim() || /^\s*\d+\.\s+/.test(l));
+    const nextLines = lines.map((line, i) => {
+      const cleaned = line.replace(/^(\s*)(?:[•\-*]|\d+\.)\s+/, '$1');
+      if (!cleaned.trim() || allMatch) {
+        return cleaned;
+      }
+      const indentMatch = cleaned.match(/^(\s*)(.*)$/);
+      const indent = indentMatch?.[1] ?? '';
+      const body = indentMatch?.[2] ?? cleaned;
+      return mode === 'bullet'
+        ? `${indent}• ${body}`
+        : `${indent}${i + 1}. ${body}`;
+    });
+    handleUpdateBlock(selectedBlock.id, {
+      text: nextLines.join('\n'),
+      richParagraphs: undefined,
+    });
+  };
+
+  const handleAdjustBlockIndent = (delta: 1 | -1) => {
+    if (isEditingLocked || !selectedBlock) {
+      return;
+    }
+    const lines = selectedBlock.text.split('\n');
+    const nextLines = lines.map((line) =>
+      delta > 0 ? `  ${line}` : line.replace(/^ {1,2}|\t/, '')
+    );
+    handleUpdateBlock(selectedBlock.id, {
+      text: nextLines.join('\n'),
+      richParagraphs: undefined,
+    });
+  };
+
+  const handleToggleSlideNumber = () => {
+    if (isEditingLocked) {
+      return;
+    }
+    mutateSlideAt(safeSlideIdx, (s) => ({
+      ...s,
+      showSlideNumber: !s.showSlideNumber,
+    }));
+  };
+
+  const handleUpdateSlideFooter = (footerText: string) => {
+    if (isEditingLocked) {
+      return;
+    }
+    mutateSlideAt(safeSlideIdx, (s) => ({
+      ...s,
+      footerText,
+    }));
+  };
+
+  const handleApplyFooterToAll = () => {
+    if (isEditingLocked) {
+      return;
+    }
+    const footerText = currentSlide.footerText ?? '';
+    const showSlideNumber = Boolean(currentSlide.showSlideNumber);
+    localMutationPendingRef.current = true;
+    setHasLocalEdits(true);
+    setSlides((prev) =>
+      prev.map((slide, idx) =>
+        syncSlideSummary(
+          {
+            ...slide,
+            footerText,
+            showSlideNumber,
+          },
+          idx
+        )
+      )
+    );
+    setIsDirty(true);
+    setSaveFeedback(false);
+    notifyTypingActivity(true);
+  };
+
+  const handleChangeSlideDrawings = (nextStrokes: SlideDrawingStroke[]) => {
+    if (isEditingLocked) {
+      return;
+    }
+    mutateSlideAt(safeSlideIdx, (s) => ({
+      ...s,
+      drawings: nextStrokes,
+    }));
+  };
+
+  const handleUndoSlideStroke = () => {
+    if (isEditingLocked) {
+      return;
+    }
+    const cur = currentSlide.drawings ?? [];
+    if (cur.length === 0) {
+      return;
+    }
+    handleChangeSlideDrawings(cur.slice(0, -1));
+  };
+
+  const handleClearSlideStrokes = () => {
+    if (isEditingLocked || (currentSlide.drawings?.length ?? 0) === 0) {
+      return;
+    }
+    handleChangeSlideDrawings([]);
+  };
+
+  const handleChangeSlideAspectRatio = (ratio: number) => {
+    if (isEditingLocked) {
+      return;
+    }
+    setDeckAspectRatio(ratio);
+    localMutationPendingRef.current = true;
+    setHasLocalEdits(true);
+    setSlides((prev) =>
+      prev.map((s, idx) =>
+        syncSlideSummary({ ...s, slideWidthRatio: ratio }, idx)
+      )
+    );
+    setIsDirty(true);
+    setSaveFeedback(false);
+    notifyTypingActivity(true);
+  };
+
+  const handlePreviewTransition = () => {
+    setPreviewTransitionKey((k) => k + 1);
+  };
+
+  const handlePreviewAnimations = () => {
+    setIsPreviewingAnims(false);
+    window.requestAnimationFrame(() => {
+      setPreviewAnimKey((k) => k + 1);
+      setIsPreviewingAnims(true);
+    });
+  };
+
+  const handleAddSlideComment = (text: string) => {
+    if (isEditingLocked) {
+      return;
+    }
+    const newComment: SlideCommentItem = {
+      id: `cmt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      text,
+      author: 'Bạn',
+      createdAt: new Date().toISOString(),
+    };
+    mutateSlideAt(safeSlideIdx, (s) => ({
+      ...s,
+      comments: [...(s.comments ?? []), newComment],
+    }));
+  };
+
+  const handleDeleteSlideComment = (commentId: string) => {
+    if (isEditingLocked) {
+      return;
+    }
+    mutateSlideAt(safeSlideIdx, (s) => ({
+      ...s,
+      comments: (s.comments ?? []).filter((c) => c.id !== commentId),
+    }));
+  };
+
+  const handleTogglePresentationProtection = () => {
+    if (isReadOnly) {
+      return;
+    }
+    const nextProtected = !isPresentationProtected;
+    setIsPresentationProtected(nextProtected);
+    if (nextProtected) {
+      setSelectedBlockId(null);
+      setSelectedBlockIds([]);
+      setEditingBlockId(null);
+      setSelectedImageId(null);
+      setActiveDrawTool(null);
+      setCopiedBlockStyle(null);
+    }
+    const live = buildLiveDocument();
+    onSaveDocument({ ...live, slideProtected: nextProtected });
+    setIsDirty(false);
+    setSaveFeedback(true);
+    if (saveTimerRef.current !== null) {
+      window.clearTimeout(saveTimerRef.current);
+    }
+    saveTimerRef.current = window.setTimeout(() => {
+      setSaveFeedback(false);
+      saveTimerRef.current = null;
+    }, 2200);
+  };
+
+  const handleSaveCopyPptx = async () => {
+    if (isExporting) {
+      return;
+    }
+    setIsExporting(true);
+    setExportError(null);
+    try {
+      const syncedSlides = slides.map((s, idx) => syncSlideSummary(s, idx));
+      await exportSlidesToPptx(
+        `${document.title} (Bản sao)`,
+        syncedSlides,
+        currentAspectRatio
+      );
+    } catch {
+      setExportError('Không thể lưu bản sao .pptx. Vui lòng thử lại.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleDownloadOriginalFileAction = async () => {
+    setExportError(null);
+    try {
+      if (workspaceSync.onDownloadOriginalFile) {
+        await workspaceSync.onDownloadOriginalFile();
+        return;
+      }
+      if (document.rawArrayBuffer && document.rawArrayBuffer.byteLength > 0) {
+        await exportOriginalDocumentBinary(
+          buildLiveDocument(),
+          document.rawArrayBuffer
+        );
+        return;
+      }
+      await handleExportPptx();
+    } catch {
+      setExportError('Không thể tải bản gốc .pptx.');
+    }
+  };
+
+  const handleExportPdfAction = async () => {
+    setExportError(null);
+    try {
+      await downloadDocumentAsPdf(buildLiveDocument());
+    } catch {
+      setExportError('Không thể xuất bài thuyết trình sang PDF.');
+    }
+  };
+
+  const handlePrintDeck = () => {
+    window.print();
+  };
+
+  const handleAppendAiSlides = (newSlides: SlidePreviewItem[]) => {
+    if (isEditingLocked || newSlides.length === 0) {
+      return;
+    }
+    localMutationPendingRef.current = true;
+    setHasLocalEdits(true);
+    const startLength = slides.length;
+    setSlides((prev) =>
+      [...prev, ...newSlides].map((s, idx) => syncSlideSummary(s, idx))
+    );
+    setActiveSlideIdx(startLength);
+    setIsDirty(true);
+    setSaveFeedback(false);
+    notifyTypingActivity(true);
+  };
+
+  const handleUpdateSlideNoteAt = (slideIndex: number, note: string) => {
+    if (isEditingLocked) {
+      return;
+    }
+    mutateSlideAt(slideIndex, (s) => ({ ...s, speakerNote: note }));
+  };
+
+  const handleApplyAllEmptyAiNotes = (notesBySlideId: Record<string, string>) => {
+    if (isEditingLocked) {
+      return;
+    }
+    localMutationPendingRef.current = true;
+    setHasLocalEdits(true);
+    setSlides((prev) =>
+      prev.map((s, idx) => {
+        const suggested = notesBySlideId[s.id];
+        if (!suggested || (s.speakerNote ?? '').trim().length > 0) {
+          return s;
+        }
+        return syncSlideSummary({ ...s, speakerNote: suggested }, idx);
+      })
+    );
+    setIsDirty(true);
+    setSaveFeedback(false);
+    notifyTypingActivity(true);
+  };
+
   const handleSpeakerNoteChange = (value: string) => {
     mutateSlideAt(safeSlideIdx, (slide) => ({
       ...slide,
       speakerNote: value,
     }));
-  };
-
-  const handleDownloadOriginal = async () => {
-    if (isDownloadingOriginal) {
-      return;
-    }
-    setIsDownloadingOriginal(true);
-    setExportError(null);
-    setDownloadOriginalNotice(null);
-    try {
-      if (onDownloadOriginalFile) {
-        await onDownloadOriginalFile();
-        return;
-      }
-
-      const res = await exportOriginalDocumentBinary(
-        buildLiveDocument(),
-        document.rawArrayBuffer
-      );
-      setDownloadOriginalNotice(res.message);
-
-      if (downloadNoticeTimerRef.current !== null) {
-        window.clearTimeout(downloadNoticeTimerRef.current);
-      }
-      downloadNoticeTimerRef.current = window.setTimeout(() => {
-        setDownloadOriginalNotice(null);
-        downloadNoticeTimerRef.current = null;
-      }, 4500);
-    } catch {
-      setExportError('Không thể tải xuống bản gốc. Vui lòng thử lại.');
-      if (exportErrorTimerRef.current !== null) {
-        window.clearTimeout(exportErrorTimerRef.current);
-      }
-      exportErrorTimerRef.current = window.setTimeout(() => {
-        setExportError(null);
-        exportErrorTimerRef.current = null;
-      }, 3500);
-    } finally {
-      setIsDownloadingOriginal(false);
-    }
   };
 
   const handleExportPptx = async () => {
@@ -3345,7 +4238,9 @@ export function SlideWorkspace({
         syncSlideSummary(slide, idx)
       );
       const exportAspectRatio =
-        document.slideAspectRatio ?? syncedSlides[0]?.slideWidthRatio;
+        currentAspectRatio ??
+        document.slideAspectRatio ??
+        syncedSlides[0]?.slideWidthRatio;
       await exportSlidesToPptx(document.title, syncedSlides, exportAspectRatio);
     } catch {
       setExportError('Không thể xuất tệp .pptx. Vui lòng thử lại.');
@@ -3404,7 +4299,8 @@ export function SlideWorkspace({
     }
   ) => {
     if (
-      isReadOnly ||
+      isEditingLocked ||
+      activeDrawTool !== null ||
       viewMode === 'native' ||
       isLaserActive ||
       isSlideshowActive ||
@@ -3613,7 +4509,7 @@ export function SlideWorkspace({
     dir: ResizeHandleDir,
     params: { kind: "block" | "image"; id: string; xPct: number; yPct: number; wPct: number; hPct: number }
   ) => {
-    if (isReadOnly || isLaserActive || isSlideshowActive || event.button !== 0) return;
+    if (isEditingLocked || activeDrawTool !== null || isLaserActive || isSlideshowActive || event.button !== 0) return;
     event.stopPropagation();
     const startX = event.clientX;
     const startY = event.clientY;
@@ -3674,7 +4570,7 @@ export function SlideWorkspace({
       hPct: number;
     }
   ) => {
-    if (isReadOnly || isLaserActive || isSlideshowActive || event.button !== 0) {
+    if (isEditingLocked || activeDrawTool !== null || isLaserActive || isSlideshowActive || event.button !== 0) {
       return;
     }
     const canvasRect = editorCanvasRef.current?.getBoundingClientRect();
@@ -3782,14 +4678,20 @@ export function SlideWorkspace({
   };
 
   const renderSlideActionButtons = () => (
-    <div className="shrink-0 p-2.5 border-b border-white/10 grid grid-cols-3 gap-1.5 bg-[#111620]">
+    <div className="shrink-0 p-2.5 border-b border-slate-200/80 grid grid-cols-3 gap-1.5 bg-[#F8FAFC]">
       <button
         type="button"
         onMouseDown={handlePreventMouseDown}
         onClick={handleAddSlide}
-        disabled={isReadOnly}
-        title={isReadOnly ? 'Bạn chỉ có quyền xem' : 'Thêm slide mới'}
-        className="inline-flex items-center justify-center gap-1 min-h-[34px] px-2 rounded-lg bg-indigo-600/90 hover:bg-indigo-500 text-[11px] font-semibold text-white transition-colors whitespace-nowrap disabled:opacity-35 disabled:cursor-not-allowed"
+        disabled={isEditingLocked}
+        title={
+          isReadOnly
+            ? 'Bạn chỉ có quyền xem'
+            : isPresentationProtected
+              ? 'Bài thuyết trình đang ở chế độ Chỉ đọc'
+              : 'Thêm slide mới'
+        }
+        className="inline-flex items-center justify-center gap-1 min-h-[34px] px-2 rounded-lg bg-[#C43E1C] hover:bg-[#9E3014] text-[11px] font-semibold text-white shadow-xs transition-colors whitespace-nowrap disabled:opacity-35 disabled:cursor-not-allowed"
       >
         <Plus className="h-3.5 w-3.5 shrink-0" />
         <span>Thêm</span>
@@ -3798,9 +4700,15 @@ export function SlideWorkspace({
         type="button"
         onMouseDown={handlePreventMouseDown}
         onClick={handleDuplicateSlide}
-        disabled={isReadOnly}
-        title={isReadOnly ? 'Bạn chỉ có quyền xem' : 'Nhân bản slide đang chọn'}
-        className="inline-flex items-center justify-center gap-1 min-h-[34px] px-2 rounded-lg bg-white/[0.07] hover:bg-white/[0.14] border border-white/10 text-[11px] font-medium text-slate-200 transition-colors whitespace-nowrap disabled:opacity-35 disabled:cursor-not-allowed"
+        disabled={isEditingLocked}
+        title={
+          isReadOnly
+            ? 'Bạn chỉ có quyền xem'
+            : isPresentationProtected
+              ? 'Bài thuyết trình đang ở chế độ Chỉ đọc'
+              : 'Nhân bản slide đang chọn'
+        }
+        className="inline-flex items-center justify-center gap-1 min-h-[34px] px-2 rounded-lg bg-white hover:bg-[#FFF4ED] border border-slate-200 hover:border-[#C43E1C]/40 text-[11px] font-medium text-slate-700 hover:text-[#C43E1C] transition-colors whitespace-nowrap disabled:opacity-35 disabled:cursor-not-allowed"
       >
         <Copy className="h-3 w-3 shrink-0" />
         <span>Nhân bản</span>
@@ -3809,15 +4717,17 @@ export function SlideWorkspace({
         type="button"
         onMouseDown={handlePreventMouseDown}
         onClick={handleDeleteSlide}
-        disabled={isReadOnly || slides.length <= 1}
+        disabled={isEditingLocked || slides.length <= 1}
         title={
           isReadOnly
             ? 'Bạn chỉ có quyền xem'
-            : slides.length <= 1
-              ? 'Không thể xóa slide cuối cùng'
-              : 'Xóa slide đang chọn'
+            : isPresentationProtected
+              ? 'Bài thuyết trình đang ở chế độ Chỉ đọc'
+              : slides.length <= 1
+                ? 'Không thể xóa slide cuối cùng'
+                : 'Xóa slide đang chọn'
         }
-        className="inline-flex items-center justify-center gap-1 min-h-[34px] px-2 rounded-lg bg-white/[0.05] hover:bg-rose-500/20 border border-white/10 hover:border-rose-400/40 text-[11px] font-medium text-slate-300 hover:text-rose-200 transition-colors whitespace-nowrap disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:bg-white/[0.05] disabled:hover:border-white/10 disabled:hover:text-slate-300"
+        className="inline-flex items-center justify-center gap-1 min-h-[34px] px-2 rounded-lg bg-white hover:bg-rose-50 border border-slate-200 hover:border-rose-300 text-[11px] font-medium text-slate-700 hover:text-rose-600 transition-colors whitespace-nowrap disabled:opacity-35 disabled:cursor-not-allowed"
       >
         <Trash2 className="h-3 w-3 shrink-0" />
         <span>Xóa</span>
@@ -3833,7 +4743,8 @@ export function SlideWorkspace({
         const isLightThumb = isLightHexBackground(slide.backgroundColor);
         const imageCount = slide.images?.length ?? 0;
         const thumbPositioned = isSlideMasterPositioned(slide);
-        const thumbAspectRatio = getSafeAspectRatio(slide, document);
+        const thumbAspectRatio =
+          deckAspectRatio ?? getSafeAspectRatio(slide, document);
         const slideCollaborators = collaborators.filter(
           (c) => c.sessionId !== selfSessionId && c.slideIndex === idx
         );
@@ -3849,16 +4760,16 @@ export function SlideWorkspace({
                 : undefined
             }
             type="button"
-            draggable={!isReadOnly}
+            draggable={!isEditingLocked}
             onDragStart={(e) => {
-              if (isReadOnly) {
+              if (isEditingLocked) {
                 return;
               }
               setDraggedSlideIdx(idx);
               e.dataTransfer.effectAllowed = 'move';
             }}
             onDragOver={(e) => {
-              if (isReadOnly || draggedSlideIdx === null) {
+              if (isEditingLocked || draggedSlideIdx === null) {
                 return;
               }
               e.preventDefault();
@@ -3868,7 +4779,7 @@ export function SlideWorkspace({
             }}
             onDrop={(e) => {
               e.preventDefault();
-              if (!isReadOnly && draggedSlideIdx !== null && draggedSlideIdx !== idx) {
+              if (!isEditingLocked && draggedSlideIdx !== null && draggedSlideIdx !== idx) {
                 handleReorderSlide(draggedSlideIdx, idx);
               }
               setDraggedSlideIdx(null);
@@ -3897,10 +4808,10 @@ export function SlideWorkspace({
             }
             className={`group w-full text-left flex items-start gap-2 rounded-xl p-1.5 transition-all relative ${
               isActive
-                ? 'bg-[#C43E1C]/20 ring-2 ring-[#C43E1C]'
+                ? 'bg-[#FFF4ED]'
                 : dragOverSlideIdx === idx
-                  ? 'bg-white/10 ring-2 ring-amber-400/70'
-                  : 'hover:bg-white/[0.05] ring-1 ring-transparent'
+                  ? 'bg-amber-50 ring-2 ring-amber-400'
+                  : 'hover:bg-slate-200/60'
             } ${slide.hidden ? 'opacity-55' : ''} ${
               draggedSlideIdx === idx ? 'opacity-40 scale-[0.98]' : ''
             }`}
@@ -3909,8 +4820,8 @@ export function SlideWorkspace({
               <span
                 className={`text-right text-[11px] font-semibold tabular-nums ${
                   isActive
-                    ? 'text-orange-300'
-                    : 'text-slate-500 group-hover:text-slate-300'
+                    ? 'text-[#C43E1C] font-bold'
+                    : 'text-slate-500 group-hover:text-slate-800'
                 }`}
               >
                 {idx + 1}
@@ -3927,10 +4838,10 @@ export function SlideWorkspace({
               {thumbPositioned ? (
                 <div
                   style={{ aspectRatio: String(thumbAspectRatio) }}
-                  className={`w-full rounded-lg overflow-hidden border transition-colors pointer-events-none ${
+                  className={`w-full rounded-lg bg-white shadow-xs overflow-hidden transition-all pointer-events-none ${
                     isActive
-                      ? 'border-indigo-400/80 shadow-md shadow-indigo-950/50'
-                      : 'border-white/10 group-hover:border-white/25'
+                      ? 'ring-2 ring-[#C43E1C] shadow-md'
+                      : 'border border-slate-200/80 group-hover:border-slate-300'
                   }`}
                 >
                   <ReadOnlySlideStage
@@ -3944,10 +4855,10 @@ export function SlideWorkspace({
                 </div>
               ) : (
                 <div
-                  className={`aspect-video w-full rounded-lg overflow-hidden border p-2 flex flex-col justify-between transition-colors ${
+                  className={`aspect-video w-full rounded-lg bg-white shadow-xs overflow-hidden p-2 flex flex-col justify-between transition-all ${
                     isActive
-                      ? 'border-indigo-400/80 shadow-md shadow-indigo-950/50'
-                      : 'border-white/10 group-hover:border-white/25'
+                      ? 'ring-2 ring-[#C43E1C] shadow-md'
+                      : 'border border-slate-200/80 group-hover:border-slate-300'
                   }`}
                   style={buildSlideBackgroundStyle(slide)}
                 >
@@ -4013,7 +4924,7 @@ export function SlideWorkspace({
 
               <p
                 className={`mt-1.5 text-[11px] truncate ${
-                  isActive ? 'text-white font-medium' : 'text-slate-400'
+                  isActive ? 'text-[#C43E1C] font-semibold' : 'text-slate-600'
                 }`}
               >
                 {slide.title}
@@ -4094,7 +5005,7 @@ export function SlideWorkspace({
   })();
 
   return (
-    <div className="h-[100dvh] w-full flex flex-col bg-[#181D27] text-slate-100 overflow-hidden">
+    <div className="h-[100dvh] w-full flex flex-col bg-[#F3F4F6] text-slate-900 overflow-hidden">
       {/* Hidden Image File Picker */}
       <input
         ref={imageInputRef}
@@ -4113,287 +5024,95 @@ export function SlideWorkspace({
         aria-label="Chọn ảnh nền cho slide"
       />
 
-      {/* Shared Top Workspace Header */}
+      {/* Shared Top Workspace Header (Microsoft PowerPoint 365 Fluent Light) */}
       <WorkspaceTopBar
         document={document}
         collaborators={collaborators}
         selfSessionId={selfSessionId}
         collabPermission={collabPermission}
-        theme="dark"
+        theme="light"
         onBackHome={onBackHome}
         onShare={() => onOpenModal('share', buildLiveDocument())}
-        onRenameTitle={handleRenameTitle}
+        onRenameTitle={isEditingLocked ? undefined : handleRenameTitle}
         leftExtra={
           <button
             type="button"
             onClick={() => setIsMobileDrawerOpen(true)}
             aria-label="Mở danh sách slide"
             title="Danh sách slide"
-            className="md:hidden inline-flex items-center justify-center gap-1 min-h-[38px] px-2.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 transition-colors"
+            className="md:hidden inline-flex items-center justify-center gap-1 h-8 px-2 rounded-lg bg-slate-100 hover:bg-[#FFF4ED] border border-slate-200/80 text-xs font-medium text-slate-700 hover:text-[#C43E1C] transition-colors shrink-0"
           >
-            <Layers className="h-4 w-4 text-indigo-300" />
+            <Layers className="h-3.5 w-3.5 text-[#C43E1C]" />
             <span className="tabular-nums text-[11px]">
               {safeSlideIdx + 1}/{slides.length}
             </span>
           </button>
         }
         toolbar={
-          <>
-            {/* Mode Switcher: Xem nguyên bản (Giống Microsoft Office) vs Chỉnh sửa nhanh */}
-            <div
-              role="group"
-              aria-label="Chế độ xem và chỉnh sửa slide"
-              className="inline-flex items-center rounded-xl bg-[#1C2331] border border-white/10 p-0.5 shrink-0"
-            >
-              <button
-                type="button"
-                onMouseDown={handlePreventMouseDown}
-                onClick={() => {
-                  setSelectedBlockId(null);
-                  setEditingBlockId(null);
-                  setSelectedImageId(null);
-                  setIsMobileSheetOpen(false);
-                  setViewMode('native');
-                }}
-                aria-pressed={viewMode === 'native'}
-                aria-label="Xem nguyên bản (Giống Microsoft Office)"
-                title="Xem nguyên bản (Giống Microsoft Office)"
-                className={`inline-flex items-center gap-1.5 min-h-[30px] px-2.5 rounded-[10px] text-xs font-semibold transition-colors whitespace-nowrap ${
-                  viewMode === 'native'
-                    ? 'bg-indigo-600 text-white shadow-sm'
-                    : 'text-slate-300 hover:bg-white/[0.08] hover:text-white'
-                }`}
-              >
-                <Eye className="h-3.5 w-3.5 shrink-0" />
-                <span>
-                  Xem nguyên bản
-                  <span className="hidden 2xl:inline">
-                    {' '}
-                    (Giống Microsoft Office)
-                  </span>
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onMouseDown={handlePreventMouseDown}
-                disabled={isReadOnly}
-                onClick={() => {
-                  if (!isReadOnly) {
-                    setViewMode('edit');
-                  }
-                }}
-                aria-pressed={viewMode === 'edit' && !isReadOnly}
-                aria-label="Chỉnh sửa nhanh"
-                title={
-                  isReadOnly
-                    ? 'Bạn chỉ có quyền xem tài liệu này'
-                    : 'Chuyển sang chế độ Chỉnh sửa nhanh'
-                }
-                className={`inline-flex items-center gap-1.5 min-h-[30px] px-2.5 rounded-[10px] text-xs font-semibold transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
-                  viewMode === 'edit' && !isReadOnly
-                    ? 'bg-indigo-600 text-white shadow-sm'
-                    : 'text-slate-300 hover:bg-white/[0.08] hover:text-white'
-                }`}
-              >
-                <Pencil className="h-3.5 w-3.5 shrink-0" />
-                <span>Chỉnh sửa nhanh</span>
-              </button>
-            </div>
-
-            {/* Presentation Stopwatch */}
-            <div className="inline-flex items-center rounded-xl bg-[#1C2331] border border-white/10 p-0.5 shrink-0">
-              <button
-                type="button"
-                onClick={handleToggleTimer}
-                aria-label={
-                  isTimerRunning
-                    ? 'Tạm dừng đồng hồ trình chiếu'
-                    : 'Bắt đầu bấm giờ trình chiếu'
-                }
-                title={
-                  isTimerRunning
-                    ? 'Bấm để tạm dừng đồng hồ'
-                    : 'Bấm để chạy đồng hồ đếm giờ'
-                }
-                className="inline-flex items-center gap-1.5 min-h-[32px] px-2 rounded-[10px] hover:bg-white/[0.08] text-xs font-medium text-slate-100 transition-colors whitespace-nowrap"
-              >
-                <span
-                  className={`h-2 w-2 rounded-full shrink-0 ${
-                    isTimerRunning
-                      ? 'bg-emerald-400 animate-pulse'
-                      : elapsedSeconds > 0
-                        ? 'bg-amber-400'
-                        : 'bg-slate-500'
-                  }`}
-                />
-                {isTimerRunning ? (
-                  <Pause className="h-3.5 w-3.5 text-emerald-300 shrink-0" />
-                ) : (
-                  <Play className="h-3.5 w-3.5 text-slate-300 shrink-0" />
-                )}
-                <span className="font-mono text-[11.5px] tracking-tight tabular-nums">
-                  {formatTimer(elapsedSeconds)}
-                </span>
-              </button>
-
-              {elapsedSeconds > 0 && (
-                <button
-                  type="button"
-                  onClick={handleResetTimer}
-                  aria-label="Đặt lại đồng hồ về 00:00:00"
-                  title="Đặt lại đồng hồ"
-                  className="inline-flex items-center justify-center h-8 w-7 rounded-[10px] hover:bg-white/[0.1] text-slate-400 hover:text-white transition-colors"
-                >
-                  <RotateCcw className="h-3.5 w-3.5" />
-                </button>
-              )}
-            </div>
-
-            {/* Interactive Laser Pointer Toggle */}
-            <button
-              type="button"
-              onClick={() => setIsLaserActive((prev) => !prev)}
-              aria-pressed={isLaserActive}
-              aria-label={
-                isLaserActive ? 'Tắt bút Laser' : 'Bật bút Laser trên slide'
-              }
-              title={
-                isLaserActive
-                  ? 'Bút Laser đang bật (bấm để tắt)'
-                  : 'Bật bút Laser chiếu điểm trên slide'
-              }
-              className={`shrink-0 inline-flex items-center justify-center gap-1.5 min-h-[36px] px-2.5 rounded-xl text-xs font-medium border transition-all whitespace-nowrap ${
-                isLaserActive
-                  ? 'bg-rose-500/20 border-rose-400/60 text-rose-200 shadow-sm shadow-rose-950/50'
-                  : 'bg-white/[0.06] hover:bg-white/[0.12] border-white/10 text-slate-200 hover:text-white'
-              }`}
-            >
-              <span className="relative flex items-center justify-center">
-                <Crosshair className="h-3.5 w-3.5 shrink-0" />
-                {isLaserActive && (
-                  <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-rose-400 animate-ping" />
-                )}
-              </span>
-              <span className="hidden xl:inline">Bút Laser</span>
-            </button>
-
-            {/* QR Remote Control */}
-            <button
-              type="button"
-              onClick={() => onOpenModal('qr', buildLiveDocument())}
-              aria-label="Mở điều khiển QR"
-              title="Điều khiển trình chiếu qua mã QR"
-              className="shrink-0 inline-flex items-center justify-center gap-1.5 min-h-[36px] px-2.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 hover:text-white transition-colors whitespace-nowrap"
-            >
-              <QrCode className="h-3.5 w-3.5 text-indigo-300 shrink-0" />
-              <span className="hidden 2xl:inline">QR Remote</span>
-            </button>
-
-            {/* Presenter View Modal Shortcut */}
-            <button
-              type="button"
-              onClick={() => onOpenModal('present', buildLiveDocument())}
-              aria-label="Mở Presenter View"
-              title="Presenter View (Ghi chú diễn giả & Điều khiển từ xa)"
-              className="shrink-0 inline-flex items-center justify-center gap-1.5 min-h-[36px] px-2.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 hover:text-white transition-colors whitespace-nowrap"
-            >
-              <Columns2 className="h-3.5 w-3.5 text-indigo-300 shrink-0" />
-              <span className="hidden 2xl:inline">Presenter View</span>
-            </button>
-
-            {/* Save Changes Button */}
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={isReadOnly}
-              aria-label="Lưu thay đổi bản trình chiếu"
-              title={
-                isReadOnly ? 'Bạn chỉ có quyền xem' : 'Lưu thay đổi (Ctrl+S)'
-              }
-              className={`shrink-0 inline-flex items-center justify-center gap-1.5 min-h-[36px] px-2.5 rounded-xl text-xs font-semibold border transition-all whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
-                saveFeedback
-                  ? 'bg-emerald-500/20 border-emerald-400/50 text-emerald-200'
-                  : isDirty
-                    ? 'bg-amber-500/20 hover:bg-amber-500/30 border-amber-400/50 text-amber-100'
-                    : 'bg-white/[0.06] hover:bg-white/[0.12] border-white/10 text-slate-200'
-              }`}
-            >
-              {saveFeedback ? (
-                <>
-                  <Check className="h-3.5 w-3.5 shrink-0" />
-                  <span className="hidden md:inline">Đã lưu</span>
-                </>
-              ) : (
-                <>
-                  <span className="relative flex items-center justify-center">
-                    <Save className="h-3.5 w-3.5 shrink-0" />
-                    {isDirty && !isReadOnly && (
-                      <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-amber-400" />
-                    )}
-                  </span>
-                  <span className="hidden md:inline">Lưu thay đổi</span>
-                </>
-              )}
-            </button>
-
-            {/* Download Original File Button */}
-            <button
-              type="button"
-              onClick={() => void handleDownloadOriginal()}
-              disabled={isDownloadingOriginal}
-              aria-label="Tải xuống bản gốc"
-              title="Tải xuống tệp .pptx gốc ban đầu"
-              className="shrink-0 inline-flex items-center justify-center gap-1.5 min-h-[36px] px-2.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/35 text-xs font-semibold text-emerald-200 transition-colors whitespace-nowrap disabled:opacity-60 disabled:cursor-wait"
-            >
-              {isDownloadingOriginal ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
-              ) : (
-                <FileDown className="h-3.5 w-3.5 shrink-0" />
-              )}
-              <span className="hidden lg:inline">
-                {isDownloadingOriginal ? 'Đang tải...' : 'Tải xuống bản gốc'}
-              </span>
-            </button>
-
-            {/* Export Real .pptx Button */}
-            <button
-              type="button"
-              onClick={() => void handleExportPptx()}
-              disabled={isExporting}
-              aria-label="Tải xuống tệp PowerPoint .pptx"
-              title="Tải xuống .pptx"
-              className="shrink-0 inline-flex items-center justify-center gap-1.5 min-h-[36px] px-2.5 rounded-xl bg-orange-500/15 hover:bg-orange-500/25 border border-orange-400/35 text-xs font-semibold text-orange-200 transition-colors whitespace-nowrap disabled:opacity-60 disabled:cursor-wait"
-            >
-              {isExporting ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
-              ) : (
-                <Download className="h-3.5 w-3.5 shrink-0" />
-              )}
-              <span className="hidden lg:inline">
-                {isExporting ? 'Đang xuất...' : 'Tải xuống .pptx'}
-              </span>
-            </button>
-
-            {/* Primary PowerPoint CTA: Real Fullscreen Slideshow */}
-            <button
-              type="button"
-              onClick={() => startSlideshow(0)}
-              aria-label="Trình chiếu toàn màn hình"
-              title="Trình chiếu toàn màn hình (F5)"
-              className="shrink-0 inline-flex items-center justify-center gap-1.5 min-h-[36px] px-3 rounded-xl bg-[#C43E1C] hover:bg-[#a83316] text-xs font-semibold text-white shadow-sm shadow-black/40 transition-all whitespace-nowrap"
-            >
-              <Play className="h-3.5 w-3.5 fill-white text-white shrink-0" />
-              <span>Trình chiếu</span>
-            </button>
-          </>
+          <button
+            type="button"
+            onMouseDown={handlePreventMouseDown}
+            onClick={() => startSlideshow(0)}
+            title="Trình chiếu toàn màn hình (F5)"
+            className="inline-flex items-center gap-1.5 h-8 px-2.5 sm:px-3 rounded-lg bg-[#C43E1C] hover:bg-[#9E3014] text-xs font-semibold text-white shadow-xs transition-colors whitespace-nowrap shrink-0"
+          >
+            <Play className="h-3.5 w-3.5 fill-white shrink-0" />
+            <span className="hidden sm:inline">Trình chiếu</span>
+            <span className="hidden lg:inline text-[10px] opacity-85 font-normal">(F5)</span>
+          </button>
         }
+        modeSwitch={{
+          visible: hasOriginalBinary,
+          mode: viewMode === 'native' ? 'original' : 'edit',
+          onChange: (m) =>
+            handleSwitchViewMode(m === 'original' ? 'native' : 'edit'),
+          editDisabled: isEditingLocked,
+          originalTitle: 'Xem nguyên bản (Giống Microsoft PowerPoint)',
+          editTitle: 'Chỉnh sửa nhanh',
+        }}
+        onSave={isEditingLocked ? undefined : handleSave}
+        isDirty={isDirty}
+        isSaved={saveFeedback}
+        onDownloadEdited={handleExportPptx}
+        onExportPdf={handleExportPdfAction}
+        extraMenuItems={[
+          {
+            id: 'ppt-slideshow',
+            label: 'Trình chiếu (F5)',
+            icon: <Play className="h-3.5 w-3.5 text-[#C43E1C]" />,
+            onClick: () => startSlideshow(0),
+          },
+          {
+            id: 'ppt-presenter',
+            label: 'Presenter View',
+            icon: <Presentation className="h-3.5 w-3.5 text-[#C43E1C]" />,
+            onClick: () => onOpenModal('present', buildLiveDocument()),
+          },
+          {
+            id: 'ppt-qr',
+            label: 'Điều khiển QR',
+            icon: <QrCode className="h-3.5 w-3.5 text-slate-600" />,
+            onClick: () => onOpenModal('qr', buildLiveDocument()),
+          },
+          {
+            id: 'ppt-comments',
+            label: `Nhận xét slide (${currentSlide.comments?.length ?? 0})`,
+            icon: <MessageSquare className="h-3.5 w-3.5 text-[#C43E1C]" />,
+            onClick: () => setIsCommentsOpen((v) => !v),
+          },
+          {
+            id: 'ppt-info',
+            label: 'Thông tin tệp',
+            icon: <Info className="h-3.5 w-3.5 text-slate-600" />,
+            onClick: () => setIsFileInfoOpen(true),
+          },
+        ]}
       />
 
       {/* Cloud Hydration Status Banner */}
       {isHydratingCloudFile && (
-        <div className="shrink-0 px-4 py-2 bg-indigo-500/15 border-b border-indigo-400/30 text-xs text-indigo-200 flex items-center justify-center gap-2">
-          <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0 text-indigo-300" />
+        <div className="shrink-0 px-4 py-2 bg-[#FFF4ED] border-b border-[#C43E1C]/20 text-xs text-[#9E3014] flex items-center justify-center gap-2">
+          <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0 text-[#C43E1C]" />
           <span>Đang tải bản trình chiếu gốc từ đám mây...</span>
         </div>
       )}
@@ -4404,7 +5123,7 @@ export function SlideWorkspace({
         Boolean(document.storagePath || document.r2ObjectKey) &&
         !document.rawArrayBuffer &&
         onRetryCloudDownload && (
-          <div className="shrink-0 px-4 py-2 bg-amber-500/15 border-b border-amber-400/30 text-xs text-amber-200 flex items-center justify-between gap-2">
+          <div className="shrink-0 px-4 py-2 bg-amber-50 border-b border-amber-200 text-xs text-amber-800 flex items-center justify-between gap-2">
             <span className="inline-flex items-center gap-1.5">
               <CloudDownload className="h-3.5 w-3.5 shrink-0" />
               <span>Chưa tải được dữ liệu tệp trình chiếu gốc từ đám mây.</span>
@@ -4412,7 +5131,7 @@ export function SlideWorkspace({
             <button
               type="button"
               onClick={onRetryCloudDownload}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500/25 hover:bg-amber-500/40 text-xs font-semibold text-white transition-colors"
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-xs font-semibold text-white transition-colors"
             >
               <RefreshCw className="h-3 w-3" />
               <span>Thử tải lại</span>
@@ -4422,28 +5141,13 @@ export function SlideWorkspace({
 
       {/* Export Error Notice */}
       {exportError && (
-        <div className="shrink-0 px-4 py-2 bg-rose-500/15 border-b border-rose-400/30 text-xs text-rose-200 flex items-center justify-between gap-2">
+        <div className="shrink-0 px-4 py-2 bg-rose-50 border-b border-rose-200 text-xs text-rose-700 flex items-center justify-between gap-2">
           <span>{exportError}</span>
           <button
             type="button"
             onClick={() => setExportError(null)}
             aria-label="Đóng thông báo lỗi"
-            className="p-1 rounded hover:bg-rose-500/20"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      )}
-
-      {/* Download Original Success Notice */}
-      {downloadOriginalNotice && (
-        <div className="shrink-0 px-4 py-2 bg-emerald-500/15 border-b border-emerald-400/30 text-xs text-emerald-200 flex items-center justify-between gap-2">
-          <span>{downloadOriginalNotice}</span>
-          <button
-            type="button"
-            onClick={() => setDownloadOriginalNotice(null)}
-            aria-label="Đóng thông báo tải xuống"
-            className="p-1 rounded hover:bg-emerald-500/20"
+            className="p-1 rounded hover:bg-rose-100"
           >
             <X className="h-3.5 w-3.5" />
           </button>
@@ -4456,7 +5160,7 @@ export function SlideWorkspace({
         <div
           aria-hidden="true"
           onClick={() => setIsMobileDrawerOpen(false)}
-          className={`md:hidden fixed inset-0 z-30 bg-slate-950/60 backdrop-blur-[2px] transition-opacity duration-200 ${
+          className={`md:hidden fixed inset-0 z-30 bg-slate-900/35 backdrop-blur-[2px] transition-opacity duration-200 ${
             isMobileDrawerOpen
               ? 'opacity-100 pointer-events-auto'
               : 'opacity-0 pointer-events-none'
@@ -4466,19 +5170,19 @@ export function SlideWorkspace({
         {/* Mobile Slide-over Drawer (< md, z-40) */}
         <aside
           aria-label="Danh sách slide di động"
-          className={`md:hidden fixed inset-y-0 left-0 z-40 w-[268px] max-w-[84vw] bg-[#141923] border-r border-white/10 shadow-2xl flex flex-col transition-transform duration-200 ease-out ${
+          className={`md:hidden fixed inset-y-0 left-0 z-40 w-[268px] max-w-[84vw] bg-[#F8FAFC] border-r border-slate-200/80 shadow-2xl flex flex-col transition-transform duration-200 ease-out ${
             isMobileDrawerOpen
               ? 'translate-x-0 pointer-events-auto'
               : '-translate-x-full pointer-events-none'
           }`}
         >
-          <div className="h-14 shrink-0 px-4 border-b border-white/10 flex items-center justify-between gap-2">
+          <div className="h-14 shrink-0 px-4 border-b border-slate-200/80 bg-white flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 min-w-0">
-              <Layers className="h-4 w-4 text-indigo-400 shrink-0" />
-              <span className="text-xs font-semibold text-white truncate">
+              <Layers className="h-4 w-4 text-[#C43E1C] shrink-0" />
+              <span className="text-xs font-semibold text-slate-800 truncate">
                 Danh sách slide
               </span>
-              <span className="px-1.5 py-0.5 rounded-md bg-white/10 text-[10px] font-semibold text-slate-300 tabular-nums">
+              <span className="px-1.5 py-0.5 rounded-md bg-[#FFF4ED] text-[10px] font-semibold text-[#C43E1C] tabular-nums">
                 {slides.length}
               </span>
             </div>
@@ -4486,27 +5190,27 @@ export function SlideWorkspace({
               type="button"
               onClick={() => setIsMobileDrawerOpen(false)}
               aria-label="Đóng danh sách slide"
-              className="inline-flex items-center justify-center min-h-[38px] min-w-[38px] rounded-xl bg-white/[0.06] hover:bg-white/[0.14] text-slate-300 hover:text-white transition-colors"
+              className="inline-flex items-center justify-center min-h-[38px] min-w-[38px] rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900 transition-colors"
             >
               <X className="h-4 w-4" />
             </button>
           </div>
           {renderSlideActionButtons()}
-          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-dark pb-safe">
+          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-none pb-safe">
             {renderThumbnailList('mobile')}
           </div>
         </aside>
 
-        {/* Desktop Left Thumbnail Rail (md+, 220px) */}
+        {/* Desktop Left Thumbnail Rail (md+, 224px, Fluent #F8FAFC) */}
         <aside
           aria-label="Danh sách slide thu nhỏ"
-          className="hidden md:flex w-[220px] shrink-0 bg-[#141923] border-r border-white/10 flex-col overflow-hidden"
+          className="hidden md:flex w-[224px] shrink-0 bg-[#F8FAFC] border-r border-slate-200/80 flex-col overflow-hidden"
         >
-          <div className="shrink-0 px-3.5 py-2.5 border-b border-white/10 flex items-center justify-between gap-2">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+          <div className="shrink-0 px-3.5 py-2.5 border-b border-slate-200/80 flex items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
               Trang trình chiếu
             </span>
-            <span className="px-1.5 py-0.5 rounded-md bg-white/[0.08] text-[10.5px] font-semibold text-slate-200 tabular-nums">
+            <span className="px-1.5 py-0.5 rounded-md bg-[#FFF4ED] text-[10.5px] font-semibold text-[#C43E1C] tabular-nums">
               {slides.length} slide
             </span>
           </div>
@@ -4520,7 +5224,7 @@ export function SlideWorkspace({
             </div>
             <CustomVerticalScrollbar
               scrollContainerRef={desktopThumbScrollRef}
-              theme="dark"
+              theme="light"
               getDragLabel={({ percent }) => {
                 const approxSlide = Math.max(
                   1,
@@ -4537,15 +5241,15 @@ export function SlideWorkspace({
           </div>
         </aside>
 
-        {/* Center Stage Editor + Bottom Speaker Notes */}
-        <main className="flex-1 min-w-0 flex flex-col bg-[#181D27] overflow-hidden relative">
-          {/* Microsoft PowerPoint Ribbon (#C43E1C, horizontally scrollable on mobile) */}
-          <div className="shrink-0 bg-[#141923] border-b border-white/10">
-            {/* Ribbon Tab Bar */}
-            <div className="bg-[#C43E1C] px-2 sm:px-4 flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
+        {/* Center Stage Editor + Bottom Speaker Notes (Microsoft PowerPoint 365 Fluent #E5E7EB) */}
+        <main className="flex-1 min-w-0 flex flex-col bg-[#E5E7EB] overflow-hidden relative">
+          {/* Microsoft PowerPoint 365 Fluent Ribbon (#C43E1C, collapsible) */}
+          <div className="shrink-0 bg-[#F8FAFC] border-b border-slate-200/80">
+            {/* Fluent Ribbon Tab Bar (ONLYOFFICE 11 Tabs + Prominent Slideshow Play) */}
+            <div className="px-2 sm:px-4 flex items-center justify-between gap-2 overflow-x-auto no-scrollbar border-b border-slate-200/70">
               <div
                 role="tablist"
-                aria-label="Thanh Ribbon PowerPoint"
+                aria-label="Thanh Ribbon PowerPoint ONLYOFFICE"
                 className="flex items-center gap-0.5 shrink-0"
               >
                 {PPT_RIBBON_TABS.map((tab) => {
@@ -4559,13 +5263,18 @@ export function SlideWorkspace({
                       onMouseDown={handlePreventMouseDown}
                       onClick={() => {
                         setActiveRibbonTab(tab.id);
-                        setIsLayoutPickerOpen(false);
+                        if (isRibbonCollapsed) {
+                          setIsRibbonCollapsed(false);
+                        }
+                        setLayoutPickerMode(null);
                         setIsShapePickerOpen(false);
+                        setIsCaseMenuOpen(false);
+                        setIsHighlightMenuOpen(false);
                       }}
-                      className={`px-2.5 sm:px-3.5 py-1.5 text-[11.5px] font-semibold whitespace-nowrap transition-colors rounded-t-lg mt-1 ${
+                      className={`px-2 sm:px-3 py-2 text-[11.5px] sm:text-[12px] whitespace-nowrap transition-colors border-b-2 ${
                         isTabActive
-                          ? 'bg-[#141923] text-white shadow-sm'
-                          : 'text-white/90 hover:bg-white/15 hover:text-white'
+                          ? 'text-[#C43E1C] font-semibold border-[#C43E1C] bg-white/70'
+                          : 'text-slate-600 font-medium border-transparent hover:text-slate-900 hover:bg-slate-200/50'
                       }`}
                     >
                       {tab.label}
@@ -4575,28 +5284,38 @@ export function SlideWorkspace({
               </div>
 
               <div className="flex items-center gap-1.5 shrink-0 py-1">
-                {!isReadOnly && selectedBlockIds.length >= 2 && (
+                {!isEditingLocked && selectedBlockIds.length >= 2 && (
                   <button
                     type="button"
                     onMouseDown={handlePreventMouseDown}
                     onClick={handleGroupSelected}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-black/25 hover:bg-black/40 text-[11px] font-semibold text-white whitespace-nowrap"
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-[#FFF4ED] hover:bg-[#C43E1C] text-[#C43E1C] hover:text-white border border-[#C43E1C]/30 text-[11px] font-semibold whitespace-nowrap transition-colors"
                   >
                     <Group className="h-3 w-3" />
                     <span>Nhóm ({selectedBlockIds.length})</span>
                   </button>
                 )}
-                {!isReadOnly && selectedBlock?.groupId && (
+                {!isEditingLocked && selectedBlock?.groupId && (
                   <button
                     type="button"
                     onMouseDown={handlePreventMouseDown}
                     onClick={handleUngroupSelected}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-black/25 hover:bg-black/40 text-[11px] font-semibold text-white whitespace-nowrap"
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-[11px] font-semibold whitespace-nowrap transition-colors"
                   >
                     <Ungroup className="h-3 w-3" />
                     <span>Bỏ nhóm</span>
                   </button>
                 )}
+                <button
+                  type="button"
+                  onMouseDown={handlePreventMouseDown}
+                  onClick={() => startSlideshow(0)}
+                  title="Trình chiếu từ đầu (F5)"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#C43E1C] hover:bg-[#9E3014] text-white text-[11px] font-semibold whitespace-nowrap shadow-xs transition-colors"
+                >
+                  <Play className="h-3 w-3 fill-white" />
+                  <span>Trình chiếu</span>
+                </button>
                 <button
                   type="button"
                   onMouseDown={handlePreventMouseDown}
@@ -4606,79 +5325,268 @@ export function SlideWorkspace({
                     )
                   }
                   aria-pressed={pptViewMode === 'sorter'}
-                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold whitespace-nowrap transition-colors ${
+                  className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold whitespace-nowrap border transition-colors ${
                     pptViewMode === 'sorter'
-                      ? 'bg-white text-[#C43E1C]'
-                      : 'bg-black/20 hover:bg-black/35 text-white'
+                      ? 'bg-[#C43E1C] border-[#C43E1C] text-white shadow-xs'
+                      : 'bg-white hover:bg-[#FFF4ED] border-slate-200 text-slate-700 hover:text-[#C43E1C]'
                   }`}
                 >
                   <LayoutGrid className="h-3 w-3" />
-                  <span className="hidden sm:inline">Sắp xếp slide</span>
+                  <span className="hidden lg:inline">Sắp xếp</span>
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={handlePreventMouseDown}
+                  onClick={() => setIsRibbonCollapsed((prev) => !prev)}
+                  aria-expanded={!isRibbonCollapsed}
+                  aria-label={isRibbonCollapsed ? 'Mở rộng Ribbon' : 'Thu gọn Ribbon'}
+                  title={isRibbonCollapsed ? 'Mở rộng thanh công cụ Ribbon' : 'Thu gọn thanh công cụ Ribbon'}
+                  className="inline-flex items-center justify-center h-7 w-7 rounded-lg bg-white hover:bg-slate-100 border border-slate-200/80 text-slate-600 hover:text-[#C43E1C] transition-colors shrink-0"
+                >
+                  {isRibbonCollapsed ? (
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  ) : (
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  )}
                 </button>
               </div>
             </div>
 
-            {/* Active Ribbon Tab Command Strip */}
-            <div className="px-2.5 sm:px-4 py-1.5 bg-[#141923]/95 relative">
-              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar min-h-[34px]">
-                {activeRibbonTab === 'home' && (
+            {/* Active ONLYOFFICE 11-Tab Fluent Ribbon Strip */}
+            {!isRibbonCollapsed && (
+            <div className="rounded-xl bg-white shadow-[0_1px_3px_rgba(15,23,42,0.06)] border border-slate-200/80 mx-2 my-1.5 px-2.5 py-1.5 relative">
+              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar min-h-[38px]">
+                {activeRibbonTab === 'file' && (
                   <>
                     <button
                       type="button"
-                      disabled={isReadOnly}
+                      disabled={isEditingLocked}
                       onMouseDown={handlePreventMouseDown}
-                      onClick={handleAddSlide}
-                      className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-[#C43E1C] hover:bg-[#a83316] text-xs font-semibold text-white whitespace-nowrap disabled:opacity-40"
+                      onClick={handleSave}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-[#C43E1C] hover:bg-[#9E3014] text-xs font-semibold text-white shadow-xs whitespace-nowrap disabled:opacity-40"
                     >
-                      <Plus className="h-3.5 w-3.5" />
-                      <span>Slide mới</span>
+                      <Save className="h-3.5 w-3.5" />
+                      <span>Lưu</span>
                     </button>
-
                     <button
                       type="button"
-                      disabled={isReadOnly}
+                      disabled={isExporting}
                       onMouseDown={handlePreventMouseDown}
-                      onClick={() => {
-                        setIsLayoutPickerOpen((v) => !v);
-                        setIsShapePickerOpen(false);
-                      }}
-                      aria-expanded={isLayoutPickerOpen}
-                      className={`shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap disabled:opacity-40 ${
-                        isLayoutPickerOpen
-                          ? 'bg-[#C43E1C]/25 border-[#C43E1C] text-orange-200'
-                          : 'bg-white/[0.06] hover:bg-white/[0.12] border-white/10 text-slate-200'
-                      }`}
+                      onClick={() => void handleSaveCopyPptx()}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-[#FFF4ED] border border-slate-200 text-xs font-medium text-slate-700 hover:text-[#C43E1C] whitespace-nowrap disabled:opacity-40"
                     >
-                      <LayoutTemplate className="h-3.5 w-3.5 text-orange-300" />
-                      <span>Bố cục</span>
-                      <ChevronDown className="h-3 w-3 opacity-70" />
+                      <CopyPlus className="h-3.5 w-3.5 text-[#C43E1C]" />
+                      <span>Lưu bản sao</span>
                     </button>
-
+                    <span className="h-5 w-px mx-0.5 bg-slate-200/80 shrink-0" />
                     <button
                       type="button"
-                      disabled={isReadOnly}
                       onMouseDown={handlePreventMouseDown}
-                      onClick={handleAddTextBlock}
-                      className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 whitespace-nowrap disabled:opacity-40"
+                      onClick={() => void handleDownloadOriginalFileAction()}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700 whitespace-nowrap"
                     >
-                      <Type className="h-3.5 w-3.5 text-indigo-300" />
-                      <span>Khung chữ</span>
+                      <FileDown className="h-3.5 w-3.5 text-sky-600" />
+                      <span>Tải bản gốc (.pptx)</span>
                     </button>
+                    <button
+                      type="button"
+                      disabled={isExporting}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => void handleExportPptx()}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700 whitespace-nowrap disabled:opacity-40"
+                    >
+                      <FileOutput className="h-3.5 w-3.5 text-emerald-600" />
+                      <span>Tải bản sửa (.pptx)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => void handleExportPdfAction()}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700 whitespace-nowrap"
+                    >
+                      <FileText className="h-3.5 w-3.5 text-rose-600" />
+                      <span>Xuất PDF</span>
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={handlePrintDeck}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700 whitespace-nowrap"
+                    >
+                      <Printer className="h-3.5 w-3.5 text-slate-600" />
+                      <span>In</span>
+                    </button>
+                    <span className="h-5 w-px mx-0.5 bg-slate-200/80 shrink-0" />
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => setIsFileInfoOpen(true)}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-[#FFF4ED] border border-slate-200 text-xs font-medium text-slate-700 hover:text-[#C43E1C] whitespace-nowrap"
+                    >
+                      <Info className="h-3.5 w-3.5 text-[#C43E1C]" />
+                      <span>Thông tin tệp</span>
+                    </button>
+                  </>
+                )}
 
-                    {selectedBlock && !isReadOnly ? (
-                      <>
-                        <span className="h-5 w-px mx-0.5 bg-white/10 shrink-0" />
+                {activeRibbonTab === 'home' && (
+                  <div className="flex items-stretch gap-2 shrink-0 py-0.5">
+                    {/* Cluster 1: Clipboard & Format Painter */}
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        disabled={isEditingLocked || !clipboardItem}
+                        onMouseDown={handlePreventMouseDown}
+                        onClick={handlePasteObject}
+                        title="Dán đối tượng đã sao chép"
+                        className="shrink-0 inline-flex flex-col items-center justify-center h-12 px-2 rounded-lg bg-slate-50 hover:bg-[#FFF4ED] border border-slate-200 text-[10px] font-medium text-slate-700 hover:text-[#C43E1C] disabled:opacity-40"
+                      >
+                        <Clipboard className="h-4 w-4 text-[#C43E1C]" />
+                        <span>Dán</span>
+                      </button>
+                      <div className="grid grid-cols-1 gap-0.5">
+                        <div className="flex items-center gap-0.5">
+                          <button
+                            type="button"
+                            disabled={!selectedBlock && !selectedImage}
+                            onMouseDown={handlePreventMouseDown}
+                            onClick={handleCopyObject}
+                            title="Sao chép đối tượng"
+                            className="h-6 px-1.5 rounded bg-slate-50 hover:bg-slate-100 border border-slate-200 text-[10.5px] text-slate-700 inline-flex items-center gap-1 disabled:opacity-40"
+                          >
+                            <Copy className="h-3 w-3" />
+                            <span className="hidden xl:inline">Chép</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isEditingLocked || (!selectedBlock && !selectedImage)}
+                            onMouseDown={handlePreventMouseDown}
+                            onClick={handleCutObject}
+                            title="Cắt đối tượng"
+                            className="h-6 px-1.5 rounded bg-slate-50 hover:bg-slate-100 border border-slate-200 text-[10.5px] text-slate-700 inline-flex items-center gap-1 disabled:opacity-40"
+                          >
+                            <Scissors className="h-3 w-3" />
+                            <span className="hidden xl:inline">Cắt</span>
+                          </button>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={isEditingLocked || (!selectedBlock && !copiedBlockStyle)}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={handleToggleFormatPainter}
+                          aria-pressed={Boolean(copiedBlockStyle)}
+                          title="Chổi định dạng (Format Painter): bấm vào khối khác để chép kiểu chữ"
+                          className={`h-6 px-1.5 rounded border text-[10.5px] inline-flex items-center gap-1 disabled:opacity-40 ${
+                            copiedBlockStyle
+                              ? 'bg-[#C43E1C] border-[#C43E1C] text-white font-semibold'
+                              : 'bg-slate-50 hover:bg-[#FFF4ED] border-slate-200 text-slate-700'
+                          }`}
+                        >
+                          <Paintbrush className="h-3 w-3" />
+                          <span>Sao chép ĐD</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <span className="w-px bg-slate-200/80 my-1 shrink-0" />
+
+                    {/* Cluster 2: Slide Add / Layout / Reset / Duplicate / Delete */}
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        disabled={isEditingLocked}
+                        onMouseDown={handlePreventMouseDown}
+                        onClick={() => {
+                          setLayoutPickerMode((m) => (m === 'add' ? null : 'add'));
+                          setIsShapePickerOpen(false);
+                        }}
+                        aria-expanded={layoutPickerMode === 'add'}
+                        title="Thêm slide mới với bố cục tùy chọn"
+                        className={`shrink-0 inline-flex flex-col items-center justify-center h-12 px-2.5 rounded-lg border text-[10px] font-semibold transition-colors disabled:opacity-40 ${
+                          layoutPickerMode === 'add'
+                            ? 'bg-[#9E3014] border-[#9E3014] text-white'
+                            : 'bg-[#C43E1C] hover:bg-[#9E3014] border-[#C43E1C] text-white'
+                        }`}
+                      >
+                        <Plus className="h-4 w-4" />
+                        <span>Thêm slide</span>
+                      </button>
+                      <div className="grid grid-cols-1 gap-0.5">
+                        <div className="flex items-center gap-0.5">
+                          <button
+                            type="button"
+                            disabled={isEditingLocked}
+                            onMouseDown={handlePreventMouseDown}
+                            onClick={() => {
+                              setLayoutPickerMode((m) => (m === 'change' ? null : 'change'));
+                              setIsShapePickerOpen(false);
+                            }}
+                            aria-expanded={layoutPickerMode === 'change'}
+                            title="Đổi bố cục slide hiện tại"
+                            className={`h-6 px-2 rounded border text-[10.5px] font-medium inline-flex items-center gap-1 disabled:opacity-40 ${
+                              layoutPickerMode === 'change'
+                                ? 'bg-[#FFF4ED] border-[#C43E1C]/50 text-[#C43E1C]'
+                                : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                            }`}
+                          >
+                            <LayoutTemplate className="h-3 w-3 text-[#C43E1C]" />
+                            <span>Bố cục</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isEditingLocked}
+                            onMouseDown={handlePreventMouseDown}
+                            onClick={handleResetCurrentSlide}
+                            title="Đặt lại bố cục chuẩn cho slide (giữ chữ)"
+                            className="h-6 px-1.5 rounded bg-slate-50 hover:bg-slate-100 border border-slate-200 text-[10.5px] text-slate-700 inline-flex items-center gap-1 disabled:opacity-40"
+                          >
+                            <RotateCcw className="h-3 w-3" />
+                            <span>Đặt lại</span>
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-0.5">
+                          <button
+                            type="button"
+                            disabled={isEditingLocked}
+                            onMouseDown={handlePreventMouseDown}
+                            onClick={handleDuplicateSlide}
+                            className="h-6 px-1.5 rounded bg-slate-50 hover:bg-slate-100 border border-slate-200 text-[10.5px] text-slate-700 inline-flex items-center gap-1 disabled:opacity-40"
+                          >
+                            <CopyPlus className="h-3 w-3" />
+                            <span>Nhân bản</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isEditingLocked || slides.length <= 1}
+                            onMouseDown={handlePreventMouseDown}
+                            onClick={handleDeleteSlide}
+                            className="h-6 px-1.5 rounded bg-rose-50 hover:bg-rose-100 border border-rose-200 text-[10.5px] text-rose-600 inline-flex items-center gap-1 disabled:opacity-35"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                            <span>Xóa</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <span className="w-px bg-slate-200/80 my-1 shrink-0" />
+
+                    {/* Cluster 3: Font (2 rows) */}
+                    <div className="flex flex-col justify-between gap-1 shrink-0 relative">
+                      <div className="flex items-center gap-1">
                         <select
                           aria-label="Phông chữ"
+                          disabled={isEditingLocked || !selectedBlock}
                           value={
-                            selectedBlock.fontFamily ?? PPT_FONT_FAMILIES[0].value
+                            selectedBlock?.fontFamily ?? PPT_FONT_FAMILIES[0].value
                           }
                           onChange={(e) =>
+                            selectedBlock &&
                             handleUpdateBlock(selectedBlock.id, {
                               fontFamily: e.target.value,
                             })
                           }
-                          className="shrink-0 h-8 px-2 rounded-lg bg-[#1C2331] border border-white/15 text-xs text-slate-100 outline-none focus:border-[#C43E1C]"
+                          className="h-6 px-1.5 rounded bg-slate-50 border border-slate-200 text-[11px] text-slate-800 outline-none focus:border-[#C43E1C] disabled:opacity-40"
                         >
                           {PPT_FONT_FAMILIES.map((f) => (
                             <option key={f.label} value={f.value}>
@@ -4686,263 +5594,641 @@ export function SlideWorkspace({
                             </option>
                           ))}
                         </select>
-
-                        <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-[#1C2331] border border-white/10 shrink-0">
-                          {SLIDE_FONT_SIZES.map((size) => {
-                            const isSizeActive = selectedBlock.fontSize === size;
-                            return (
-                              <button
-                                key={size}
-                                type="button"
-                                onMouseDown={handlePreventMouseDown}
-                                onClick={() =>
-                                  handleUpdateBlock(selectedBlock.id, {
-                                    fontSize: size,
-                                  })
-                                }
-                                aria-pressed={isSizeActive}
-                                className={`min-h-[26px] px-1.5 rounded-md text-[11px] font-semibold tabular-nums transition-colors ${
-                                  isSizeActive
-                                    ? 'bg-[#C43E1C] text-white'
-                                    : 'text-slate-300 hover:bg-white/10 hover:text-white'
-                                }`}
-                              >
-                                {size}
-                              </button>
-                            );
-                          })}
-                        </div>
-
+                        <select
+                          aria-label="Cỡ chữ"
+                          disabled={isEditingLocked || !selectedBlock}
+                          value={selectedBlock?.fontSize ?? 18}
+                          onChange={(e) =>
+                            selectedBlock &&
+                            handleUpdateBlock(selectedBlock.id, {
+                              fontSize: Number(e.target.value),
+                            })
+                          }
+                          className="h-6 w-14 px-1 rounded bg-slate-50 border border-slate-200 text-[11px] tabular-nums text-slate-800 outline-none focus:border-[#C43E1C] disabled:opacity-40"
+                        >
+                          {[12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 44, 48].map((sz) => (
+                            <option key={sz} value={sz}>
+                              {sz}pt
+                            </option>
+                          ))}
+                        </select>
                         <button
                           type="button"
+                          disabled={isEditingLocked || !selectedBlock}
                           onMouseDown={handlePreventMouseDown}
                           onClick={() =>
+                            selectedBlock &&
+                            handleUpdateBlock(selectedBlock.id, {
+                              fontSize: Math.min(72, (selectedBlock.fontSize || 18) + 2),
+                            })
+                          }
+                          title="Tăng cỡ chữ (+2pt)"
+                          className="h-6 px-1.5 rounded bg-slate-50 hover:bg-slate-100 border border-slate-200 text-[11px] font-bold text-slate-700 disabled:opacity-40"
+                        >
+                          A↑
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isEditingLocked || !selectedBlock}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() =>
+                            selectedBlock &&
+                            handleUpdateBlock(selectedBlock.id, {
+                              fontSize: Math.max(8, (selectedBlock.fontSize || 18) - 2),
+                            })
+                          }
+                          title="Giảm cỡ chữ (-2pt)"
+                          className="h-6 px-1.5 rounded bg-slate-50 hover:bg-slate-100 border border-slate-200 text-[10.5px] font-bold text-slate-700 disabled:opacity-40"
+                        >
+                          A↓
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isEditingLocked || !selectedBlock}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() => {
+                            setIsCaseMenuOpen((v) => !v);
+                            setIsHighlightMenuOpen(false);
+                          }}
+                          title="Chuyển kiểu chữ HOA / thường"
+                          className={`h-6 px-1.5 rounded border text-[11px] font-semibold disabled:opacity-40 ${
+                            isCaseMenuOpen
+                              ? 'bg-[#FFF4ED] border-[#C43E1C] text-[#C43E1C]'
+                              : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                          }`}
+                        >
+                          Aa
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-0.5">
+                        <button
+                          type="button"
+                          disabled={isEditingLocked || !selectedBlock}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() =>
+                            selectedBlock &&
                             handleUpdateBlock(selectedBlock.id, {
                               bold: !selectedBlock.bold,
                             })
                           }
-                          aria-pressed={Boolean(selectedBlock.bold)}
+                          aria-pressed={Boolean(selectedBlock?.bold)}
                           title="In đậm"
-                          className={`shrink-0 inline-flex items-center justify-center h-8 w-8 rounded-lg border ${
-                            selectedBlock.bold
-                              ? 'bg-[#C43E1C]/35 border-[#C43E1C] text-white'
-                              : 'bg-white/[0.04] hover:bg-white/[0.1] border-white/10 text-slate-300'
+                          className={`h-6 w-6 rounded border flex items-center justify-center disabled:opacity-40 ${
+                            selectedBlock?.bold
+                              ? 'bg-[#FFF4ED] border-[#C43E1C] text-[#C43E1C]'
+                              : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
                           }`}
                         >
-                          <Bold className="h-3.5 w-3.5" />
+                          <Bold className="h-3 w-3" />
                         </button>
-
                         <button
                           type="button"
+                          disabled={isEditingLocked || !selectedBlock}
                           onMouseDown={handlePreventMouseDown}
                           onClick={() =>
+                            selectedBlock &&
                             handleUpdateBlock(selectedBlock.id, {
                               italic: !selectedBlock.italic,
                             })
                           }
-                          aria-pressed={Boolean(selectedBlock.italic)}
+                          aria-pressed={Boolean(selectedBlock?.italic)}
                           title="In nghiêng"
-                          className={`shrink-0 inline-flex items-center justify-center h-8 w-8 rounded-lg border ${
-                            selectedBlock.italic
-                              ? 'bg-[#C43E1C]/35 border-[#C43E1C] text-white'
-                              : 'bg-white/[0.04] hover:bg-white/[0.1] border-white/10 text-slate-300'
+                          className={`h-6 w-6 rounded border flex items-center justify-center disabled:opacity-40 ${
+                            selectedBlock?.italic
+                              ? 'bg-[#FFF4ED] border-[#C43E1C] text-[#C43E1C]'
+                              : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
                           }`}
                         >
-                          <Italic className="h-3.5 w-3.5" />
+                          <Italic className="h-3 w-3" />
                         </button>
-
                         <button
                           type="button"
+                          disabled={isEditingLocked || !selectedBlock}
                           onMouseDown={handlePreventMouseDown}
                           onClick={() =>
-                            handleToggleBlockUnderline(selectedBlock.id)
+                            selectedBlock && handleToggleBlockUnderline(selectedBlock.id)
                           }
                           aria-pressed={Boolean(
-                            underlinedBlockIds[selectedBlock.id]
+                            selectedBlock &&
+                              (selectedBlock.underline ||
+                                underlinedBlockIds[selectedBlock.id])
                           )}
                           title="Gạch chân"
-                          className={`shrink-0 inline-flex items-center justify-center h-8 w-8 rounded-lg border ${
-                            underlinedBlockIds[selectedBlock.id]
-                              ? 'bg-[#C43E1C]/35 border-[#C43E1C] text-white'
-                              : 'bg-white/[0.04] hover:bg-white/[0.1] border-white/10 text-slate-300'
+                          className={`h-6 w-6 rounded border flex items-center justify-center disabled:opacity-40 ${
+                            selectedBlock &&
+                            (selectedBlock.underline ||
+                              underlinedBlockIds[selectedBlock.id])
+                              ? 'bg-[#FFF4ED] border-[#C43E1C] text-[#C43E1C]'
+                              : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
                           }`}
                         >
-                          <Underline className="h-3.5 w-3.5" />
+                          <Underline className="h-3 w-3" />
                         </button>
-
-                        <div className="inline-flex items-center gap-1 px-1.5 py-1 rounded-lg bg-[#1C2331] border border-white/10 shrink-0">
-                          {SLIDE_COLOR_SWATCHES.map((swatch) => {
-                            const isColorActive =
-                              (selectedBlock.color ?? '#FFFFFF').toLowerCase() ===
-                              swatch.value.toLowerCase();
-                            return (
-                              <button
-                                key={swatch.value}
-                                type="button"
-                                onMouseDown={handlePreventMouseDown}
-                                onClick={() =>
-                                  handleUpdateBlock(selectedBlock.id, {
-                                    color: swatch.value,
-                                  })
-                                }
-                                title={`Màu chữ ${swatch.label}`}
-                                className={`h-4 w-4 rounded-full border ${
-                                  isColorActive
-                                    ? 'ring-2 ring-orange-400 scale-110 border-white'
-                                    : 'border-white/25 hover:scale-110'
-                                }`}
-                                style={{ backgroundColor: swatch.value }}
-                              />
-                            );
-                          })}
+                        <button
+                          type="button"
+                          disabled={isEditingLocked || !selectedBlock}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() =>
+                            selectedBlock &&
+                            handleUpdateBlock(selectedBlock.id, {
+                              strikethrough: !selectedBlock.strikethrough,
+                            })
+                          }
+                          aria-pressed={Boolean(selectedBlock?.strikethrough)}
+                          title="Gạch ngang chữ"
+                          className={`h-6 w-6 rounded border flex items-center justify-center disabled:opacity-40 ${
+                            selectedBlock?.strikethrough
+                              ? 'bg-[#FFF4ED] border-[#C43E1C] text-[#C43E1C]'
+                              : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                          }`}
+                        >
+                          <Strikethrough className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isEditingLocked || !selectedBlock}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() =>
+                            selectedBlock &&
+                            handleUpdateBlock(selectedBlock.id, {
+                              textScript:
+                                selectedBlock.textScript === 'super'
+                                  ? 'normal'
+                                  : 'super',
+                            })
+                          }
+                          aria-pressed={selectedBlock?.textScript === 'super'}
+                          title="Chỉ số trên (x²)"
+                          className={`h-6 w-6 rounded border flex items-center justify-center disabled:opacity-40 ${
+                            selectedBlock?.textScript === 'super'
+                              ? 'bg-[#FFF4ED] border-[#C43E1C] text-[#C43E1C]'
+                              : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                          }`}
+                        >
+                          <Superscript className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isEditingLocked || !selectedBlock}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() =>
+                            selectedBlock &&
+                            handleUpdateBlock(selectedBlock.id, {
+                              textScript:
+                                selectedBlock.textScript === 'sub'
+                                  ? 'normal'
+                                  : 'sub',
+                            })
+                          }
+                          aria-pressed={selectedBlock?.textScript === 'sub'}
+                          title="Chỉ số dưới (H₂O)"
+                          className={`h-6 w-6 rounded border flex items-center justify-center disabled:opacity-40 ${
+                            selectedBlock?.textScript === 'sub'
+                              ? 'bg-[#FFF4ED] border-[#C43E1C] text-[#C43E1C]'
+                              : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                          }`}
+                        >
+                          <Subscript className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isEditingLocked || !selectedBlock}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() => {
+                            setIsHighlightMenuOpen((v) => !v);
+                            setIsCaseMenuOpen(false);
+                          }}
+                          title="Tô màu nổi bật chữ (Highlight)"
+                          className={`h-6 w-6 rounded border flex items-center justify-center disabled:opacity-40 ${
+                            selectedBlock?.highlightColor
+                              ? 'bg-amber-100 border-amber-400 text-amber-800'
+                              : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                          }`}
+                        >
+                          <Highlighter className="h-3 w-3" />
+                        </button>
+                        <div className="inline-flex items-center gap-0.5 px-1 h-6 rounded bg-slate-100 border border-slate-200/80">
+                          {SLIDE_COLOR_SWATCHES.slice(0, 4).map((swatch) => (
+                            <button
+                              key={swatch.value}
+                              type="button"
+                              disabled={isEditingLocked || !selectedBlock}
+                              onMouseDown={handlePreventMouseDown}
+                              onClick={() =>
+                                selectedBlock &&
+                                handleUpdateBlock(selectedBlock.id, {
+                                  color: swatch.value,
+                                })
+                              }
+                              title={`Màu chữ ${swatch.label}`}
+                              className="h-3.5 w-3.5 rounded-full border border-slate-300 disabled:opacity-40"
+                              style={{ backgroundColor: swatch.value }}
+                            />
+                          ))}
                           <input
                             type="color"
+                            disabled={isEditingLocked || !selectedBlock}
                             value={toSafeColorInputValue(
-                              selectedBlock.color,
+                              selectedBlock?.color,
                               hasLightSlideBg ? '#0F172A' : '#FFFFFF'
                             )}
-                            onChange={(event) =>
+                            onChange={(e) =>
+                              selectedBlock &&
                               handleUpdateBlock(selectedBlock.id, {
-                                color: event.target.value,
+                                color: e.target.value,
                               })
                             }
                             aria-label="Màu chữ tùy chỉnh"
-                            className="h-4 w-5 rounded cursor-pointer border-0 bg-transparent p-0"
+                            className="h-4 w-4 rounded cursor-pointer border-0 bg-transparent p-0 disabled:opacity-40"
                           />
                         </div>
+                        <button
+                          type="button"
+                          disabled={isEditingLocked || !selectedBlock}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() =>
+                            selectedBlock && handleClearBlockFormat(selectedBlock.id)
+                          }
+                          title="Xóa tất cả định dạng"
+                          className="h-6 px-1.5 rounded bg-slate-50 hover:bg-rose-50 border border-slate-200 text-[10px] text-slate-600 hover:text-rose-600 disabled:opacity-40"
+                        >
+                          Xóa ĐD
+                        </button>
+                      </div>
+                    </div>
 
-                        <div className="inline-flex items-center gap-1 px-1.5 py-1 rounded-lg bg-[#1C2331] border border-white/10 shrink-0">
-                          <span className="text-[10px] text-slate-400">Nền</span>
-                          <input
-                            type="color"
-                            value={toSafeColorInputValue(
-                              selectedBlock.fillColor,
-                              '#C43E1C'
-                            )}
-                            onChange={(event) =>
-                              handleUpdateBlock(selectedBlock.id, {
-                                fillColor: event.target.value,
-                              })
+                    <span className="w-px bg-slate-200/80 my-1 shrink-0" />
+
+                    {/* Cluster 4: Paragraph & Spacing (2 rows) */}
+                    <div className="flex flex-col justify-between gap-1 shrink-0">
+                      <div className="flex items-center gap-0.5">
+                        <button
+                          type="button"
+                          disabled={isEditingLocked || !selectedBlock}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() => handleToggleBlockLinesList('bullet')}
+                          title="Danh sách dấu chấm (Bullets)"
+                          className="h-6 w-6 rounded bg-slate-50 hover:bg-[#FFF4ED] border border-slate-200 text-slate-700 hover:text-[#C43E1C] flex items-center justify-center disabled:opacity-40"
+                        >
+                          <List className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isEditingLocked || !selectedBlock}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() => handleToggleBlockLinesList('number')}
+                          title="Danh sách đánh số (1. 2. 3.)"
+                          className="h-6 w-6 rounded bg-slate-50 hover:bg-[#FFF4ED] border border-slate-200 text-slate-700 hover:text-[#C43E1C] flex items-center justify-center disabled:opacity-40"
+                        >
+                          <ListOrdered className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isEditingLocked || !selectedBlock}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() => handleAdjustBlockIndent(-1)}
+                          title="Giảm thụt lề"
+                          className="h-6 w-6 rounded bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 flex items-center justify-center disabled:opacity-40"
+                        >
+                          <IndentDecrease className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isEditingLocked || !selectedBlock}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() => handleAdjustBlockIndent(1)}
+                          title="Tăng thụt lề"
+                          className="h-6 w-6 rounded bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 flex items-center justify-center disabled:opacity-40"
+                        >
+                          <IndentIncrease className="h-3 w-3" />
+                        </button>
+                        <select
+                          aria-label="Giãn dòng"
+                          disabled={isEditingLocked || !selectedBlock}
+                          value={selectedBlock?.lineHeight ?? 1.15}
+                          onChange={(e) =>
+                            selectedBlock &&
+                            handleUpdateBlock(selectedBlock.id, {
+                              lineHeight: Number(e.target.value),
+                            })
+                          }
+                          title="Giãn dòng (Line Height)"
+                          className="h-6 px-1 rounded bg-slate-50 border border-slate-200 text-[10.5px] text-slate-700 disabled:opacity-40"
+                        >
+                          <option value={1}>1.0</option>
+                          <option value={1.15}>1.15</option>
+                          <option value={1.5}>1.5</option>
+                          <option value={2}>2.0</option>
+                        </select>
+                        <button
+                          type="button"
+                          disabled={isEditingLocked || !selectedBlock}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() =>
+                            selectedBlock &&
+                            handleUpdateBlock(selectedBlock.id, {
+                              textColumns: selectedBlock.textColumns === 2 ? 1 : 2,
+                            })
+                          }
+                          aria-pressed={selectedBlock?.textColumns === 2}
+                          title="Chia 1 / 2 cột văn bản"
+                          className={`h-6 px-1.5 rounded border text-[10.5px] inline-flex items-center gap-0.5 disabled:opacity-40 ${
+                            selectedBlock?.textColumns === 2
+                              ? 'bg-[#FFF4ED] border-[#C43E1C] text-[#C43E1C] font-semibold'
+                              : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                          }`}
+                        >
+                          <Columns className="h-3 w-3" />
+                          <span>{selectedBlock?.textColumns === 2 ? '2C' : '1C'}</span>
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-0.5">
+                        {(
+                          [
+                            { value: 'left', label: 'Căn trái', Icon: AlignLeft },
+                            { value: 'center', label: 'Căn giữa', Icon: AlignCenter },
+                            { value: 'right', label: 'Căn phải', Icon: AlignRight },
+                            { value: 'justify', label: 'Căn đều 2 bên', Icon: AlignJustify },
+                          ] as const
+                        ).map(({ value, label, Icon }) => (
+                          <button
+                            key={value}
+                            type="button"
+                            disabled={isEditingLocked || !selectedBlock}
+                            onMouseDown={handlePreventMouseDown}
+                            onClick={() =>
+                              selectedBlock &&
+                              handleUpdateBlock(selectedBlock.id, { align: value })
                             }
-                            aria-label="Màu nền khối"
-                            className="h-4 w-5 rounded cursor-pointer border-0 bg-transparent p-0"
-                          />
-                          {selectedBlock.fillColor && (
+                            title={label}
+                            className={`h-6 w-6 rounded border flex items-center justify-center disabled:opacity-40 ${
+                              (selectedBlock?.align ?? 'left') === value
+                                ? 'bg-[#C43E1C] border-[#C43E1C] text-white'
+                                : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                            }`}
+                          >
+                            <Icon className="h-3 w-3" />
+                          </button>
+                        ))}
+                        <span className="w-px h-4 bg-slate-200 mx-0.5" />
+                        <button
+                          type="button"
+                          disabled={isEditingLocked || !selectedBlock}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() =>
+                            selectedBlock &&
+                            handleUpdateBlock(selectedBlock.id, { valign: 'top' })
+                          }
+                          title="Căn lề trên"
+                          className={`h-6 w-6 rounded border flex items-center justify-center disabled:opacity-40 ${
+                            (selectedBlock?.valign ?? 'top') === 'top'
+                              ? 'bg-[#FFF4ED] border-[#C43E1C] text-[#C43E1C]'
+                              : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                          }`}
+                        >
+                          <ArrowUpToLine className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isEditingLocked || !selectedBlock}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() =>
+                            selectedBlock &&
+                            handleUpdateBlock(selectedBlock.id, { valign: 'middle' })
+                          }
+                          title="Căn giữa theo chiều dọc"
+                          className={`h-6 px-1 rounded border text-[9.5px] font-semibold disabled:opacity-40 ${
+                            selectedBlock?.valign === 'middle'
+                              ? 'bg-[#FFF4ED] border-[#C43E1C] text-[#C43E1C]'
+                              : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                          }`}
+                        >
+                          Giữa
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isEditingLocked || !selectedBlock}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() =>
+                            selectedBlock &&
+                            handleUpdateBlock(selectedBlock.id, { valign: 'bottom' })
+                          }
+                          title="Căn lề dưới"
+                          className={`h-6 w-6 rounded border flex items-center justify-center disabled:opacity-40 ${
+                            selectedBlock?.valign === 'bottom'
+                              ? 'bg-[#FFF4ED] border-[#C43E1C] text-[#C43E1C]'
+                              : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                          }`}
+                        >
+                          <ArrowDownToLine className="h-3 w-3" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <span className="w-px bg-slate-200/80 my-1 shrink-0" />
+
+                    {/* Cluster 5: Quick Insert + 2x5 Quick Shapes + Arrange + Shape Fill/Outline */}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <div className="grid grid-cols-1 gap-0.5">
+                        <button
+                          type="button"
+                          disabled={isEditingLocked}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={handleAddTextBlock}
+                          className="h-6 px-2 rounded bg-[#FFF4ED] hover:bg-[#C43E1C] border border-[#C43E1C]/35 text-[10.5px] font-semibold text-[#C43E1C] hover:text-white inline-flex items-center gap-1 disabled:opacity-40"
+                        >
+                          <Type className="h-3 w-3" />
+                          <span>Hộp chữ</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isEditingLocked}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={handleTriggerAddImage}
+                          className="h-6 px-2 rounded bg-slate-50 hover:bg-slate-100 border border-slate-200 text-[10.5px] font-medium text-slate-700 inline-flex items-center gap-1 disabled:opacity-40"
+                        >
+                          <ImagePlus className="h-3 w-3 text-emerald-600" />
+                          <span>Chèn ảnh</span>
+                        </button>
+                      </div>
+
+                      <div
+                        className="grid grid-cols-5 gap-0.5 p-1 rounded-lg bg-slate-50 border border-slate-200/80"
+                        aria-label="Chèn nhanh hình khối"
+                      >
+                        {PPT_QUICK_SHAPES_10.map((shapeOpt) => {
+                          const ShapeIcon = shapeOpt.Icon;
+                          return (
                             <button
+                              key={shapeOpt.kind}
                               type="button"
+                              disabled={isEditingLocked}
                               onMouseDown={handlePreventMouseDown}
-                              onClick={() =>
+                              onClick={() => handleInsertShape(shapeOpt.kind)}
+                              title={`Chèn ${shapeOpt.label}`}
+                              className="h-5 w-5 rounded hover:bg-[#FFF4ED] text-slate-700 hover:text-[#C43E1C] flex items-center justify-center disabled:opacity-40"
+                            >
+                              <ShapeIcon className="h-3.5 w-3.5" />
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-0.5">
+                        <div className="flex items-center gap-0.5">
+                          <button
+                            type="button"
+                            disabled={isEditingLocked || !selectedBlock}
+                            onMouseDown={handlePreventMouseDown}
+                            onClick={() => selectedBlock && handleBringToFront(selectedBlock.id)}
+                            title="Đưa lên trên cùng"
+                            className="h-6 px-1.5 rounded bg-slate-50 hover:bg-slate-100 border border-slate-200 text-[10.5px] text-slate-700 inline-flex items-center gap-1 disabled:opacity-40"
+                          >
+                            <BringToFront className="h-3 w-3 text-[#C43E1C]" />
+                            <span className="hidden xl:inline">Lên trên</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isEditingLocked || !selectedBlock}
+                            onMouseDown={handlePreventMouseDown}
+                            onClick={() => selectedBlock && handleSendToBack(selectedBlock.id)}
+                            title="Đưa xuống dưới cùng"
+                            className="h-6 px-1.5 rounded bg-slate-50 hover:bg-slate-100 border border-slate-200 text-[10.5px] text-slate-700 inline-flex items-center gap-1 disabled:opacity-40"
+                          >
+                            <SendToBack className="h-3 w-3 text-slate-500" />
+                            <span className="hidden xl:inline">Xuống dưới</span>
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <label className="inline-flex items-center gap-0.5 h-6 px-1.5 rounded bg-slate-50 border border-slate-200 text-[10px] text-slate-600">
+                            <span>Nền</span>
+                            <input
+                              type="color"
+                              disabled={isEditingLocked || !selectedBlock}
+                              value={toSafeColorInputValue(selectedBlock?.fillColor, '#C43E1C')}
+                              onChange={(e) =>
+                                selectedBlock &&
+                                handleUpdateBlock(selectedBlock.id, { fillColor: e.target.value })
+                              }
+                              aria-label="Màu nền khối"
+                              className="h-4 w-4 rounded cursor-pointer border-0 bg-transparent p-0 disabled:opacity-40"
+                            />
+                          </label>
+                          <label className="inline-flex items-center gap-0.5 h-6 px-1.5 rounded bg-slate-50 border border-slate-200 text-[10px] text-slate-600">
+                            <span>Viền</span>
+                            <input
+                              type="color"
+                              disabled={isEditingLocked || !selectedBlock}
+                              value={toSafeColorInputValue(selectedBlock?.borderColor, '#FFFFFF')}
+                              onChange={(e) =>
+                                selectedBlock &&
                                 handleUpdateBlock(selectedBlock.id, {
-                                  fillColor: undefined,
+                                  borderColor: e.target.value,
+                                  borderWidthPx: selectedBlock.borderWidthPx ?? 2,
                                 })
                               }
-                              className="text-[10px] text-slate-300 hover:text-white px-1 rounded bg-white/10"
+                              aria-label="Màu viền khối"
+                              className="h-4 w-4 rounded cursor-pointer border-0 bg-transparent p-0 disabled:opacity-40"
+                            />
+                          </label>
+                          {(selectedBlock || selectedImage) && (
+                            <button
+                              type="button"
+                              disabled={isEditingLocked}
+                              onMouseDown={handlePreventMouseDown}
+                              onClick={() => {
+                                if (selectedBlock) handleDeleteBlock(selectedBlock.id);
+                                else if (selectedImage) handleDeleteImage(selectedImage.id);
+                              }}
+                              title="Xóa đối tượng đang chọn"
+                              className="h-6 w-6 rounded bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-600 flex items-center justify-center disabled:opacity-40"
                             >
-                              Xóa
+                              <Trash2 className="h-3 w-3" />
                             </button>
                           )}
                         </div>
-
-                        <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-[#1C2331] border border-white/10 shrink-0">
-                          {(
-                            [
-                              { value: 'left', label: 'Căn trái', Icon: AlignLeft },
-                              {
-                                value: 'center',
-                                label: 'Căn giữa',
-                                Icon: AlignCenter,
-                              },
-                              { value: 'right', label: 'Căn phải', Icon: AlignRight },
-                            ] as const
-                          ).map(({ value, label, Icon }) => (
-                            <button
-                              key={value}
-                              type="button"
-                              onMouseDown={handlePreventMouseDown}
-                              onClick={() =>
-                                handleUpdateBlock(selectedBlock.id, {
-                                  align: value,
-                                })
-                              }
-                              title={label}
-                              className={`h-7 w-7 rounded-md flex items-center justify-center ${
-                                (selectedBlock.align ?? 'left') === value
-                                  ? 'bg-[#C43E1C] text-white'
-                                  : 'text-slate-300 hover:bg-white/10'
-                              }`}
-                            >
-                              <Icon className="h-3.5 w-3.5" />
-                            </button>
-                          ))}
-                        </div>
-
-                        <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-[#1C2331] border border-white/10 shrink-0">
-                          <button
-                            type="button"
-                            onMouseDown={handlePreventMouseDown}
-                            onClick={() => handleBringToFront(selectedBlock.id)}
-                            title="Đưa lên trên cùng (Bring to Front)"
-                            className="h-7 px-2 rounded-md text-[11px] text-slate-200 hover:bg-white/10 inline-flex items-center gap-1"
-                          >
-                            <BringToFront className="h-3.5 w-3.5 text-orange-300" />
-                            <span className="hidden lg:inline">Lên trên</span>
-                          </button>
-                          <button
-                            type="button"
-                            onMouseDown={handlePreventMouseDown}
-                            onClick={() => handleSendToBack(selectedBlock.id)}
-                            title="Đưa xuống dưới cùng (Send to Back)"
-                            className="h-7 px-2 rounded-md text-[11px] text-slate-200 hover:bg-white/10 inline-flex items-center gap-1"
-                          >
-                            <SendToBack className="h-3.5 w-3.5 text-slate-300" />
-                            <span className="hidden lg:inline">Xuống dưới</span>
-                          </button>
-                        </div>
-
-                        <button
-                          type="button"
-                          onMouseDown={handlePreventMouseDown}
-                          onClick={() => handleDeleteBlock(selectedBlock.id)}
-                          title="Xóa đối tượng đang chọn"
-                          className="shrink-0 inline-flex items-center gap-1 h-8 px-2 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/35 text-xs font-medium text-rose-200"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </>
-                    ) : selectedImage && !isReadOnly ? (
-                      <>
-                        <span className="h-5 w-px mx-0.5 bg-white/10 shrink-0" />
-                        <span className="text-[11.5px] text-orange-200 whitespace-nowrap">
-                          Đang chọn ảnh · Kéo chấm tròn trên đỉnh để xoay
-                        </span>
-                        <button
-                          type="button"
-                          onMouseDown={handlePreventMouseDown}
-                          onClick={() => handleDeleteImage(selectedImage.id)}
-                          className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/35 text-xs font-medium text-rose-200 whitespace-nowrap"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                          <span>Xóa ảnh</span>
-                        </button>
-                      </>
-                    ) : (
-                      <span className="text-[11.5px] text-slate-400 whitespace-nowrap pl-1">
-                        {isReadOnly
-                          ? 'Chế độ Chỉ xem · Chọn tab Trình chiếu để bắt đầu.'
-                          : 'Bấm chọn khung/ảnh trên slide để định dạng, xoay, nhóm hoặc Shift+Click chọn nhiều.'}
-                      </span>
-                    )}
-                  </>
+                      </div>
+                    </div>
+                  </div>
                 )}
 
                 {activeRibbonTab === 'insert' && (
                   <>
                     <button
                       type="button"
-                      disabled={isReadOnly}
+                      disabled={isEditingLocked}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => {
+                        setLayoutPickerMode((m) => (m === 'add' ? null : 'add'));
+                        setIsShapePickerOpen(false);
+                      }}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-[#C43E1C] hover:bg-[#9E3014] text-xs font-semibold text-white shadow-xs whitespace-nowrap disabled:opacity-40"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      <span>Slide mới</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isEditingLocked}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => handleInsertTable(3, 3)}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700 whitespace-nowrap disabled:opacity-40"
+                    >
+                      <Table2 className="h-3.5 w-3.5 text-sky-600" />
+                      <span>Bảng (3×3)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isEditingLocked}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={handleTriggerAddImage}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700 whitespace-nowrap disabled:opacity-40"
+                    >
+                      <ImagePlus className="h-3.5 w-3.5 text-emerald-600" />
+                      <span>Hình ảnh</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isEditingLocked}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => {
+                        setIsShapePickerOpen((v) => !v);
+                        setLayoutPickerMode(null);
+                      }}
+                      aria-expanded={isShapePickerOpen}
+                      className={`shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap disabled:opacity-40 ${
+                        isShapePickerOpen
+                          ? 'bg-[#FFF4ED] border-[#C43E1C]/50 text-[#C43E1C] font-semibold'
+                          : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                      }`}
+                    >
+                      <Shapes className="h-3.5 w-3.5 text-[#C43E1C]" />
+                      <span>Hình khối ({PPT_SHAPE_OPTIONS.length})</span>
+                      <ChevronDown className="h-3 w-3 opacity-70" />
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isEditingLocked}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => setIsChartModalOpen(true)}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700 whitespace-nowrap disabled:opacity-40"
+                    >
+                      <BarChart3 className="h-3.5 w-3.5 text-amber-600" />
+                      <span>Biểu đồ</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isEditingLocked}
                       onMouseDown={handlePreventMouseDown}
                       onClick={handleAddTextBlock}
-                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-[#C43E1C]/20 hover:bg-[#C43E1C]/35 border border-[#C43E1C]/50 text-xs font-semibold text-orange-100 whitespace-nowrap disabled:opacity-40"
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-[#FFF4ED] hover:bg-[#C43E1C] border border-[#C43E1C]/35 text-xs font-semibold text-[#C43E1C] hover:text-white transition-colors whitespace-nowrap disabled:opacity-40"
                     >
                       <Type className="h-3.5 w-3.5" />
                       <span>Hộp văn bản</span>
@@ -4950,88 +6236,216 @@ export function SlideWorkspace({
 
                     <button
                       type="button"
-                      disabled={isReadOnly}
-                      onMouseDown={handlePreventMouseDown}
-                      onClick={handleTriggerAddImage}
-                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 whitespace-nowrap disabled:opacity-40"
-                    >
-                      <ImagePlus className="h-3.5 w-3.5 text-emerald-300" />
-                      <span>Hình ảnh</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={isReadOnly}
-                      onMouseDown={handlePreventMouseDown}
-                      onClick={() => handleInsertTable(3, 3)}
-                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 whitespace-nowrap disabled:opacity-40"
-                    >
-                      <Table2 className="h-3.5 w-3.5 text-sky-300" />
-                      <span>Bảng (3×3)</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={isReadOnly}
-                      onMouseDown={handlePreventMouseDown}
-                      onClick={() => setIsChartModalOpen(true)}
-                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 whitespace-nowrap disabled:opacity-40"
-                    >
-                      <BarChart3 className="h-3.5 w-3.5 text-amber-300" />
-                      <span>Biểu đồ</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={isReadOnly}
-                      onMouseDown={handlePreventMouseDown}
-                      onClick={() => {
-                        setIsShapePickerOpen((v) => !v);
-                        setIsLayoutPickerOpen(false);
-                      }}
-                      aria-expanded={isShapePickerOpen}
-                      className={`shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap disabled:opacity-40 ${
-                        isShapePickerOpen
-                          ? 'bg-[#C43E1C]/25 border-[#C43E1C] text-orange-200'
-                          : 'bg-white/[0.06] hover:bg-white/[0.12] border-white/10 text-slate-200'
-                      }`}
-                    >
-                      <Shapes className="h-3.5 w-3.5 text-orange-300" />
-                      <span>Hình khối (11)</span>
-                      <ChevronDown className="h-3 w-3 opacity-70" />
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={isReadOnly}
+                      disabled={isEditingLocked}
                       onMouseDown={handlePreventMouseDown}
                       onClick={() => setLinkMediaModalMode('link')}
-                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 whitespace-nowrap disabled:opacity-40"
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700 whitespace-nowrap disabled:opacity-40"
                     >
-                      <Link2 className="h-3.5 w-3.5 text-cyan-300" />
+                      <Link2 className="h-3.5 w-3.5 text-cyan-600" />
                       <span>Liên kết</span>
                     </button>
 
                     <button
                       type="button"
-                      disabled={isReadOnly}
+                      disabled={isEditingLocked}
                       onMouseDown={handlePreventMouseDown}
                       onClick={() => setLinkMediaModalMode('video')}
-                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 whitespace-nowrap disabled:opacity-40"
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700 whitespace-nowrap disabled:opacity-40"
                     >
-                      <Video className="h-3.5 w-3.5 text-rose-300" />
+                      <Video className="h-3.5 w-3.5 text-rose-600" />
                       <span>Video</span>
                     </button>
 
                     <button
                       type="button"
-                      disabled={isReadOnly}
+                      disabled={isEditingLocked}
                       onMouseDown={handlePreventMouseDown}
                       onClick={() => setLinkMediaModalMode('audio')}
-                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 whitespace-nowrap disabled:opacity-40"
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700 whitespace-nowrap disabled:opacity-40"
                     >
-                      <Music className="h-3.5 w-3.5 text-violet-300" />
+                      <Music className="h-3.5 w-3.5 text-violet-600" />
                       <span>Âm thanh</span>
+                    </button>
+
+                    <span className="h-5 w-px mx-0.5 bg-slate-200/80 shrink-0" />
+
+                    <button
+                      type="button"
+                      disabled={isEditingLocked}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={handleToggleSlideNumber}
+                      aria-pressed={Boolean(currentSlide.showSlideNumber)}
+                      className={`shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap disabled:opacity-40 ${
+                        currentSlide.showSlideNumber
+                          ? 'bg-[#FFF4ED] border-[#C43E1C] text-[#C43E1C] font-semibold'
+                          : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                      }`}
+                    >
+                      <Hash className="h-3.5 w-3.5" />
+                      <span>Số slide</span>
+                    </button>
+
+                    <input
+                      type="text"
+                      disabled={isEditingLocked}
+                      value={currentSlide.footerText ?? ''}
+                      onChange={(e) => handleUpdateSlideFooter(e.target.value)}
+                      placeholder="Nội dung chân trang (Footer)..."
+                      aria-label="Nội dung chân trang slide"
+                      className="shrink-0 h-8 w-44 px-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-800 outline-none focus:border-[#C43E1C] disabled:opacity-40"
+                    />
+
+                    <button
+                      type="button"
+                      disabled={isEditingLocked}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={handleApplyFooterToAll}
+                      className="shrink-0 h-8 px-2.5 rounded-lg bg-[#FFF4ED] hover:bg-[#C43E1C] border border-[#C43E1C]/35 text-xs font-semibold text-[#C43E1C] hover:text-white transition-colors whitespace-nowrap disabled:opacity-40"
+                    >
+                      Áp dụng tất cả
+                    </button>
+                  </>
+                )}
+
+                {activeRibbonTab === 'draw' && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={isEditingLocked}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => {
+                        setViewMode('edit');
+                        setActiveDrawTool((t) => (t === 'pen' ? null : 'pen'));
+                      }}
+                      aria-pressed={activeDrawTool === 'pen'}
+                      className={`shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap disabled:opacity-40 ${
+                        activeDrawTool === 'pen'
+                          ? 'bg-[#C43E1C] border-[#C43E1C] text-white font-semibold'
+                          : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                      }`}
+                    >
+                      <Pen className="h-3.5 w-3.5" />
+                      <span>Bút vẽ</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isEditingLocked}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => {
+                        setViewMode('edit');
+                        setActiveDrawTool((t) => (t === 'highlighter' ? null : 'highlighter'));
+                      }}
+                      aria-pressed={activeDrawTool === 'highlighter'}
+                      className={`shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap disabled:opacity-40 ${
+                        activeDrawTool === 'highlighter'
+                          ? 'bg-amber-500 border-amber-500 text-white font-semibold'
+                          : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                      }`}
+                    >
+                      <Highlighter className="h-3.5 w-3.5 text-amber-600" />
+                      <span>Tô sáng</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isEditingLocked}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => {
+                        setViewMode('edit');
+                        setActiveDrawTool((t) => (t === 'eraser' ? null : 'eraser'));
+                      }}
+                      aria-pressed={activeDrawTool === 'eraser'}
+                      className={`shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap disabled:opacity-40 ${
+                        activeDrawTool === 'eraser'
+                          ? 'bg-sky-600 border-sky-600 text-white font-semibold'
+                          : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                      }`}
+                    >
+                      <Eraser className="h-3.5 w-3.5" />
+                      <span>Tẩy</span>
+                    </button>
+
+                    {activeDrawTool !== null && (
+                      <button
+                        type="button"
+                        onMouseDown={handlePreventMouseDown}
+                        onClick={() => setActiveDrawTool(null)}
+                        className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-900 text-xs font-semibold text-white whitespace-nowrap"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                        <span>Thoát vẽ</span>
+                      </button>
+                    )}
+
+                    <span className="h-5 w-px mx-0.5 bg-slate-200/80 shrink-0" />
+
+                    <div className="inline-flex items-center gap-1 px-1.5 py-1 rounded-lg bg-slate-100 border border-slate-200/80 shrink-0">
+                      {PPT_DRAW_COLORS.map((hex) => (
+                        <button
+                          key={hex}
+                          type="button"
+                          disabled={isEditingLocked}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() => setDrawColor(hex)}
+                          aria-label={`Màu nét ${hex}`}
+                          className={`h-4 w-4 rounded-full border disabled:opacity-40 ${
+                            drawColor.toLowerCase() === hex.toLowerCase()
+                              ? 'ring-2 ring-[#C43E1C] scale-110 border-white'
+                              : 'border-slate-300'
+                          }`}
+                          style={{ backgroundColor: hex }}
+                        />
+                      ))}
+                      <input
+                        type="color"
+                        disabled={isEditingLocked}
+                        value={drawColor}
+                        onChange={(e) => setDrawColor(e.target.value)}
+                        aria-label="Màu bút tùy chỉnh"
+                        className="h-4 w-5 rounded cursor-pointer border-0 bg-transparent p-0"
+                      />
+                    </div>
+
+                    <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 border border-slate-200/80 shrink-0">
+                      {[2, 4, 6, 10].map((w) => (
+                        <button
+                          key={w}
+                          type="button"
+                          disabled={isEditingLocked}
+                          onMouseDown={handlePreventMouseDown}
+                          onClick={() => setDrawWidth(w)}
+                          className={`h-7 px-2 rounded-md text-[11px] font-semibold tabular-nums ${
+                            drawWidth === w
+                              ? 'bg-[#C43E1C] text-white'
+                              : 'text-slate-700 hover:bg-white'
+                          }`}
+                        >
+                          {w}px
+                        </button>
+                      ))}
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={isEditingLocked || (currentSlide.drawings?.length ?? 0) === 0}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={handleUndoSlideStroke}
+                      className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700 whitespace-nowrap disabled:opacity-40"
+                    >
+                      <Undo2 className="h-3.5 w-3.5" />
+                      <span>Hoàn tác nét</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isEditingLocked || (currentSlide.drawings?.length ?? 0) === 0}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={handleClearSlideStrokes}
+                      className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-rose-50 hover:bg-rose-100 border border-rose-200 text-xs font-medium text-rose-600 whitespace-nowrap disabled:opacity-40"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      <span>Xóa toàn bộ nét</span>
                     </button>
                   </>
                 )}
@@ -5039,7 +6453,7 @@ export function SlideWorkspace({
                 {activeRibbonTab === 'design' && (
                   <>
                     <div className="inline-flex items-center gap-1 shrink-0">
-                      <Palette className="h-3.5 w-3.5 text-orange-300 mr-0.5 shrink-0" />
+                      <Palette className="h-3.5 w-3.5 text-[#C43E1C] mr-0.5 shrink-0" />
                       {PPT_COLOR_THEMES.map((theme) => {
                         const isActiveTheme =
                           (currentSlide.backgroundColor ?? '').toLowerCase() ===
@@ -5050,21 +6464,21 @@ export function SlideWorkspace({
                           <button
                             key={theme.id}
                             type="button"
-                            disabled={isReadOnly}
+                            disabled={isEditingLocked}
                             onMouseDown={handlePreventMouseDown}
                             onClick={() => handleApplyColorTheme(theme)}
                             title={theme.name}
                             className={`h-8 px-2 rounded-lg border inline-flex items-center gap-1 text-[11px] font-medium whitespace-nowrap disabled:opacity-40 ${
                               isActiveTheme
-                                ? 'border-[#C43E1C] bg-[#C43E1C]/20 text-white'
-                                : 'border-white/10 bg-[#1C2331] hover:border-white/30 text-slate-200'
+                                ? 'border-[#C43E1C] bg-[#FFF4ED] text-[#C43E1C] font-semibold'
+                                : 'border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700'
                             }`}
                           >
                             <span className="flex items-center -space-x-1">
                               {theme.swatches.map((hex, i) => (
                                 <span
                                   key={`${theme.id}-sw-${i}`}
-                                  className="h-3 w-3 rounded-full border border-white/30"
+                                  className="h-3 w-3 rounded-full border border-slate-300"
                                   style={{ backgroundColor: hex }}
                                 />
                               ))}
@@ -5075,40 +6489,40 @@ export function SlideWorkspace({
                       })}
                     </div>
 
-                    <span className="h-5 w-px mx-0.5 bg-white/10 shrink-0" />
+                    <span className="h-5 w-px mx-0.5 bg-slate-200/80 shrink-0" />
 
                     <div className="inline-flex items-center gap-1 shrink-0">
                       {PPT_GRADIENT_PRESETS.map((g) => (
                         <button
                           key={g.label}
                           type="button"
-                          disabled={isReadOnly}
+                          disabled={isEditingLocked}
                           onMouseDown={handlePreventMouseDown}
                           onClick={() => handleApplySlideGradient(g.value)}
                           title={`Nền chuyển sắc: ${g.label}`}
-                          className="h-6 w-6 rounded border border-white/25 hover:scale-110 transition-transform disabled:opacity-40"
+                          className="h-6 w-6 rounded border border-slate-300 hover:scale-110 transition-transform disabled:opacity-40"
                           style={{ backgroundImage: g.value }}
                         />
                       ))}
                     </div>
 
-                    <div className="inline-flex items-center gap-1 px-1.5 py-1 rounded-lg bg-[#1C2331] border border-white/10 shrink-0">
-                      <PaintBucket className="h-3 w-3 text-slate-400" />
+                    <div className="inline-flex items-center gap-1 px-1.5 py-1 rounded-lg bg-slate-100 border border-slate-200/80 shrink-0">
+                      <PaintBucket className="h-3 w-3 text-slate-500" />
                       {SLIDE_BG_PRESETS.map((bg) => (
                         <button
                           key={bg.value}
                           type="button"
-                          disabled={isReadOnly}
+                          disabled={isEditingLocked}
                           onMouseDown={handlePreventMouseDown}
                           onClick={() => handleChangeSlideBackground(bg.value)}
                           title={`Màu đơn: ${bg.label}`}
-                          className="h-4 w-4 rounded border border-white/25 hover:scale-110 transition-transform disabled:opacity-40"
+                          className="h-4 w-4 rounded border border-slate-300 hover:scale-110 transition-transform disabled:opacity-40"
                           style={{ backgroundColor: bg.value }}
                         />
                       ))}
                       <input
                         type="color"
-                        disabled={isReadOnly}
+                        disabled={isEditingLocked}
                         value={toSafeColorInputValue(
                           currentSlide.backgroundColor,
                           '#161D2E'
@@ -5123,32 +6537,63 @@ export function SlideWorkspace({
 
                     <button
                       type="button"
-                      disabled={isReadOnly}
+                      disabled={isEditingLocked}
                       onMouseDown={handlePreventMouseDown}
                       onClick={() => bgImageInputRef.current?.click()}
-                      className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 whitespace-nowrap disabled:opacity-40"
+                      className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700 whitespace-nowrap disabled:opacity-40"
                     >
-                      <Image className="h-3.5 w-3.5 text-emerald-300" />
+                      <Image className="h-3.5 w-3.5 text-emerald-600" />
                       <span>Ảnh nền</span>
                     </button>
 
                     <button
                       type="button"
-                      disabled={isReadOnly}
+                      disabled={isEditingLocked}
                       onMouseDown={handlePreventMouseDown}
                       onClick={handleApplyBackgroundToAll}
-                      className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-[#C43E1C]/20 hover:bg-[#C43E1C]/35 border border-[#C43E1C]/50 text-xs font-semibold text-orange-100 whitespace-nowrap disabled:opacity-40"
+                      className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-[#FFF4ED] hover:bg-[#C43E1C] border border-[#C43E1C]/35 text-xs font-semibold text-[#C43E1C] hover:text-white transition-colors whitespace-nowrap disabled:opacity-40"
                     >
                       <span>Áp dụng nền tất cả</span>
                     </button>
+
+                    <span className="h-5 w-px mx-0.5 bg-slate-200/80 shrink-0" />
+
+                    <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 border border-slate-200/80 shrink-0">
+                      <button
+                        type="button"
+                        disabled={isEditingLocked}
+                        onMouseDown={handlePreventMouseDown}
+                        onClick={() => handleChangeSlideAspectRatio(16 / 9)}
+                        className={`h-7 px-2 rounded-md text-[11px] font-semibold disabled:opacity-40 ${
+                          Math.abs(currentAspectRatio - 4 / 3) >= 0.08
+                            ? 'bg-[#C43E1C] text-white'
+                            : 'text-slate-700 hover:bg-white'
+                        }`}
+                      >
+                        16:9
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isEditingLocked}
+                        onMouseDown={handlePreventMouseDown}
+                        onClick={() => handleChangeSlideAspectRatio(4 / 3)}
+                        className={`h-7 px-2 rounded-md text-[11px] font-semibold disabled:opacity-40 ${
+                          Math.abs(currentAspectRatio - 4 / 3) < 0.08
+                            ? 'bg-[#C43E1C] text-white'
+                            : 'text-slate-700 hover:bg-white'
+                        }`}
+                      >
+                        4:3
+                      </button>
+                    </div>
                   </>
                 )}
 
                 {activeRibbonTab === 'transitions' && (
                   <>
                     <div className="inline-flex items-center gap-1 shrink-0">
-                      <Sparkles className="h-3.5 w-3.5 text-orange-300 mr-0.5 shrink-0" />
-                      <span className="text-[11px] text-slate-400">Chuyển slide:</span>
+                      <Sparkles className="h-3.5 w-3.5 text-[#C43E1C] mr-0.5 shrink-0" />
+                      <span className="text-[11px] font-medium text-slate-500">Chuyển slide:</span>
                       {PPT_TRANSITION_OPTIONS.map((opt) => {
                         const active =
                           (currentSlide.transition?.type ?? 'fade') === opt.type;
@@ -5156,7 +6601,7 @@ export function SlideWorkspace({
                           <button
                             key={opt.type}
                             type="button"
-                            disabled={isReadOnly}
+                            disabled={isEditingLocked}
                             onMouseDown={handlePreventMouseDown}
                             onClick={() =>
                               mutateSlideAt(safeSlideIdx, (s) => ({
@@ -5170,7 +6615,7 @@ export function SlideWorkspace({
                             className={`h-7 px-2 rounded-md border text-[11px] font-medium whitespace-nowrap disabled:opacity-40 ${
                               active
                                 ? 'bg-[#C43E1C] border-[#C43E1C] text-white'
-                                : 'bg-[#1C2331] border-white/10 text-slate-200 hover:bg-white/10'
+                                : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
                             }`}
                           >
                             {opt.label}
@@ -5181,7 +6626,7 @@ export function SlideWorkspace({
 
                     <select
                       aria-label="Thời lượng chuyển cảnh"
-                      disabled={isReadOnly}
+                      disabled={isEditingLocked}
                       value={currentSlide.transition?.durationMs ?? 350}
                       onChange={(e) =>
                         mutateSlideAt(safeSlideIdx, (s) => ({
@@ -5192,7 +6637,7 @@ export function SlideWorkspace({
                           },
                         }))
                       }
-                      className="shrink-0 h-7 px-2 rounded-md bg-[#1C2331] border border-white/15 text-[11px] text-slate-100"
+                      className="shrink-0 h-7 px-2 rounded-md bg-slate-50 border border-slate-200 text-[11px] text-slate-800"
                     >
                       <option value={200}>0.2s</option>
                       <option value={350}>0.35s</option>
@@ -5202,22 +6647,34 @@ export function SlideWorkspace({
 
                     <button
                       type="button"
-                      disabled={isReadOnly}
+                      disabled={isEditingLocked}
                       onMouseDown={handlePreventMouseDown}
                       onClick={handleApplyTransitionToAll}
-                      className="shrink-0 h-7 px-2.5 rounded-md bg-[#C43E1C]/20 hover:bg-[#C43E1C]/35 border border-[#C43E1C]/50 text-[11px] font-semibold text-orange-100 whitespace-nowrap disabled:opacity-40"
+                      className="shrink-0 h-7 px-2.5 rounded-md bg-[#FFF4ED] hover:bg-[#C43E1C] border border-[#C43E1C]/35 text-[11px] font-semibold text-[#C43E1C] hover:text-white transition-colors whitespace-nowrap disabled:opacity-40"
                     >
                       Áp dụng tất cả
                     </button>
 
-                    <span className="h-5 w-px mx-0.5 bg-white/10 shrink-0" />
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={handlePreviewTransition}
+                      className="shrink-0 inline-flex items-center gap-1 h-7 px-2.5 rounded-md bg-slate-800 hover:bg-slate-900 text-[11px] font-semibold text-white whitespace-nowrap"
+                    >
+                      <Play className="h-3 w-3 fill-white" />
+                      <span>Xem trước</span>
+                    </button>
+                  </>
+                )}
 
+                {activeRibbonTab === 'animations' && (
+                  <>
                     <div className="inline-flex items-center gap-1 shrink-0">
-                      <Wand2 className="h-3.5 w-3.5 text-amber-300 shrink-0" />
-                      <span className="text-[11px] text-slate-400">
-                        Hoạt ảnh khối:
+                      <Wand2 className="h-3.5 w-3.5 text-[#C43E1C] shrink-0" />
+                      <span className="text-[11px] font-medium text-slate-500 whitespace-nowrap">
+                        Hiệu ứng đối tượng:
                       </span>
-                      {selectedBlock && !isReadOnly ? (
+                      {selectedBlock && !isEditingLocked ? (
                         <>
                           {PPT_ANIMATION_OPTIONS.map((animOpt) => {
                             const active =
@@ -5241,8 +6698,8 @@ export function SlideWorkspace({
                                 }
                                 className={`h-7 px-2 rounded-md border text-[11px] font-medium whitespace-nowrap ${
                                   active
-                                    ? 'bg-indigo-600 border-indigo-400 text-white'
-                                    : 'bg-[#1C2331] border-white/10 text-slate-200 hover:bg-white/10'
+                                    ? 'bg-[#C43E1C] border-[#C43E1C] text-white'
+                                    : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
                                 }`}
                               >
                                 {animOpt.label}
@@ -5263,9 +6720,9 @@ export function SlideWorkspace({
                                     },
                                   })
                                 }
-                                className="h-7 px-1.5 rounded-md bg-[#1C2331] border border-white/15 text-[11px] text-slate-100"
+                                className="h-7 px-1.5 rounded-md bg-slate-50 border border-slate-200 text-[11px] text-slate-800"
                               >
-                                {[1, 2, 3, 4, 5, 6].map((n) => (
+                                {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
                                   <option key={n} value={n}>
                                     Click #{n}
                                   </option>
@@ -5274,115 +6731,439 @@ export function SlideWorkspace({
                             )}
                         </>
                       ) : (
-                        <span className="text-[11px] text-slate-500 whitespace-nowrap">
-                          (Chọn 1 đối tượng trên slide)
+                        <span className="text-[11px] text-slate-400 whitespace-nowrap">
+                          (Chọn 1 khung/hình khối trên slide để gán hiệu ứng)
                         </span>
                       )}
                     </div>
+
+                    <span className="h-5 w-px mx-0.5 bg-slate-200/80 shrink-0" />
+
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={handlePreviewAnimations}
+                      className="shrink-0 inline-flex items-center gap-1 h-7 px-2.5 rounded-md bg-[#C43E1C] hover:bg-[#9E3014] text-[11px] font-semibold text-white whitespace-nowrap"
+                    >
+                      <Play className="h-3 w-3 fill-white" />
+                      <span>Xem trước hiệu ứng</span>
+                    </button>
+
+                    {currentBlocks.some((b) => b.animation && b.animation.type !== 'none') && (
+                      <div className="inline-flex items-center gap-1 shrink-0">
+                        {currentBlocks
+                          .filter((b) => b.animation && b.animation.type !== 'none')
+                          .map((b) => (
+                            <button
+                              key={`anim-badge-${b.id}`}
+                              type="button"
+                              onMouseDown={handlePreventMouseDown}
+                              onClick={() => {
+                                setSelectedBlockId(b.id);
+                                setSelectedBlockIds([b.id]);
+                              }}
+                              className="h-6 px-2 rounded bg-indigo-50 border border-indigo-200 text-[10.5px] font-semibold text-indigo-700 whitespace-nowrap"
+                            >
+                              #{b.animation?.order ?? 1} {b.kind === 'shape' ? 'Hình' : 'Chữ'}
+                            </button>
+                          ))}
+                      </div>
+                    )}
                   </>
                 )}
 
-                {activeRibbonTab === 'slideshow' && (
+                {activeRibbonTab === 'collab' && (
                   <>
                     <button
                       type="button"
                       onMouseDown={handlePreventMouseDown}
-                      onClick={() => startSlideshow(0)}
-                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-[#C43E1C] hover:bg-[#a83316] text-xs font-semibold text-white whitespace-nowrap"
+                      onClick={() => onOpenModal('share', buildLiveDocument())}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-[#C43E1C] hover:bg-[#9E3014] text-xs font-semibold text-white shadow-xs whitespace-nowrap"
                     >
-                      <Play className="h-3.5 w-3.5 fill-white" />
-                      <span>Từ đầu (F5)</span>
+                      <ExternalLink className="h-3.5 w-3.5" />
+                      <span>Chia sẻ tài liệu</span>
                     </button>
-
+                    <button
+                      type="button"
+                      disabled={!workspaceSync.onOpenVersionHistory}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => workspaceSync.onOpenVersionHistory?.()}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700 whitespace-nowrap disabled:opacity-40"
+                    >
+                      <History className="h-3.5 w-3.5 text-sky-600" />
+                      <span>Lịch sử phiên bản</span>
+                    </button>
                     <button
                       type="button"
                       onMouseDown={handlePreventMouseDown}
-                      onClick={() => startSlideshow(safeSlideIdx)}
-                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-white/[0.08] hover:bg-white/[0.15] border border-white/15 text-xs font-semibold text-white whitespace-nowrap"
+                      onClick={() => setIsCommentsOpen((v) => !v)}
+                      aria-pressed={isCommentsOpen}
+                      className={`shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap ${
+                        isCommentsOpen
+                          ? 'bg-[#FFF4ED] border-[#C43E1C] text-[#C43E1C] font-semibold'
+                          : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                      }`}
                     >
-                      <MonitorPlay className="h-3.5 w-3.5 text-orange-300" />
-                      <span>Từ trang hiện tại (Shift+F5)</span>
+                      <MessageSquare className="h-3.5 w-3.5 text-[#C43E1C]" />
+                      <span>Nhận xét ({currentSlide.comments?.length ?? 0})</span>
                     </button>
+                  </>
+                )}
 
+                {activeRibbonTab === 'protect' && (
+                  <>
                     <button
                       type="button"
                       disabled={isReadOnly}
                       onMouseDown={handlePreventMouseDown}
-                      onClick={() => handleToggleHideSlide(safeSlideIdx)}
-                      aria-pressed={Boolean(currentSlide.hidden)}
-                      className={`shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap disabled:opacity-40 ${
-                        currentSlide.hidden
-                          ? 'bg-amber-500/20 border-amber-400/50 text-amber-200'
-                          : 'bg-white/[0.06] hover:bg-white/[0.12] border-white/10 text-slate-200'
+                      onClick={handleTogglePresentationProtection}
+                      aria-pressed={isPresentationProtected}
+                      className={`shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border text-xs font-semibold whitespace-nowrap disabled:opacity-40 ${
+                        isPresentationProtected
+                          ? 'bg-amber-600 border-amber-600 text-white shadow-xs'
+                          : 'bg-slate-50 hover:bg-[#FFF4ED] border-slate-200 text-slate-800 hover:text-[#C43E1C]'
                       }`}
                     >
-                      <EyeOff className="h-3.5 w-3.5" />
-                      <span>{currentSlide.hidden ? 'Bỏ ẩn slide' : 'Ẩn slide'}</span>
+                      {isPresentationProtected ? (
+                        <Unlock className="h-3.5 w-3.5" />
+                      ) : (
+                        <Lock className="h-3.5 w-3.5 text-[#C43E1C]" />
+                      )}
+                      <span>
+                        {isPresentationProtected
+                          ? 'Mở khóa chỉnh sửa'
+                          : 'Khóa chỉnh sửa (Chỉ đọc)'}
+                      </span>
+                    </button>
+                    <span
+                      className={`inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap ${
+                        isPresentationProtected
+                          ? 'bg-amber-50 border-amber-200 text-amber-800'
+                          : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                      }`}
+                    >
+                      <ShieldCheck className="h-3.5 w-3.5" />
+                      <span>
+                        {isPresentationProtected
+                          ? 'Đang khóa: ngăn sửa đổi & vẽ'
+                          : 'Đang mở khóa chỉnh sửa'}
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => setIsFileInfoOpen(true)}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700 whitespace-nowrap"
+                    >
+                      <Info className="h-3.5 w-3.5 text-slate-600" />
+                      <span>Thông tin bảo vệ</span>
+                    </button>
+                  </>
+                )}
+
+                {activeRibbonTab === 'view' && (
+                  <>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => setPptViewMode('normal')}
+                      aria-pressed={pptViewMode === 'normal'}
+                      className={`shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap ${
+                        pptViewMode === 'normal'
+                          ? 'bg-[#FFF4ED] border-[#C43E1C] text-[#C43E1C] font-semibold'
+                          : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                      }`}
+                    >
+                      <Presentation className="h-3.5 w-3.5" />
+                      <span>Bình thường</span>
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => setPptViewMode('sorter')}
+                      aria-pressed={pptViewMode === 'sorter'}
+                      className={`shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap ${
+                        pptViewMode === 'sorter'
+                          ? 'bg-[#FFF4ED] border-[#C43E1C] text-[#C43E1C] font-semibold'
+                          : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                      }`}
+                    >
+                      <LayoutGrid className="h-3.5 w-3.5" />
+                      <span>Sắp xếp slide</span>
                     </button>
 
+                    <span className="h-5 w-px mx-0.5 bg-slate-200/80 shrink-0" />
+
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => startSlideshow(0)}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-[#C43E1C] hover:bg-[#9E3014] text-xs font-semibold text-white whitespace-nowrap"
+                    >
+                      <Play className="h-3.5 w-3.5 fill-white" />
+                      <span>Từ đầu (F5)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => startSlideshow(safeSlideIdx)}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-[#FFF4ED] border border-slate-200 text-xs font-medium text-slate-700 hover:text-[#C43E1C] whitespace-nowrap"
+                    >
+                      <MonitorPlay className="h-3.5 w-3.5 text-[#C43E1C]" />
+                      <span>Trang hiện tại</span>
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => onOpenModal('present', buildLiveDocument())}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700 whitespace-nowrap"
+                    >
+                      <Presentation className="h-3.5 w-3.5 text-[#C43E1C]" />
+                      <span>Presenter</span>
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => onOpenModal('qr', buildLiveDocument())}
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700 whitespace-nowrap"
+                    >
+                      <QrCode className="h-3.5 w-3.5 text-cyan-600" />
+                      <span>QR</span>
+                    </button>
                     <button
                       type="button"
                       onMouseDown={handlePreventMouseDown}
                       onClick={() => setIsLaserActive((p) => !p)}
                       aria-pressed={isLaserActive}
-                      className={`shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium whitespace-nowrap ${
+                      className={`shrink-0 inline-flex items-center gap-1 h-8 px-2 rounded-lg border text-xs font-medium whitespace-nowrap ${
                         isLaserActive
-                          ? 'bg-rose-500/25 border-rose-400/60 text-rose-100'
-                          : 'bg-white/[0.06] hover:bg-white/[0.12] border-white/10 text-slate-200'
+                          ? 'bg-rose-50 border-rose-300 text-rose-700 font-semibold'
+                          : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
                       }`}
                     >
                       <Crosshair className="h-3.5 w-3.5" />
-                      <span>Bút Laser</span>
+                      <span>Laser</span>
                     </button>
-
                     <button
                       type="button"
                       onMouseDown={handlePreventMouseDown}
-                      onClick={() => onOpenModal('present', buildLiveDocument())}
-                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 whitespace-nowrap"
+                      onClick={() => setIsNotesExpanded((v) => !v)}
+                      aria-pressed={isNotesExpanded}
+                      className="shrink-0 inline-flex items-center gap-1 h-8 px-2 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-medium text-slate-700 whitespace-nowrap"
                     >
-                      <Presentation className="h-3.5 w-3.5 text-indigo-300" />
-                      <span>Presenter View</span>
+                      <StickyNote className="h-3.5 w-3.5 text-[#C43E1C]" />
+                      <span>Ghi chú</span>
                     </button>
 
+                    <span className="h-5 w-px mx-0.5 bg-slate-200/80 shrink-0" />
+
+                    <div className="shrink-0 inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 border border-slate-200/80">
+                      <button
+                        type="button"
+                        onMouseDown={handlePreventMouseDown}
+                        onClick={() => setZoomPctClamped(zoomPct - 10)}
+                        aria-label="Thu nhỏ"
+                        className="h-7 w-7 rounded-md hover:bg-white flex items-center justify-center text-slate-700"
+                      >
+                        <ZoomOut className="h-3.5 w-3.5" />
+                      </button>
+                      <span className="px-1.5 text-[11px] font-semibold tabular-nums text-slate-800">
+                        {zoomPct}%
+                      </span>
+                      <button
+                        type="button"
+                        onMouseDown={handlePreventMouseDown}
+                        onClick={() => setZoomPctClamped(zoomPct + 10)}
+                        aria-label="Phóng to"
+                        className="h-7 w-7 rounded-md hover:bg-white flex items-center justify-center text-slate-700"
+                      >
+                        <ZoomIn className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onMouseDown={handlePreventMouseDown}
+                        onClick={handleFitToWidth}
+                        className="h-7 px-2 rounded-md hover:bg-white text-[11px] font-medium text-slate-700"
+                      >
+                        Vừa khung
+                      </button>
+                    </div>
+
+                    <div className="shrink-0 inline-flex items-center rounded-lg bg-slate-100 border border-slate-200/80 p-0.5">
+                      <button
+                        type="button"
+                        onClick={handleToggleTimer}
+                        className="inline-flex items-center gap-1 h-7 px-2 rounded-md hover:bg-white text-xs font-medium text-slate-800 whitespace-nowrap"
+                      >
+                        {isTimerRunning ? (
+                          <Pause className="h-3 w-3 text-emerald-600 shrink-0" />
+                        ) : (
+                          <Play className="h-3 w-3 text-slate-600 shrink-0" />
+                        )}
+                        <span className="font-mono text-[11px] tabular-nums">
+                          {formatTimer(elapsedSeconds)}
+                        </span>
+                      </button>
+                      {elapsedSeconds > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleResetTimer}
+                          aria-label="Đặt lại đồng hồ"
+                          className="inline-flex items-center justify-center h-7 w-6 rounded-md hover:bg-white text-slate-500 hover:text-slate-900"
+                        >
+                          <RotateCcw className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {activeRibbonTab === 'ai' && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={isEditingLocked}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() =>
+                        setAiModalState({ isOpen: true, initialTab: 'generate' })
+                      }
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-[#C43E1C] hover:bg-[#9E3014] text-xs font-semibold text-white shadow-xs whitespace-nowrap disabled:opacity-40"
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      <span>Tạo slide bằng AI</span>
+                    </button>
                     <button
                       type="button"
                       onMouseDown={handlePreventMouseDown}
-                      onClick={() => onOpenModal('qr', buildLiveDocument())}
-                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-slate-200 whitespace-nowrap"
+                      onClick={() =>
+                        setAiModalState({ isOpen: true, initialTab: 'summarize' })
+                      }
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-[#FFF4ED] border border-slate-200 text-xs font-medium text-slate-700 hover:text-[#C43E1C] whitespace-nowrap"
                     >
-                      <QrCode className="h-3.5 w-3.5 text-cyan-300" />
-                      <span>Điều khiển QR</span>
+                      <Wand2 className="h-3.5 w-3.5 text-[#C43E1C]" />
+                      <span>Tóm tắt nội dung</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isEditingLocked}
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() =>
+                        setAiModalState({ isOpen: true, initialTab: 'notes' })
+                      }
+                      className="shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-[#FFF4ED] border border-slate-200 text-xs font-medium text-slate-700 hover:text-[#C43E1C] whitespace-nowrap disabled:opacity-40"
+                    >
+                      <StickyNote className="h-3.5 w-3.5 text-amber-600" />
+                      <span>Tạo Speaker Notes</span>
                     </button>
                   </>
                 )}
               </div>
 
-              {/* Popover: 6 Slide Layouts Picker */}
-              {isLayoutPickerOpen && !isReadOnly && (
-                <div className="mt-2 p-2.5 rounded-xl bg-[#1A202E] border border-white/15 shadow-2xl grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2 z-30 relative">
-                  {PPT_SLIDE_LAYOUTS.map((layout) => (
+              {/* Popover: Case Transform (Aa) */}
+              {isCaseMenuOpen && !isEditingLocked && selectedBlock && (
+                <div className="mt-2 p-2 rounded-xl bg-white border border-slate-200 shadow-xl flex flex-wrap gap-1.5 z-30 relative">
+                  {(
+                    [
+                      { id: 'sentence', label: 'Viết hoa đầu câu' },
+                      { id: 'lower', label: 'chữ thường' },
+                      { id: 'upper', label: 'CHỮ IN HOA' },
+                      { id: 'title', label: 'Viết Hoa Từng Từ' },
+                    ] as const
+                  ).map((c) => (
                     <button
-                      key={layout.id}
+                      key={c.id}
                       type="button"
                       onMouseDown={handlePreventMouseDown}
-                      onClick={() => handleApplySlideLayout(layout.id)}
-                      className="text-left p-2 rounded-lg bg-white/[0.04] hover:bg-[#C43E1C]/20 border border-white/10 hover:border-[#C43E1C]/60 transition-colors"
+                      onClick={() => handleTransformBlockCase(c.id)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-50 hover:bg-[#FFF4ED] border border-slate-200 hover:border-[#C43E1C]/50 text-xs font-medium text-slate-800 hover:text-[#C43E1C]"
                     >
-                      <div className="text-[11px] font-semibold text-white">
-                        {layout.label}
-                      </div>
-                      <div className="text-[10px] text-slate-400 mt-0.5 line-clamp-1">
-                        {layout.desc}
-                      </div>
+                      {c.label}
                     </button>
                   ))}
                 </div>
               )}
 
-              {/* Popover: 11 SVG Shapes Picker */}
-              {isShapePickerOpen && !isReadOnly && (
-                <div className="mt-2 p-2.5 rounded-xl bg-[#1A202E] border border-white/15 shadow-2xl flex flex-wrap gap-1.5 z-30 relative">
+              {/* Popover: Text Highlight Swatches */}
+              {isHighlightMenuOpen && !isEditingLocked && selectedBlock && (
+                <div className="mt-2 p-2 rounded-xl bg-white border border-slate-200 shadow-xl flex flex-wrap items-center gap-1.5 z-30 relative">
+                  <span className="text-[11px] font-medium text-slate-500 mr-1">
+                    Màu tô sáng:
+                  </span>
+                  {PPT_HIGHLIGHT_SWATCHES.map((sw) => (
+                    <button
+                      key={sw.value}
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => {
+                        handleUpdateBlock(selectedBlock.id, {
+                          highlightColor: sw.value,
+                        });
+                        setIsHighlightMenuOpen(false);
+                      }}
+                      title={sw.label}
+                      className="h-6 px-2 rounded-md border border-slate-300 text-[11px] font-medium text-slate-800"
+                      style={{ backgroundColor: sw.value }}
+                    >
+                      {sw.label}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onMouseDown={handlePreventMouseDown}
+                    onClick={() => {
+                      handleUpdateBlock(selectedBlock.id, {
+                        highlightColor: undefined,
+                      });
+                      setIsHighlightMenuOpen(false);
+                    }}
+                    className="h-6 px-2 rounded-md bg-slate-100 hover:bg-slate-200 text-[11px] text-slate-700"
+                  >
+                    Không màu
+                  </button>
+                </div>
+              )}
+
+              {/* Popover: 6 Slide Layouts Picker (Add / Change mode) */}
+              {layoutPickerMode !== null && !isEditingLocked && (
+                <div className="mt-2 p-2.5 rounded-xl bg-white border border-slate-200 shadow-xl z-30 relative">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[11px] font-semibold text-slate-700">
+                      {layoutPickerMode === 'add'
+                        ? 'Chọn bố cục cho slide mới:'
+                        : 'Đổi bố cục cho slide hiện tại:'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setLayoutPickerMode(null)}
+                      className="text-slate-400 hover:text-slate-700"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
+                    {PPT_SLIDE_LAYOUTS.map((layout) => (
+                      <button
+                        key={layout.id}
+                        type="button"
+                        onMouseDown={handlePreventMouseDown}
+                        onClick={() => handleApplySlideLayout(layout.id)}
+                        className="text-left p-2 rounded-lg bg-slate-50 hover:bg-[#FFF4ED] border border-slate-200 hover:border-[#C43E1C]/50 transition-colors"
+                      >
+                        <div className="text-[11px] font-semibold text-slate-900">
+                          {layout.label}
+                        </div>
+                        <div className="text-[10px] text-slate-500 mt-0.5 line-clamp-1">
+                          {layout.desc}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Popover: Full 13 SVG Shapes Picker */}
+              {isShapePickerOpen && !isEditingLocked && (
+                <div className="mt-2 p-2.5 rounded-xl bg-white border border-slate-200 shadow-xl flex flex-wrap gap-1.5 z-30 relative">
                   {PPT_SHAPE_OPTIONS.map((shapeOpt) => {
                     const ShapeIcon = shapeOpt.Icon;
                     return (
@@ -5391,9 +7172,9 @@ export function SlideWorkspace({
                         type="button"
                         onMouseDown={handlePreventMouseDown}
                         onClick={() => handleInsertShape(shapeOpt.kind)}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/[0.05] hover:bg-[#C43E1C]/25 border border-white/10 hover:border-[#C43E1C] text-[11px] font-medium text-slate-100 transition-colors"
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-50 hover:bg-[#FFF4ED] border border-slate-200 hover:border-[#C43E1C]/50 text-[11px] font-medium text-slate-800 hover:text-[#C43E1C] transition-colors"
                       >
-                        <ShapeIcon className="h-3.5 w-3.5 text-orange-300" />
+                        <ShapeIcon className="h-3.5 w-3.5 text-[#C43E1C]" />
                         <span>{shapeOpt.label}</span>
                       </button>
                     );
@@ -5401,22 +7182,22 @@ export function SlideWorkspace({
                 </div>
               )}
             </div>
+            )}
           </div>
 
           {/* Active Laser Mode Banner */}
           {isLaserActive && (
             <div className="shrink-0 px-3 sm:px-6 pt-2 flex justify-center">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-rose-500/15 border border-rose-400/35 text-[11.5px] text-rose-200">
-                <span className="h-2 w-2 rounded-full bg-rose-500 shadow-[0_0_8px_2px_rgba(244,63,94,0.8)] animate-pulse shrink-0" />
-                <span className="truncate">
-                  Bút Laser đang bật — Di chuyển hoặc chạm trên slide để chiếu
-                  điểm
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-rose-50 border border-rose-200 text-[11.5px] text-rose-700 shadow-xs">
+                <span className="h-2 w-2 rounded-full bg-rose-500 shadow-[0_0_8px_2px_rgba(244,63,94,0.65)] animate-pulse shrink-0" />
+                <span className="truncate font-medium">
+                  Bút Laser đang bật — Di chuyển hoặc chạm trên slide để chiếu điểm
                 </span>
                 <button
                   type="button"
                   onMouseDown={handlePreventMouseDown}
                   onClick={() => setIsLaserActive(false)}
-                  className="ml-1 px-2 py-0.5 rounded-full bg-rose-500/25 hover:bg-rose-500/40 text-[11px] font-semibold text-white transition-colors shrink-0"
+                  className="ml-1 px-2 py-0.5 rounded-full bg-rose-600 hover:bg-rose-700 text-[11px] font-semibold text-white transition-colors shrink-0"
                 >
                   Tắt
                 </button>
@@ -5426,21 +7207,21 @@ export function SlideWorkspace({
 
           {/* Slide Sorter Grid OR Main Editable Slide Stage Container */}
           {pptViewMode === 'sorter' ? (
-            <div className="flex-1 min-h-0 overflow-y-auto scrollbar-dark p-4 sm:p-6">
+            <div className="flex-1 min-h-0 overflow-y-auto scrollbar-none bg-[#F3F4F6] p-4 sm:p-6">
               <div className="flex items-center justify-between gap-3 mb-4">
                 <div>
-                  <h2 className="text-sm sm:text-base font-bold text-white flex items-center gap-2">
+                  <h2 className="text-sm sm:text-base font-bold text-slate-900 flex items-center gap-2">
                     <LayoutGrid className="h-4 w-4 text-[#C43E1C]" />
                     <span>Chế độ sắp xếp trang chiếu (Slide Sorter)</span>
                   </h2>
-                  <p className="text-xs text-slate-400 mt-0.5">
+                  <p className="text-xs text-slate-500 mt-0.5">
                     Kéo thả để đổi thứ tự slide hoặc bấm đúp vào slide để chỉnh sửa chi tiết.
                   </p>
                 </div>
                 <button
                   type="button"
                   onClick={() => setPptViewMode('normal')}
-                  className="px-3 py-1.5 rounded-xl bg-[#C43E1C] hover:bg-[#a83316] text-xs font-semibold text-white shrink-0"
+                  className="px-3 py-1.5 rounded-xl bg-[#C43E1C] hover:bg-[#9E3014] text-xs font-semibold text-white shadow-xs shrink-0"
                 >
                   Về chế độ Bình thường
                 </button>
@@ -5452,16 +7233,16 @@ export function SlideWorkspace({
                   return (
                     <div
                       key={`sorter-${slideItem.id}`}
-                      draggable={!isReadOnly}
+                      draggable={!isEditingLocked}
                       onDragStart={(e) => {
-                        if (isReadOnly) {
+                        if (isEditingLocked) {
                           return;
                         }
                         setDraggedSlideIdx(idx);
                         e.dataTransfer.effectAllowed = 'move';
                       }}
                       onDragOver={(e) => {
-                        if (isReadOnly || draggedSlideIdx === null) {
+                        if (isEditingLocked || draggedSlideIdx === null) {
                           return;
                         }
                         e.preventDefault();
@@ -5472,7 +7253,7 @@ export function SlideWorkspace({
                       onDrop={(e) => {
                         e.preventDefault();
                         if (
-                          !isReadOnly &&
+                          !isEditingLocked &&
                           draggedSlideIdx !== null &&
                           draggedSlideIdx !== idx
                         ) {
@@ -5492,11 +7273,11 @@ export function SlideWorkspace({
                       }}
                       className={`group rounded-2xl p-2.5 border cursor-pointer transition-all flex flex-col ${
                         isActive
-                          ? 'bg-[#C43E1C]/15 border-[#C43E1C] ring-2 ring-[#C43E1C]/60'
+                          ? 'bg-[#FFF4ED] border-[#C43E1C] ring-2 ring-[#C43E1C] shadow-md'
                           : dragOverSlideIdx === idx
-                            ? 'bg-white/10 border-amber-400 ring-2 ring-amber-400/50'
-                            : 'bg-[#141923] border-white/10 hover:border-white/25'
-                      } ${slideItem.hidden ? 'opacity-55' : ''}`}
+                            ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-400/60'
+                            : 'bg-white border-slate-200/80 hover:border-slate-300 shadow-xs'
+                      } ${slideItem.hidden ? 'opacity-60' : ''}`}
                     >
                       <div
                         style={{
@@ -5504,7 +7285,7 @@ export function SlideWorkspace({
                             getSafeAspectRatio(slideItem, document)
                           ),
                         }}
-                        className="w-full rounded-xl overflow-hidden border border-white/10 pointer-events-none relative"
+                        className="w-full rounded-xl overflow-hidden border border-slate-200/80 pointer-events-none relative"
                       >
                         <ReadOnlySlideStage
                           doc={document}
@@ -5515,7 +7296,7 @@ export function SlideWorkspace({
                           underlinedBlockIds={underlinedBlockIds}
                         />
                         {slideItem.hidden && (
-                          <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-black/75 text-[10px] font-semibold text-amber-200 inline-flex items-center gap-1">
+                          <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-slate-900/80 text-[10px] font-semibold text-amber-200 inline-flex items-center gap-1">
                             <EyeOff className="h-3 w-3" />
                             <span>Đang ẩn</span>
                           </span>
@@ -5528,17 +7309,17 @@ export function SlideWorkspace({
                             className={`px-1.5 py-0.5 rounded text-[10px] font-bold tabular-nums ${
                               isActive
                                 ? 'bg-[#C43E1C] text-white'
-                                : 'bg-white/10 text-slate-300'
+                                : 'bg-slate-100 text-slate-600'
                             }`}
                           >
                             {idx + 1}
                           </span>
-                          <span className="text-xs font-medium text-slate-200 truncate">
+                          <span className="text-xs font-medium text-slate-800 truncate">
                             {slideItem.title}
                           </span>
                         </div>
 
-                        {!isReadOnly && (
+                        {!isEditingLocked && (
                           <div
                             onClick={(e) => e.stopPropagation()}
                             className="flex items-center gap-1 shrink-0"
@@ -5547,7 +7328,7 @@ export function SlideWorkspace({
                               type="button"
                               onClick={() => handleDuplicateSlideAt(idx)}
                               title="Nhân bản slide"
-                              className="p-1 rounded hover:bg-white/10 text-slate-400 hover:text-white"
+                              className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-slate-900"
                             >
                               <Copy className="h-3.5 w-3.5" />
                             </button>
@@ -5555,10 +7336,10 @@ export function SlideWorkspace({
                               type="button"
                               onClick={() => handleToggleHideSlide(idx)}
                               title={slideItem.hidden ? 'Hiện slide' : 'Ẩn slide'}
-                              className="p-1 rounded hover:bg-white/10 text-slate-400 hover:text-amber-300"
+                              className="p-1 rounded hover:bg-slate-100 text-slate-500 hover:text-amber-600"
                             >
                               {slideItem.hidden ? (
-                                <Eye className="h-3.5 w-3.5 text-amber-300" />
+                                <Eye className="h-3.5 w-3.5 text-amber-600" />
                               ) : (
                                 <EyeOff className="h-3.5 w-3.5" />
                               )}
@@ -5568,7 +7349,7 @@ export function SlideWorkspace({
                               disabled={slides.length <= 1}
                               onClick={() => handleDeleteSlideAt(idx)}
                               title="Xóa slide"
-                              className="p-1 rounded hover:bg-rose-500/20 text-slate-400 hover:text-rose-300 disabled:opacity-30"
+                              className="p-1 rounded hover:bg-rose-50 text-slate-500 hover:text-rose-600 disabled:opacity-30"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                             </button>
@@ -5582,14 +7363,41 @@ export function SlideWorkspace({
             </div>
           ) : (
           <div className="flex-1 min-h-0 flex flex-col px-3 sm:px-6 lg:px-10 pt-3 sm:pt-4 pb-2 overflow-hidden">
+            {isPresentationProtected && (
+              <div className="shrink-0 mb-2 px-3 py-1.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-800 flex items-center justify-between gap-2 shadow-xs">
+                <span className="inline-flex items-center gap-1.5 font-medium truncate">
+                  <Lock className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                  <span>Bài thuyết trình đang ở chế độ Chỉ đọc — mọi thao tác sửa nội dung và vẽ đều bị khóa.</span>
+                </span>
+                {!isReadOnly && (
+                  <button
+                    type="button"
+                    onMouseDown={handlePreventMouseDown}
+                    onClick={handleTogglePresentationProtection}
+                    className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-[11px] font-semibold text-white transition-colors"
+                  >
+                    <Unlock className="h-3 w-3" />
+                    <span>Mở khóa chỉnh sửa</span>
+                  </button>
+                )}
+              </div>
+            )}
             <div
               ref={editorViewportRef}
-              className="flex-1 min-h-0 w-full flex items-center justify-center relative overflow-auto"
+              className="flex-1 min-h-0 w-full flex relative overflow-auto p-2"
             >
               <div
+                style={{
+                  width: `${Math.round(zoomedWidthPx)}px`,
+                  height: `${Math.round(zoomedHeightPx)}px`,
+                }}
+                className="m-auto shrink-0 relative"
+              >
+              <div
                 ref={editorCanvasRef}
+                key={`editor-stage-${currentSlide.id}-${previewTransitionKey}`}
                 onClick={() => {
-                  if (justDraggedRef.current) {
+                  if (justDraggedRef.current || activeDrawTool !== null) {
                     return;
                   }
                   if (!isLaserActive) {
@@ -5599,6 +7407,11 @@ export function SlideWorkspace({
                     setSelectedImageId(null);
                   }
                 }}
+                onDoubleClick={() => {
+                  if (viewMode === 'native' && !isEditingLocked) {
+                    handleUnlockDirectEdit();
+                  }
+                }}
                 onPointerMove={updateLaserFromPointer}
                 onPointerDown={updateLaserFromPointer}
                 onPointerLeave={handlePointerLeaveStage}
@@ -5606,14 +7419,17 @@ export function SlideWorkspace({
                   width: `${Math.round(zoomedWidthPx)}px`,
                   height: `${Math.round(zoomedHeightPx)}px`,
                   ...buildSlideBackgroundStyle(currentSlide),
+                  ...(previewTransitionKey > 0 ? slideshowAnimationStyle : {}),
                 }}
-                className={`relative rounded-2xl overflow-hidden border shadow-2xl shadow-black/55 transition-shadow duration-200 ${
+                className={`relative w-full h-full rounded-2xl overflow-hidden border shadow-[0_6px_28px_rgba(15,23,42,0.14)] transition-shadow duration-200 ${
                   isLaserActive
-                    ? 'border-rose-400/55 ring-2 ring-rose-500/25 cursor-none touch-none select-none'
-                    : 'border-white/15 ring-1 ring-white/[0.06]'
+                    ? 'border-rose-500 ring-2 ring-rose-400/40 cursor-none touch-none select-none'
+                    : copiedBlockStyle
+                      ? 'border-[#C43E1C] ring-2 ring-[#C43E1C]/35 cursor-crosshair'
+                      : 'border-slate-300/80 ring-1 ring-slate-900/5'
                 }`}
               >
-                {viewMode === 'native' || isReadOnly ? (
+                {viewMode === 'native' || isEditingLocked ? (
                   <ReadOnlySlideStage
                     doc={document}
                     slide={currentSlide}
@@ -5621,6 +7437,9 @@ export function SlideWorkspace({
                     totalSlides={slides.length}
                     stageWidthPx={actualEditorCanvasWidth}
                     underlinedBlockIds={underlinedBlockIds}
+                    onActivateEditBlock={
+                      !isEditingLocked ? handleUnlockDirectEdit : undefined
+                    }
                   />
                 ) : isPositionedSlide ? (
                   /* Master-Positioned OpenXML Coordinate Stage (xPct, yPct, wPct, hPct) */
@@ -5661,12 +7480,16 @@ export function SlideWorkspace({
 
                       return (
                         <div
-                          key={block.id}
+                          key={`${block.id}-${previewAnimKey}`}
                           onClick={(event) => {
-                            if (isLaserActive) {
+                            if (isLaserActive || activeDrawTool !== null) {
                               return;
                             }
                             event.stopPropagation();
+                            if (copiedBlockStyle && !isEditingLocked) {
+                              applyCopiedStyleToBlock(block.id);
+                              return;
+                            }
                             if (event.shiftKey) {
                               setSelectedBlockIds((prev) =>
                                 prev.includes(block.id)
@@ -5734,6 +7557,9 @@ export function SlideWorkspace({
                             fontFamily:
                               block.fontFamily ||
                               "'Inter', 'Segoe UI', system-ui, sans-serif",
+                            ...(isPreviewingAnims
+                              ? getSlideshowAnimStyle(block.animation, 99)
+                              : {}),
                           }}
                           className={`group flex flex-col ${justifyClass} ${
                             isNonTextBlock || blockPadding ? '' : 'px-1.5 py-1'
@@ -5747,7 +7573,7 @@ export function SlideWorkspace({
                                   : 'hover:ring-1 hover:ring-white/30'
                           } ${isBeingDragged ? 'opacity-90 shadow-xl' : ''}`}
                         >
-                          {isSelected && !isReadOnly && (
+                          {isSelected && !isEditingLocked && (
                             <PowerPointResizeHandles
                               onStartResize={(ev, dir) =>
                                 startElementResize(ev, dir, {
@@ -5815,7 +7641,7 @@ export function SlideWorkspace({
                           {block.kind === 'shape' ? (
                             <div
                               onDoubleClick={(e) => {
-                                if (!isReadOnly && block.shapeKind !== 'line') {
+                                if (!isEditingLocked && block.shapeKind !== 'line') {
                                   e.stopPropagation();
                                   setEditingBlockId(block.id);
                                 }
@@ -5932,7 +7758,7 @@ export function SlideWorkspace({
                                           <input
                                             type="text"
                                             value={cell}
-                                            disabled={isLaserActive || isReadOnly}
+                                            disabled={isLaserActive || isEditingLocked}
                                             onFocus={() => {
                                               if (!isLaserActive) {
                                                 setSelectedBlockId(block.id);
@@ -5984,7 +7810,7 @@ export function SlideWorkspace({
                           ) : block.text.trim().length === 0 && editingBlockId !== block.id && newlyAddedBlockId !== block.id ? (
                             <div
                               onDoubleClick={(e) => {
-                                if (!isReadOnly && !isLaserActive) {
+                                if (!isEditingLocked && !isLaserActive) {
                                   e.stopPropagation();
                                   setSelectedBlockId(block.id);
                                   setEditingBlockId(block.id);
@@ -6008,7 +7834,7 @@ export function SlideWorkspace({
                                   setSelectedImageId(null);
                                 }
                               }}
-                              disabled={isLaserActive || isReadOnly}
+                              disabled={isLaserActive || isEditingLocked}
                               autoFocus={editingBlockId === block.id || newlyAddedBlockId === block.id}
                               placeholder={
                                 block.role === 'title'
@@ -6019,7 +7845,14 @@ export function SlideWorkspace({
                               scaledFontPx={scaledFontPx * ((block.fontScalePct ?? 100) / 100)}
                               bold={Boolean(block.bold)}
                               italic={Boolean(block.italic)}
-                              underline={Boolean(underlinedBlockIds[block.id])}
+                              underline={Boolean(
+                                block.underline || underlinedBlockIds[block.id]
+                              )}
+                              strikethrough={Boolean(block.strikethrough)}
+                              highlightColor={block.highlightColor}
+                              textScript={block.textScript}
+                              lineHeight={block.lineHeight}
+                              textColumns={block.textColumns}
                               color={textColor}
                               align={block.align ?? 'left'}
                               fontFamily={block.fontFamily}
@@ -6030,13 +7863,15 @@ export function SlideWorkspace({
                               block={block}
                               fontScale={editorFontScale}
                               textColor={textColor}
-                              underlined={Boolean(underlinedBlockIds[block.id])}
+                              underlined={Boolean(
+                                block.underline || underlinedBlockIds[block.id]
+                              )}
                               onActivateEdit={() => {
                                 if (!isLaserActive) {
                                   setSelectedBlockId(block.id);
                                   setSelectedBlockIds([block.id]);
                                   setSelectedImageId(null);
-                                  if (!isReadOnly) setEditingBlockId(block.id);
+                                  if (!isEditingLocked) setEditingBlockId(block.id);
                                 }
                               }}
                             />
@@ -6124,7 +7959,7 @@ export function SlideWorkspace({
                               : 'hover:ring-1 hover:ring-[#C43E1C]/60'
                           }`}
                         >
-                          {isSelected && !isReadOnly && (
+                          {isSelected && !isEditingLocked && (
                             <PowerPointResizeHandles
                               onStartResize={(ev, dir) =>
                                 startElementResize(ev, dir, { kind: "image", id: imageItem.id, xPct, yPct, wPct, hPct })
@@ -6229,10 +8064,14 @@ export function SlideWorkspace({
                               <div
                                 key={block.id}
                                 onClick={(event) => {
-                                  if (isLaserActive) {
+                                  if (isLaserActive || activeDrawTool !== null) {
                                     return;
                                   }
                                   event.stopPropagation();
+                                  if (copiedBlockStyle && !isEditingLocked) {
+                                    applyCopiedStyleToBlock(block.id);
+                                    return;
+                                  }
                                   setSelectedBlockId(block.id);
                                   setSelectedImageId(null);
                                 }}
@@ -6261,7 +8100,7 @@ export function SlideWorkspace({
                                       setSelectedImageId(null);
                                     }
                                   }}
-                                  disabled={isLaserActive}
+                                  disabled={isLaserActive || isEditingLocked}
                                   autoFocus={newlyAddedBlockId === block.id}
                                   placeholder={
                                     block.role === 'title'
@@ -6273,8 +8112,13 @@ export function SlideWorkspace({
                                   bold={Boolean(block.bold)}
                                   italic={Boolean(block.italic)}
                                   underline={Boolean(
-                                    underlinedBlockIds[block.id]
+                                    block.underline || underlinedBlockIds[block.id]
                                   )}
+                                  strikethrough={Boolean(block.strikethrough)}
+                                  highlightColor={block.highlightColor}
+                                  textScript={block.textScript}
+                                  lineHeight={block.lineHeight}
+                                  textColumns={block.textColumns}
                                   color={
                                     block.color ??
                                     (hasLightSlideBg ? '#0F172A' : '#FFFFFF')
@@ -6390,6 +8234,39 @@ export function SlideWorkspace({
                   </div>
                 )}
 
+                {/* Slide Drawing Ink Layer (rendered above stage in edit mode; ReadOnlySlideStage handles static rendering) */}
+                {viewMode === 'edit' && !isEditingLocked && (
+                  <SlideDrawingOverlay
+                    strokes={currentSlide.drawings ?? []}
+                    activeTool={activeDrawTool}
+                    strokeColor={drawColor}
+                    strokeWidth={drawWidth}
+                    disabled={isEditingLocked || isLaserActive}
+                    onChangeStrokes={handleChangeSlideDrawings}
+                  />
+                )}
+
+                {/* Slide Footer & Number Strip (edit mode) */}
+                {viewMode === 'edit' &&
+                  !isEditingLocked &&
+                  (currentSlide.footerText || currentSlide.showSlideNumber) && (
+                    <div
+                      className={`pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-center justify-between gap-2 px-3 py-1 ${
+                        hasLightSlideBg ? 'text-slate-600' : 'text-slate-300/90'
+                      }`}
+                      style={{
+                        fontSize: `${Math.max(6, 10.5 * editorFontScale).toFixed(1)}px`,
+                      }}
+                    >
+                      <span className="truncate">{currentSlide.footerText ?? ''}</span>
+                      {currentSlide.showSlideNumber && (
+                        <span className="shrink-0 font-semibold tabular-nums">
+                          {safeSlideIdx + 1} / {slides.length}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
                 {/* Live Glowing Red Laser Pointer Layer (Editor Stage) */}
                 {isLaserActive && laserPos.visible && (
                   <div
@@ -6438,6 +8315,7 @@ export function SlideWorkspace({
                   </>
                 )}
               </div>
+              </div>
             </div>
 
             {/* Stage Footer Indicator & Quick Controls */}
@@ -6445,22 +8323,22 @@ export function SlideWorkspace({
               <button
                 type="button"
                 onClick={() => setIsMobileDrawerOpen(true)}
-                className="md:hidden inline-flex items-center gap-1.5 min-h-[34px] px-2.5 rounded-lg bg-[#141923] hover:bg-white/10 border border-white/10 text-[11.5px] font-medium text-slate-200 transition-colors"
+                className="md:hidden inline-flex items-center gap-1.5 min-h-[34px] px-2.5 rounded-lg bg-white hover:bg-[#FFF4ED] border border-slate-200 text-[11.5px] font-medium text-slate-700 hover:text-[#C43E1C] shadow-xs transition-colors"
               >
-                <Layers className="h-3.5 w-3.5 text-indigo-400" />
+                <Layers className="h-3.5 w-3.5 text-[#C43E1C]" />
                 <span>Slide</span>
               </button>
 
-              <p className="hidden md:block text-[11px] text-slate-400">
+              <p className="hidden md:block text-[11px] text-slate-600">
                 Phím{' '}
-                <kbd className="px-1.5 py-0.5 rounded bg-white/10 text-slate-200 font-mono text-[10px]">
+                <kbd className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-slate-700 font-mono text-[10px]">
                   ←
                 </kbd>{' '}
-                <kbd className="px-1.5 py-0.5 rounded bg-white/10 text-slate-200 font-mono text-[10px]">
+                <kbd className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-slate-700 font-mono text-[10px]">
                   →
                 </kbd>{' '}
                 chuyển slide ·{' '}
-                <kbd className="px-1.5 py-0.5 rounded bg-white/10 text-slate-200 font-mono text-[10px]">
+                <kbd className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-slate-700 font-mono text-[10px]">
                   Ctrl+S
                 </kbd>{' '}
                 lưu nhanh
@@ -6472,12 +8350,12 @@ export function SlideWorkspace({
                   onClick={handlePrevSlide}
                   disabled={safeSlideIdx === 0}
                   aria-label="Chuyển slide trước"
-                  className="h-7 w-7 rounded-lg bg-white/[0.06] hover:bg-white/[0.14] border border-white/10 flex items-center justify-center text-slate-200 transition disabled:opacity-30 disabled:cursor-not-allowed"
+                  className="h-7 w-7 rounded-lg bg-white hover:bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-700 shadow-xs transition disabled:opacity-35 disabled:cursor-not-allowed"
                 >
                   <ChevronLeft className="h-4 w-4" />
                 </button>
 
-                <span className="text-xs font-semibold text-slate-200 tabular-nums whitespace-nowrap">
+                <span className="text-xs font-semibold text-slate-700 tabular-nums whitespace-nowrap">
                   Slide {safeSlideIdx + 1} / {slides.length}
                 </span>
 
@@ -6486,7 +8364,7 @@ export function SlideWorkspace({
                   onClick={handleNextSlide}
                   disabled={safeSlideIdx >= slides.length - 1}
                   aria-label="Chuyển slide kế tiếp"
-                  className="h-7 w-7 rounded-lg bg-white/[0.06] hover:bg-white/[0.14] border border-white/10 flex items-center justify-center text-slate-200 transition disabled:opacity-30 disabled:cursor-not-allowed"
+                  className="h-7 w-7 rounded-lg bg-white hover:bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-700 shadow-xs transition disabled:opacity-35 disabled:cursor-not-allowed"
                 >
                   <ChevronRight className="h-4 w-4" />
                 </button>
@@ -6502,7 +8380,7 @@ export function SlideWorkspace({
                     className={`h-2 shrink-0 rounded-full transition-all ${
                       idx === safeSlideIdx
                         ? 'w-5 bg-[#C43E1C]'
-                        : 'w-2 bg-white/20 hover:bg-white/45'
+                        : 'w-2 bg-slate-400/50 hover:bg-slate-500'
                     }`}
                   />
                 ))}
@@ -6511,37 +8389,37 @@ export function SlideWorkspace({
           </div>
           )}
 
-          {/* Resizable Bottom Speaker Notes Dock */}
+          {/* Resizable Bottom Speaker Notes Dock (Fluent Light) */}
           <section
             aria-label="Ghi chú diễn giả"
-            className="shrink-0 border-t border-white/10 bg-[#141923]"
+            className="shrink-0 border-t border-slate-200/80 bg-white"
           >
             {isNotesExpanded && (
               <div
                 onPointerDown={startNotesResize}
                 title="Kéo lên/xuống để thay đổi chiều cao ghi chú diễn giả"
-                className="h-1.5 w-full cursor-row-resize hover:bg-[#C43E1C]/50 transition-colors flex items-center justify-center"
+                className="h-1.5 w-full cursor-row-resize hover:bg-[#C43E1C]/20 transition-colors flex items-center justify-center"
               >
-                <span className="h-0.5 w-10 rounded-full bg-white/20" />
+                <span className="h-0.5 w-10 rounded-full bg-slate-300" />
               </div>
             )}
             <div className="px-3.5 sm:px-5 py-1.5 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
                 <StickyNote className="h-3.5 w-3.5 text-[#C43E1C] shrink-0" />
-                <span className="text-xs font-semibold text-slate-200 whitespace-nowrap">
+                <span className="text-xs font-semibold text-slate-800 whitespace-nowrap">
                   Ghi chú diễn giả
                 </span>
                 <span className="text-[11px] text-slate-500 tabular-nums whitespace-nowrap">
                   (Slide {safeSlideIdx + 1})
                 </span>
-                {isReadOnly && (
-                  <span className="text-[10.5px] text-amber-300/90 whitespace-nowrap">
+                {isEditingLocked && (
+                  <span className="text-[10.5px] text-amber-700 font-medium whitespace-nowrap">
                     · Chỉ xem
                   </span>
                 )}
 
                 {!isNotesExpanded && currentSlide.speakerNote && (
-                  <p className="hidden sm:block text-xs text-slate-400 truncate max-w-md ml-2">
+                  <p className="hidden sm:block text-xs text-slate-500 truncate max-w-md ml-2">
                     — {currentSlide.speakerNote}
                   </p>
                 )}
@@ -6552,7 +8430,7 @@ export function SlideWorkspace({
                 onMouseDown={handlePreventMouseDown}
                 onClick={() => setIsNotesExpanded((prev) => !prev)}
                 aria-expanded={isNotesExpanded}
-                className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-[11px] font-medium text-slate-300 hover:text-white transition-colors"
+                className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-[#FFF4ED] text-[11px] font-medium text-slate-700 hover:text-[#C43E1C] transition-colors"
               >
                 <span>{isNotesExpanded ? 'Thu gọn' : 'Mở rộng'}</span>
                 {isNotesExpanded ? (
@@ -6567,31 +8445,31 @@ export function SlideWorkspace({
               <div className="px-3.5 sm:px-5 pb-2.5">
                 <textarea
                   value={currentSlide.speakerNote ?? ''}
-                  disabled={isReadOnly}
+                  disabled={isEditingLocked}
                   onChange={(event) =>
                     handleSpeakerNoteChange(event.target.value)
                   }
                   style={{ height: `${notesHeightPx}px` }}
                   aria-label={`Nội dung ghi chú diễn giả cho Slide ${safeSlideIdx + 1}`}
                   placeholder={
-                    isReadOnly
+                    isEditingLocked
                       ? 'Slide này ở chế độ Chỉ xem.'
                       : 'Nhập ghi chú diễn giả cho slide này (được lưu và xuất kèm tệp .pptx)...'
                   }
-                  className="w-full resize-none rounded-xl bg-[#181D27] border border-white/10 focus:border-[#C43E1C]/70 focus:outline-none focus:ring-2 focus:ring-[#C43E1C]/25 px-3.5 py-2 text-xs sm:text-[13px] text-slate-200 placeholder:text-slate-500 leading-relaxed transition-colors scrollbar-dark disabled:opacity-70"
+                  className="w-full resize-none rounded-xl bg-[#F8FAFC] border border-slate-200 focus:border-[#C43E1C] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#C43E1C]/15 px-3.5 py-2 text-xs sm:text-[13px] text-slate-800 placeholder:text-slate-400 leading-relaxed transition-colors scrollbar-none disabled:opacity-70"
                 />
               </div>
             )}
           </section>
 
-          {/* Bottom PowerPoint Status Bar (25%-200% Zoom, View Switcher, Start Slideshow) */}
-          <div className={!isReadOnly && viewMode === 'edit' ? 'pb-12 md:pb-0' : ''}>
+          {/* Bottom PowerPoint Status Bar (10%-300% Zoom, Fit, View Switcher, Start Slideshow) */}
+          <div className={!isEditingLocked && viewMode === 'edit' ? 'pb-12 md:pb-0' : ''}>
             <OfficeStatusBar
               variant="powerpoint"
-              theme="dark"
+              theme="light"
               zoomPercent={zoomPct}
-              onZoomChange={setZoomPct}
-              onFitToWidth={() => setZoomPct(100)}
+              onZoomChange={setZoomPctClamped}
+              onFitToWidth={handleFitToWidth}
               pageCurrent={safeSlideIdx + 1}
               pageTotal={slides.length}
               pptViewMode={pptViewMode}
@@ -6605,9 +8483,10 @@ export function SlideWorkspace({
             containerRef={editorCanvasRef}
             disabled={
               isLaserActive ||
+              activeDrawTool !== null ||
               isSlideshowActive ||
               isModalOpen ||
-              isReadOnly ||
+              isEditingLocked ||
               viewMode === 'native'
             }
             textColorSwatches={SLIDE_COLOR_SWATCHES}
@@ -6675,11 +8554,11 @@ export function SlideWorkspace({
           />
 
           {/* Mobile Collapsed 1-Row Bottom Bar (md:hidden, only in edit mode) */}
-          {!isReadOnly && viewMode === 'edit' && (
+          {!isEditingLocked && viewMode === 'edit' && (
           <div
             role="toolbar"
             aria-label="Thanh công cụ chỉnh sửa slide di động"
-            className="md:hidden fixed bottom-0 inset-x-0 z-40 h-12 bg-[#141923] border-t border-white/15 flex items-center text-slate-100"
+            className="md:hidden fixed bottom-0 inset-x-0 z-40 h-12 bg-white border-t border-slate-200/80 shadow-[0_-2px_10px_rgba(15,23,42,0.06)] flex items-center text-slate-800"
           >
             <div className="overflow-x-auto no-scrollbar flex items-center gap-1 px-2 flex-1 min-w-0">
               {/* + Khung chữ */}
@@ -6688,7 +8567,7 @@ export function SlideWorkspace({
                 onMouseDown={handlePreventMouseDown}
                 onClick={handleAddTextBlock}
                 aria-label="Thêm khung chữ"
-                className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-indigo-600/30 border border-indigo-400/40 text-[11px] font-semibold text-indigo-100 whitespace-nowrap"
+                className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-[#FFF4ED] border border-[#C43E1C]/35 text-[11px] font-semibold text-[#C43E1C] whitespace-nowrap"
               >
                 <Plus className="h-3.5 w-3.5" />
                 <span>Khung chữ</span>
@@ -6700,13 +8579,13 @@ export function SlideWorkspace({
                 onMouseDown={handlePreventMouseDown}
                 onClick={handleTriggerAddImage}
                 aria-label="Thêm ảnh"
-                className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-white/[0.07] border border-white/10 text-[11px] font-medium text-slate-200 whitespace-nowrap"
+                className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-slate-50 border border-slate-200 text-[11px] font-medium text-slate-700 whitespace-nowrap"
               >
-                <ImagePlus className="h-3.5 w-3.5 text-emerald-300" />
+                <ImagePlus className="h-3.5 w-3.5 text-emerald-600" />
                 <span>Ảnh</span>
               </button>
 
-              <span className="h-5 w-px bg-white/15 shrink-0 mx-0.5" />
+              <span className="h-5 w-px bg-slate-200 shrink-0 mx-0.5" />
 
               {/* Bold */}
               <button
@@ -6724,8 +8603,8 @@ export function SlideWorkspace({
                 aria-label="In đậm"
                 className={`shrink-0 inline-flex items-center justify-center h-8 w-8 rounded-lg border transition-colors disabled:opacity-35 ${
                   selectedBlock?.bold
-                    ? 'bg-indigo-500/35 border-indigo-400/60 text-white'
-                    : 'bg-white/[0.06] border-white/10 text-slate-200'
+                    ? 'bg-[#FFF4ED] border-[#C43E1C]/50 text-[#C43E1C]'
+                    : 'bg-slate-50 border-slate-200 text-slate-700'
                 }`}
               >
                 <Bold className="h-3.5 w-3.5" />
@@ -6747,8 +8626,8 @@ export function SlideWorkspace({
                 aria-label="In nghiêng"
                 className={`shrink-0 inline-flex items-center justify-center h-8 w-8 rounded-lg border transition-colors disabled:opacity-35 ${
                   selectedBlock?.italic
-                    ? 'bg-indigo-500/35 border-indigo-400/60 text-white'
-                    : 'bg-white/[0.06] border-white/10 text-slate-200'
+                    ? 'bg-[#FFF4ED] border-[#C43E1C]/50 text-[#C43E1C]'
+                    : 'bg-slate-50 border-slate-200 text-slate-700'
                 }`}
               >
                 <Italic className="h-3.5 w-3.5" />
@@ -6770,8 +8649,8 @@ export function SlideWorkspace({
                 aria-label="Gạch chân"
                 className={`shrink-0 inline-flex items-center justify-center h-8 w-8 rounded-lg border transition-colors disabled:opacity-35 ${
                   selectedBlock && underlinedBlockIds[selectedBlock.id]
-                    ? 'bg-indigo-500/35 border-indigo-400/60 text-white'
-                    : 'bg-white/[0.06] border-white/10 text-slate-200'
+                    ? 'bg-[#FFF4ED] border-[#C43E1C]/50 text-[#C43E1C]'
+                    : 'bg-slate-50 border-slate-200 text-slate-700'
                 }`}
               >
                 <Underline className="h-3.5 w-3.5" />
@@ -6803,7 +8682,7 @@ export function SlideWorkspace({
                 }}
                 aria-label="Đổi màu chữ"
                 title="Chạm để đổi màu chữ nhanh"
-                className="shrink-0 inline-flex flex-col items-center justify-center h-8 w-8 rounded-lg bg-white/[0.06] border border-white/10 text-slate-100"
+                className="shrink-0 inline-flex flex-col items-center justify-center h-8 w-8 rounded-lg bg-slate-50 border border-slate-200 text-slate-800"
               >
                 <span className="text-[11px] font-bold leading-none">A</span>
                 <span
@@ -6842,8 +8721,8 @@ export function SlideWorkspace({
                     aria-label={label}
                     className={`shrink-0 inline-flex items-center justify-center h-8 w-8 rounded-lg border transition-colors disabled:opacity-35 ${
                       active
-                        ? 'bg-indigo-600 border-indigo-400 text-white'
-                        : 'bg-white/[0.06] border-white/10 text-slate-200'
+                        ? 'bg-[#C43E1C] border-[#C43E1C] text-white'
+                        : 'bg-slate-50 border-slate-200 text-slate-700'
                     }`}
                   >
                     <Icon className="h-3.5 w-3.5" />
@@ -6851,7 +8730,7 @@ export function SlideWorkspace({
                 );
               })}
 
-              <span className="h-5 w-px bg-white/15 shrink-0 mx-0.5" />
+              <span className="h-5 w-px bg-slate-200 shrink-0 mx-0.5" />
 
               {/* + Slide */}
               <button
@@ -6859,9 +8738,9 @@ export function SlideWorkspace({
                 onMouseDown={handlePreventMouseDown}
                 onClick={handleAddSlide}
                 aria-label="Thêm slide mới"
-                className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-white/[0.07] border border-white/10 text-[11px] font-semibold text-slate-100 whitespace-nowrap"
+                className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-slate-50 border border-slate-200 text-[11px] font-semibold text-slate-800 whitespace-nowrap"
               >
-                <Plus className="h-3.5 w-3.5 text-indigo-300" />
+                <Plus className="h-3.5 w-3.5 text-[#C43E1C]" />
                 <span>Slide</span>
               </button>
             </div>
@@ -6874,7 +8753,7 @@ export function SlideWorkspace({
               aria-expanded={isMobileSheetOpen}
               aria-label="Mở bảng công cụ chi tiết"
               title="Mở bảng công cụ chi tiết"
-              className="shrink-0 h-full w-11 border-l border-white/15 flex items-center justify-center text-indigo-300 hover:bg-white/[0.08] transition-colors"
+              className="shrink-0 h-full w-11 border-l border-slate-200 flex items-center justify-center text-[#C43E1C] hover:bg-[#FFF4ED] transition-colors"
             >
               <ChevronUp className="h-5 w-5" />
             </button>
@@ -6882,17 +8761,17 @@ export function SlideWorkspace({
           )}
 
           {/* Mobile Expanded Detail Bottom Sheet (md:hidden) */}
-          {!isReadOnly && viewMode === 'edit' && isMobileSheetOpen && (
+          {!isEditingLocked && viewMode === 'edit' && isMobileSheetOpen && (
             <div
               role="region"
               aria-label="Bảng công cụ chỉnh sửa slide chi tiết"
-              className="md:hidden fixed bottom-0 inset-x-0 z-40 h-[44vh] bg-[#141923] border-t border-white/15 rounded-t-2xl shadow-2xl flex flex-col text-slate-100"
+              className="md:hidden fixed bottom-0 inset-x-0 z-40 h-[44vh] bg-white border-t border-slate-200 rounded-t-2xl shadow-2xl flex flex-col text-slate-800"
             >
               {/* Sheet Header */}
-              <div className="shrink-0 px-3.5 py-2.5 border-b border-white/10 flex items-center justify-between gap-2">
+              <div className="shrink-0 px-3.5 py-2.5 border-b border-slate-200 flex items-center justify-between gap-2 bg-[#F8FAFC] rounded-t-2xl">
                 <div className="flex items-center gap-2 min-w-0">
-                  <span className="h-2 w-2 rounded-full bg-indigo-400 shrink-0" />
-                  <span className="text-xs font-semibold text-white truncate">
+                  <span className="h-2 w-2 rounded-full bg-[#C43E1C] shrink-0" />
+                  <span className="text-xs font-semibold text-slate-900 truncate">
                     {selectedBlock
                       ? `Đang sửa khung chữ · Slide ${safeSlideIdx + 1}/${slides.length}`
                       : selectedImage
@@ -6906,7 +8785,7 @@ export function SlideWorkspace({
                   onClick={() => setIsMobileSheetOpen(false)}
                   aria-label="Thu gọn bảng công cụ"
                   title="Thu gọn bảng công cụ"
-                  className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-white/[0.08] hover:bg-white/[0.15] text-xs font-medium text-slate-200"
+                  className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-medium text-slate-700"
                 >
                   <span>Thu gọn</span>
                   <ChevronDown className="h-4 w-4" />
@@ -6914,11 +8793,11 @@ export function SlideWorkspace({
               </div>
 
               {/* Sheet Body */}
-              <div className="flex-1 min-h-0 overflow-y-auto scrollbar-dark p-3.5 space-y-3.5">
+              <div className="flex-1 min-h-0 overflow-y-auto scrollbar-none p-3.5 space-y-3.5">
                 {/* Section 1: Định dạng khung chữ / ảnh */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
                       Định dạng khung đang chọn
                     </span>
                     {selectedBlock && (
@@ -6926,7 +8805,7 @@ export function SlideWorkspace({
                         type="button"
                         onMouseDown={handlePreventMouseDown}
                         onClick={() => handleDeleteBlock(selectedBlock.id)}
-                        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-500/20 border border-rose-400/40 text-[11px] font-semibold text-rose-200"
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-50 border border-rose-200 text-[11px] font-semibold text-rose-600"
                       >
                         <Trash2 className="h-3 w-3" />
                         <span>Xóa khung</span>
@@ -6937,7 +8816,7 @@ export function SlideWorkspace({
                         type="button"
                         onMouseDown={handlePreventMouseDown}
                         onClick={() => handleDeleteImage(selectedImage.id)}
-                        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-500/20 border border-rose-400/40 text-[11px] font-semibold text-rose-200"
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-50 border border-rose-200 text-[11px] font-semibold text-rose-600"
                       >
                         <Trash2 className="h-3 w-3" />
                         <span>Xóa ảnh</span>
@@ -6986,15 +8865,15 @@ export function SlideWorkspace({
                         }}
                         className={`shrink-0 h-8 px-2.5 rounded-lg border text-xs font-bold disabled:opacity-35 ${
                           active
-                            ? 'bg-indigo-600 border-indigo-400 text-white'
-                            : 'bg-[#1C2331] border-white/10 text-slate-200'
+                            ? 'bg-[#C43E1C] border-[#C43E1C] text-white'
+                            : 'bg-slate-50 border-slate-200 text-slate-700'
                         }`}
                       >
                         {label}
                       </button>
                     ))}
 
-                    <span className="h-5 w-px bg-white/15 shrink-0" />
+                    <span className="h-5 w-px bg-slate-200 shrink-0" />
 
                     {SLIDE_FONT_SIZES.map((size) => {
                       const active = selectedBlock?.fontSize === size;
@@ -7013,8 +8892,8 @@ export function SlideWorkspace({
                           }}
                           className={`shrink-0 h-8 px-2.5 rounded-lg border text-xs font-semibold tabular-nums disabled:opacity-35 ${
                             active
-                              ? 'bg-indigo-600 border-indigo-400 text-white'
-                              : 'bg-[#1C2331] border-white/10 text-slate-200'
+                              ? 'bg-[#C43E1C] border-[#C43E1C] text-white'
+                              : 'bg-slate-50 border-slate-200 text-slate-700'
                           }`}
                         >
                           {size}
@@ -7038,8 +8917,8 @@ export function SlideWorkspace({
                       }}
                       className={`shrink-0 h-9 px-3 rounded-lg border inline-flex items-center gap-1 text-xs font-semibold disabled:opacity-35 ${
                         selectedBlock?.bold
-                          ? 'bg-indigo-600 border-indigo-400 text-white'
-                          : 'bg-[#1C2331] border-white/10 text-slate-200'
+                          ? 'bg-[#FFF4ED] border-[#C43E1C] text-[#C43E1C]'
+                          : 'bg-slate-50 border-slate-200 text-slate-700'
                       }`}
                     >
                       <Bold className="h-3.5 w-3.5" />
@@ -7059,8 +8938,8 @@ export function SlideWorkspace({
                       }}
                       className={`shrink-0 h-9 px-3 rounded-lg border inline-flex items-center gap-1 text-xs font-semibold disabled:opacity-35 ${
                         selectedBlock?.italic
-                          ? 'bg-indigo-600 border-indigo-400 text-white'
-                          : 'bg-[#1C2331] border-white/10 text-slate-200'
+                          ? 'bg-[#FFF4ED] border-[#C43E1C] text-[#C43E1C]'
+                          : 'bg-slate-50 border-slate-200 text-slate-700'
                       }`}
                     >
                       <Italic className="h-3.5 w-3.5" />
@@ -7078,8 +8957,8 @@ export function SlideWorkspace({
                       }}
                       className={`shrink-0 h-9 px-3 rounded-lg border inline-flex items-center gap-1 text-xs font-semibold disabled:opacity-35 ${
                         selectedBlock && underlinedBlockIds[selectedBlock.id]
-                          ? 'bg-indigo-600 border-indigo-400 text-white'
-                          : 'bg-[#1C2331] border-white/10 text-slate-200'
+                          ? 'bg-[#FFF4ED] border-[#C43E1C] text-[#C43E1C]'
+                          : 'bg-slate-50 border-slate-200 text-slate-700'
                       }`}
                     >
                       <Underline className="h-3.5 w-3.5" />
@@ -7112,8 +8991,8 @@ export function SlideWorkspace({
                           aria-label={label}
                           className={`shrink-0 h-9 w-9 rounded-lg border flex items-center justify-center disabled:opacity-35 ${
                             active
-                              ? 'bg-indigo-600 border-indigo-400 text-white'
-                              : 'bg-[#1C2331] border-white/10 text-slate-200'
+                              ? 'bg-[#C43E1C] border-[#C43E1C] text-white'
+                              : 'bg-slate-50 border-slate-200 text-slate-700'
                           }`}
                         >
                           <Icon className="h-4 w-4" />
@@ -7124,7 +9003,7 @@ export function SlideWorkspace({
 
                   {/* Row 1C: Text Color Swatches + Block Fill Color */}
                   <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pt-0.5">
-                    <span className="text-[11px] text-slate-400 shrink-0">
+                    <span className="text-[11px] text-slate-500 shrink-0">
                       Màu chữ:
                     </span>
                     {SLIDE_COLOR_SWATCHES.map((swatch) => {
@@ -7148,17 +9027,17 @@ export function SlideWorkspace({
                           aria-label={`Màu chữ ${swatch.label}`}
                           className={`shrink-0 h-6 w-6 rounded-full border disabled:opacity-35 ${
                             active
-                              ? 'ring-2 ring-indigo-400 border-white scale-110'
-                              : 'border-white/30'
+                              ? 'ring-2 ring-[#C43E1C] border-white scale-110'
+                              : 'border-slate-300'
                           }`}
                           style={{ backgroundColor: swatch.value }}
                         />
                       );
                     })}
 
-                    <span className="h-5 w-px bg-white/15 shrink-0 mx-0.5" />
+                    <span className="h-5 w-px bg-slate-200 shrink-0 mx-0.5" />
 
-                    <span className="text-[11px] text-slate-400 shrink-0">
+                    <span className="text-[11px] text-slate-500 shrink-0">
                       Nền khối:
                     </span>
                     <input
@@ -7187,7 +9066,7 @@ export function SlideWorkspace({
                             fillColor: undefined,
                           })
                         }
-                        className="shrink-0 px-2 py-1 rounded bg-white/10 text-[11px] text-slate-200"
+                        className="shrink-0 px-2 py-1 rounded bg-slate-100 text-[11px] text-slate-700"
                       >
                         Trong suốt
                       </button>
@@ -7196,8 +9075,8 @@ export function SlideWorkspace({
                 </div>
 
                 {/* Section 2: Chèn & Quản lý Slide */}
-                <div className="space-y-1.5 pt-1 border-t border-white/10">
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                <div className="space-y-1.5 pt-1 border-t border-slate-200">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
                     Chèn & Quản lý Slide
                   </span>
                   <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
@@ -7205,7 +9084,7 @@ export function SlideWorkspace({
                       type="button"
                       onMouseDown={handlePreventMouseDown}
                       onClick={handleAddTextBlock}
-                      className="shrink-0 h-9 px-3 rounded-xl bg-indigo-600/25 border border-indigo-400/40 text-xs font-semibold text-indigo-100 inline-flex items-center gap-1.5"
+                      className="shrink-0 h-9 px-3 rounded-xl bg-[#FFF4ED] border border-[#C43E1C]/35 text-xs font-semibold text-[#C43E1C] inline-flex items-center gap-1.5"
                     >
                       <Plus className="h-3.5 w-3.5" />
                       <Type className="h-3.5 w-3.5" />
@@ -7215,25 +9094,25 @@ export function SlideWorkspace({
                       type="button"
                       onMouseDown={handlePreventMouseDown}
                       onClick={handleTriggerAddImage}
-                      className="shrink-0 h-9 px-3 rounded-xl bg-[#1C2331] border border-white/10 text-xs font-medium text-slate-200 inline-flex items-center gap-1.5"
+                      className="shrink-0 h-9 px-3 rounded-xl bg-slate-50 border border-slate-200 text-xs font-medium text-slate-700 inline-flex items-center gap-1.5"
                     >
-                      <ImagePlus className="h-3.5 w-3.5 text-emerald-300" />
+                      <ImagePlus className="h-3.5 w-3.5 text-emerald-600" />
                       <span>+ Ảnh</span>
                     </button>
                     <button
                       type="button"
                       onMouseDown={handlePreventMouseDown}
                       onClick={handleAddSlide}
-                      className="shrink-0 h-9 px-3 rounded-xl bg-[#1C2331] border border-white/10 text-xs font-medium text-slate-200 inline-flex items-center gap-1.5"
+                      className="shrink-0 h-9 px-3 rounded-xl bg-slate-50 border border-slate-200 text-xs font-medium text-slate-700 inline-flex items-center gap-1.5"
                     >
-                      <Plus className="h-3.5 w-3.5 text-indigo-300" />
+                      <Plus className="h-3.5 w-3.5 text-[#C43E1C]" />
                       <span>+ Slide</span>
                     </button>
                     <button
                       type="button"
                       onMouseDown={handlePreventMouseDown}
                       onClick={handleDuplicateSlide}
-                      className="shrink-0 h-9 px-3 rounded-xl bg-[#1C2331] border border-white/10 text-xs font-medium text-slate-200 inline-flex items-center gap-1.5"
+                      className="shrink-0 h-9 px-3 rounded-xl bg-slate-50 border border-slate-200 text-xs font-medium text-slate-700 inline-flex items-center gap-1.5"
                     >
                       <Copy className="h-3.5 w-3.5" />
                       <span>Nhân bản</span>
@@ -7243,7 +9122,7 @@ export function SlideWorkspace({
                       onMouseDown={handlePreventMouseDown}
                       disabled={slides.length <= 1}
                       onClick={handleDeleteSlide}
-                      className="shrink-0 h-9 px-3 rounded-xl bg-rose-500/15 border border-rose-400/35 text-xs font-medium text-rose-200 inline-flex items-center gap-1.5 disabled:opacity-35"
+                      className="shrink-0 h-9 px-3 rounded-xl bg-rose-50 border border-rose-200 text-xs font-medium text-rose-600 inline-flex items-center gap-1.5 disabled:opacity-35"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                       <span>Xóa Slide</span>
@@ -7252,8 +9131,8 @@ export function SlideWorkspace({
                 </div>
 
                 {/* Section 3: Màu nền Slide & Tiện ích */}
-                <div className="space-y-1.5 pt-1 border-t border-white/10">
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                <div className="space-y-1.5 pt-1 border-t border-slate-200">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
                     Màu nền Slide & Tiện ích
                   </span>
                   <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
@@ -7271,12 +9150,12 @@ export function SlideWorkspace({
                           onClick={() => handleChangeSlideBackground(bg.value)}
                           className={`shrink-0 h-8 px-2.5 rounded-lg border text-[11px] font-medium inline-flex items-center gap-1.5 ${
                             active
-                              ? 'border-indigo-400 bg-indigo-500/20 text-white'
-                              : 'border-white/15 bg-[#1C2331] text-slate-200'
+                              ? 'border-[#C43E1C] bg-[#FFF4ED] text-[#C43E1C]'
+                              : 'border-slate-200 bg-slate-50 text-slate-700'
                           }`}
                         >
                           <span
-                            className="h-3.5 w-3.5 rounded border border-white/30"
+                            className="h-3.5 w-3.5 rounded border border-slate-300"
                             style={{ backgroundColor: bg.value }}
                           />
                           <span>{bg.label}</span>
@@ -7291,8 +9170,8 @@ export function SlideWorkspace({
                       aria-pressed={isLaserActive}
                       className={`shrink-0 h-8 px-2.5 rounded-lg border text-[11px] font-medium inline-flex items-center gap-1.5 ${
                         isLaserActive
-                          ? 'bg-rose-500/25 border-rose-400/60 text-rose-100'
-                          : 'bg-[#1C2331] border-white/10 text-slate-200'
+                          ? 'bg-rose-50 border-rose-300 text-rose-700'
+                          : 'bg-slate-50 border-slate-200 text-slate-700'
                       }`}
                     >
                       <Crosshair className="h-3.5 w-3.5" />
@@ -7306,8 +9185,8 @@ export function SlideWorkspace({
                       aria-pressed={isNotesExpanded}
                       className={`shrink-0 h-8 px-2.5 rounded-lg border text-[11px] font-medium inline-flex items-center gap-1.5 ${
                         isNotesExpanded
-                          ? 'bg-indigo-500/25 border-indigo-400/60 text-indigo-100'
-                          : 'bg-[#1C2331] border-white/10 text-slate-200'
+                          ? 'bg-[#FFF4ED] border-[#C43E1C]/40 text-[#C43E1C]'
+                          : 'bg-slate-50 border-slate-200 text-slate-700'
                       }`}
                     >
                       <StickyNote className="h-3.5 w-3.5" />
@@ -7322,7 +9201,7 @@ export function SlideWorkspace({
         </main>
       </div>
 
-      {/* Thumbnail Right-Click Context Menu */}
+          {/* Thumbnail Right-Click Context Menu */}
       {thumbContextMenu && (
         <div
           role="menu"
@@ -7332,58 +9211,58 @@ export function SlideWorkspace({
             left: `${thumbContextMenu.x}px`,
             top: `${thumbContextMenu.y}px`,
           }}
-          className="fixed z-50 w-48 rounded-xl bg-[#1C2331] border border-white/15 shadow-2xl py-1.5 text-xs text-slate-100"
+          className="fixed z-50 w-48 rounded-xl bg-white border border-slate-200 shadow-2xl py-1.5 text-xs text-slate-800"
         >
           <button
             type="button"
-            disabled={isReadOnly}
+            disabled={isEditingLocked}
             onClick={() => {
               setActiveSlideIdx(thumbContextMenu.slideIdx);
               handleAddSlide();
               setThumbContextMenu(null);
             }}
-            className="w-full px-3 py-1.5 text-left hover:bg-[#C43E1C]/25 flex items-center gap-2 disabled:opacity-40"
+            className="w-full px-3 py-1.5 text-left hover:bg-[#FFF4ED] hover:text-[#C43E1C] flex items-center gap-2 disabled:opacity-40"
           >
-            <Plus className="h-3.5 w-3.5 text-orange-300" />
+            <Plus className="h-3.5 w-3.5 text-[#C43E1C]" />
             <span>Thêm slide mới</span>
           </button>
           <button
             type="button"
-            disabled={isReadOnly}
+            disabled={isEditingLocked}
             onClick={() => {
               handleDuplicateSlideAt(thumbContextMenu.slideIdx);
               setThumbContextMenu(null);
             }}
-            className="w-full px-3 py-1.5 text-left hover:bg-[#C43E1C]/25 flex items-center gap-2 disabled:opacity-40"
+            className="w-full px-3 py-1.5 text-left hover:bg-[#FFF4ED] hover:text-[#C43E1C] flex items-center gap-2 disabled:opacity-40"
           >
-            <Copy className="h-3.5 w-3.5 text-slate-300" />
+            <Copy className="h-3.5 w-3.5 text-slate-500" />
             <span>Nhân bản slide</span>
           </button>
           <button
             type="button"
-            disabled={isReadOnly}
+            disabled={isEditingLocked}
             onClick={() => {
               handleToggleHideSlide(thumbContextMenu.slideIdx);
               setThumbContextMenu(null);
             }}
-            className="w-full px-3 py-1.5 text-left hover:bg-[#C43E1C]/25 flex items-center gap-2 disabled:opacity-40"
+            className="w-full px-3 py-1.5 text-left hover:bg-[#FFF4ED] hover:text-[#C43E1C] flex items-center gap-2 disabled:opacity-40"
           >
-            <EyeOff className="h-3.5 w-3.5 text-amber-300" />
+            <EyeOff className="h-3.5 w-3.5 text-amber-600" />
             <span>
               {slides[thumbContextMenu.slideIdx]?.hidden
                 ? 'Hiện slide khi chiếu'
                 : 'Ẩn slide khi chiếu'}
             </span>
           </button>
-          <div className="my-1 border-t border-white/10" />
+          <div className="my-1 border-t border-slate-200" />
           <button
             type="button"
-            disabled={isReadOnly || slides.length <= 1}
+            disabled={isEditingLocked || slides.length <= 1}
             onClick={() => {
               handleDeleteSlideAt(thumbContextMenu.slideIdx);
               setThumbContextMenu(null);
             }}
-            className="w-full px-3 py-1.5 text-left hover:bg-rose-500/20 text-rose-200 flex items-center gap-2 disabled:opacity-35"
+            className="w-full px-3 py-1.5 text-left hover:bg-rose-50 text-rose-600 flex items-center gap-2 disabled:opacity-35"
           >
             <Trash2 className="h-3.5 w-3.5" />
             <span>Xóa slide</span>
@@ -7405,6 +9284,50 @@ export function SlideWorkspace({
         onInsertLink={handleInsertLinkBlock}
         onInsertMedia={handleInsertMediaBlock}
       />
+
+      {/* Slide File Info Modal */}
+      <SlideFileInfoModal
+        isOpen={isFileInfoOpen}
+        document={buildLiveDocument()}
+        slideCount={slides.length}
+        totalBlocks={slides.reduce((sum, s) => sum + (s.blocks?.length ?? 0), 0)}
+        totalImages={slides.reduce((sum, s) => sum + (s.images?.length ?? 0), 0)}
+        aspectRatioLabel={Math.abs(currentAspectRatio - 4 / 3) < 0.08 ? '4:3 (Chuẩn)' : '16:9 (Màn hình rộng)'}
+        isProtected={isPresentationProtected}
+        hasOriginalBinary={hasOriginalBinary}
+        onClose={() => setIsFileInfoOpen(false)}
+      />
+
+      {/* Slide AI Tools Modal */}
+      <SlideAiToolsModal
+        isOpen={aiModalState.isOpen}
+        initialTab={aiModalState.initialTab}
+        documentTitle={document.title}
+        slides={slides}
+        activeSlideIndex={safeSlideIdx}
+        isReadOnly={isEditingLocked}
+        onAppendSlides={handleAppendAiSlides}
+        onUpdateSlideNote={handleUpdateSlideNoteAt}
+        onApplyAllEmptyNotes={handleApplyAllEmptyAiNotes}
+        onClose={() => setAiModalState((prev) => ({ ...prev, isOpen: false }))}
+      />
+
+      {/* Slide Comments Floating Side Drawer */}
+      {isCommentsOpen && (
+        <div className="fixed inset-y-14 right-3 z-40 w-[320px] max-w-[92vw] flex flex-col justify-center pointer-events-none">
+          <div className="pointer-events-auto h-[520px] max-h-[82vh] rounded-2xl overflow-hidden shadow-2xl border border-slate-200 bg-white">
+            <SlideCommentsPanel
+              slideIndex={safeSlideIdx}
+              slideTitle={currentSlide.title}
+              comments={currentSlide.comments ?? []}
+              isReadOnly={isEditingLocked}
+              onAddComment={handleAddSlideComment}
+              onDeleteComment={handleDeleteSlideComment}
+              onClose={() => setIsCommentsOpen(false)}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Real Fullscreen Slideshow Mode (#000000) */}
       {isSlideshowActive && (
@@ -7451,6 +9374,10 @@ export function SlideWorkspace({
 @keyframes liteObjZoomIn {
   from { opacity: 0; transform: scale(0.75); }
   to { opacity: 1; transform: scale(1); }
+}
+@keyframes liteObjPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.06); }
 }
 `}</style>
 

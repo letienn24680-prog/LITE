@@ -6,26 +6,34 @@ import {
   AlignJustify,
   AlignLeft,
   AlignRight,
+  Ban,
   Bold,
+  BookMarked,
   BookOpen,
   CaseSensitive,
   Check,
   ChevronDown,
+  ChevronUp,
+  ClipboardPaste,
   CloudDownload,
   Columns,
-  Download,
-  Eye,
-  FileDown,
+  Copy,
+  Eraser,
+  FileOutput,
+  FilePlus2,
   FileSearch,
   FolderOpen,
   Highlighter,
+  History,
   Image as ImageIcon,
   IndentDecrease,
   IndentIncrease,
+  Info,
   Italic,
   Link2,
   List,
   ListOrdered,
+  ListTree,
   Loader2,
   Lock,
   Maximize2,
@@ -33,23 +41,28 @@ import {
   Minimize2,
   Minus,
   Moon,
+  PaintBucket,
   Paintbrush,
   Palette,
   PanelLeftClose,
   PanelLeftOpen,
-  Pencil,
+  Pen,
+  Printer,
   Quote,
   Redo2,
   RefreshCw,
   RemoveFormatting,
   Ruler,
-  Save,
   ScanText,
+  Scissors,
   Search,
   Shapes,
+  Share2,
+  ShieldCheck,
   Sigma,
   Smartphone,
   Sparkles,
+  SpellCheck2,
   SplitSquareVertical,
   Square,
   Strikethrough,
@@ -57,15 +70,22 @@ import {
   Sun,
   Superscript,
   Table,
+  Trash2,
   Underline,
   Undo2,
+  Unlock,
+  Users,
+  Wand2,
   X,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import type {
   DocumentItem,
   ModalType,
   OutlineSection,
   WordCommentItem,
+  WordDrawingStroke,
   WordPaperTheme,
 } from '../../types/document';
 import { createThumbnailDataUri } from '../../data/mockDocuments';
@@ -77,8 +97,16 @@ import {
   exportOriginalDocumentBinary,
   exportWordToDocx,
 } from '../../utils/fileExporter';
+import { downloadDocumentAsPdf } from '../../utils/quickConverter';
 import { useWorkspaceSync } from '../../contexts/WorkspaceSyncContext';
 import { useDocumentPinchZoom } from '../../hooks/useDocumentPinchZoom';
+import {
+  WordAiToolsModal,
+  WordCitationModal,
+  WordDrawingOverlay,
+  WordFileInfoModal,
+  WordFootnoteModal,
+} from './WordOnlyOfficePanels';
 import type {
   CollaboratorPresence,
   DocRealtimePatch,
@@ -137,19 +165,10 @@ type WordEditMode = 'original' | 'edit';
 const WORD_PAGE_LAYOUT_STORAGE_KEY = 'lite_word_page_layout';
 
 function resolveInitialWordEditMode(
-  doc: DocumentItem,
+  _doc: DocumentItem,
   isReadOnly: boolean
 ): WordEditMode {
-  if (isReadOnly) {
-    return 'original';
-  }
-  const hasOriginalBinary = Boolean(
-    doc.rawArrayBuffer && doc.rawArrayBuffer.byteLength > 0
-  );
-  if (hasOriginalBinary && !doc.hasLocalEdits) {
-    return 'original';
-  }
-  return 'edit';
+  return isReadOnly ? 'original' : 'edit';
 }
 
 function readStoredPageLayout(): WordPageLayout {
@@ -191,7 +210,17 @@ const PARAGRAPH_SPACINGS = [
   { label: 'Thoáng (20px)', valuePx: 20 },
 ] as const;
 
-type RibbonTab = 'home' | 'insert' | 'layout' | 'view';
+type RibbonTab =
+  | 'file'
+  | 'home'
+  | 'insert'
+  | 'draw'
+  | 'layout'
+  | 'references'
+  | 'collab'
+  | 'protect'
+  | 'view'
+  | 'ai';
 type BlockTag = 'p' | 'h1' | 'h2' | 'h3';
 type ActivePopover =
   | 'block'
@@ -200,14 +229,51 @@ type ActivePopover =
   | 'underline'
   | 'case'
   | 'table_grid'
+  | 'para_shading'
+  | 'para_border'
   | null;
+type WordStylePresetId = 'normal' | 'no_spacing' | 'title' | 'h1' | 'h2';
 
 const RIBBON_TABS: { key: RibbonTab; label: string }[] = [
-  { key: 'home', label: 'Trang đầu' },
+  { key: 'file', label: 'Tệp' },
+  { key: 'home', label: 'Trang chủ' },
   { key: 'insert', label: 'Chèn' },
-  { key: 'layout', label: 'Bố trí' },
-  { key: 'view', label: 'Xem lại & Công cụ' },
+  { key: 'draw', label: 'Vẽ' },
+  { key: 'layout', label: 'Bố cục' },
+  { key: 'references', label: 'Tham khảo' },
+  { key: 'collab', label: 'Cộng tác' },
+  { key: 'protect', label: 'Bảo vệ' },
+  { key: 'view', label: 'Xem' },
+  { key: 'ai', label: 'AI Tools' },
 ];
+
+const DRAW_COLOR_SWATCHES = [
+  { label: 'Xanh Word', value: '#185ABD' },
+  { label: 'Đen mực', value: '#0F172A' },
+  { label: 'Đỏ nổi bật', value: '#DC2626' },
+  { label: 'Xanh lá', value: '#16A34A' },
+  { label: 'Cam nhấn', value: '#EA580C' },
+  { label: 'Tím', value: '#7C3AED' },
+  { label: 'Dạ quang vàng', value: '#FACC15' },
+] as const;
+
+const CUSTOM_PAGE_BG_SWATCHES = [
+  { label: 'Mặc định', value: '' },
+  { label: 'Xanh băng', value: '#F0F6FF' },
+  { label: 'Kem dịu', value: '#FEFCE8' },
+  { label: 'Xanh bạc hà', value: '#F0FDF4' },
+  { label: 'Hồng phấn', value: '#FDF2F8' },
+] as const;
+
+const PARAGRAPH_SHADING_SWATCHES = [
+  { label: 'Không màu', value: '' },
+  { label: 'Xanh nhạt', value: '#EEF4FF' },
+  { label: 'Xám dịu', value: '#F1F5F9' },
+  { label: 'Vàng nhạt', value: '#FEF9C3' },
+  { label: 'Xanh lá nhạt', value: '#DCFCE7' },
+] as const;
+
+const WORD_VIEW_ZOOM_PRESETS = [50, 75, 100, 125, 150, 200] as const;
 
 interface OutlineNavEntry {
   section: OutlineSection;
@@ -253,24 +319,24 @@ const PAPER_THEMES: Record<WordPaperTheme, PaperThemeClasses> = {
     label: 'Trắng sáng',
     shortLabel: 'Sáng',
     swatchClass: 'bg-white border-slate-300',
-    outerBg: 'bg-[#F3F1EC]',
-    ribbonBg: 'bg-[#FFFFFF]',
-    ribbonBorder: 'border-[#EAE6DF]',
-    sidebarBg: 'bg-[#FAF9F6]',
-    sidebarBorder: 'border-[#E6E2DA]',
-    paperBg: 'bg-[#FFFFFF]',
-    paperBorder: 'border-[#E7E3DC]',
+    outerBg: 'bg-[#F1F3F5]',
+    ribbonBg: 'bg-[#F8FAFC]',
+    ribbonBorder: 'border-slate-200/80',
+    sidebarBg: 'bg-[#F8FAFC]',
+    sidebarBorder: 'border-slate-200/80',
+    paperBg: 'bg-white',
+    paperBorder: 'border-slate-200/70',
     pageHexBg: '#FFFFFF',
     pageHexText: '#1E293B',
     textPrimary: 'text-[#1E293B]',
     textMuted: 'text-slate-500',
     outlineActive:
-      'bg-indigo-50 text-indigo-800 font-semibold ring-1 ring-indigo-200/80',
-    outlineIdle: 'text-slate-600 hover:bg-[#EFECE6] hover:text-slate-900',
-    calloutBg: 'bg-[#F8F7F4]',
-    calloutBorder: 'border-[#E7E3DC]',
+      'bg-[#EEF4FF] text-[#185ABD] font-semibold ring-1 ring-[#185ABD]/25',
+    outlineIdle: 'text-slate-600 hover:bg-slate-200/60 hover:text-slate-900',
+    calloutBg: 'bg-slate-50',
+    calloutBorder: 'border-slate-200/80',
     editorProse:
-      '[&_h1]:text-slate-900 [&_h2]:text-slate-900 [&_h3]:text-slate-800 [&_h2]:border-[#ECE8E0] [&_blockquote]:bg-[#FAF8F5] [&_blockquote]:border-indigo-400 [&_blockquote]:text-slate-700 [&_th]:bg-[#F8F7F4] [&_th]:border-[#DDD7CE] [&_td]:border-[#E5E0D8] [&_a]:text-indigo-600',
+      '[&_h1]:text-slate-900 [&_h2]:text-slate-900 [&_h3]:text-slate-800 [&_h2]:border-slate-200 [&_blockquote]:bg-[#F8FAFC] [&_blockquote]:border-[#185ABD] [&_blockquote]:text-slate-700 [&_th]:bg-slate-50 [&_th]:border-slate-300 [&_td]:border-slate-200 [&_a]:text-[#185ABD]',
     scrollbarClass: '',
   },
   sepia: {
@@ -406,12 +472,35 @@ const DOCX_PREVIEW_SCOPED_CSS = `
 .lite-word-host [id^="heading-"] {
   scroll-margin-top: 24px;
 }
+.lite-word-host ol[data-multilevel="true"],
+.lite-word-host ol[data-multilevel="true"] ol {
+  counter-reset: lite-ml;
+  list-style: none !important;
+  padding-left: 1.5rem !important;
+}
+.lite-word-host ol[data-multilevel="true"] li {
+  counter-increment: lite-ml;
+}
+.lite-word-host ol[data-multilevel="true"] li::before {
+  content: counters(lite-ml, ".") ". ";
+  font-weight: 600;
+  color: #185ABD;
+  margin-right: 0.25rem;
+}
+.lite-word-host nav[data-word-toc="true"] a[data-toc-target] {
+  color: #185ABD;
+  text-decoration: none;
+  cursor: pointer;
+}
+.lite-word-host nav[data-word-toc="true"] a[data-toc-target]:hover {
+  text-decoration: underline;
+}
 @media (max-width: 840px) {
-  .lite-word-host .lite-docx-wrapper {
+  .lite-word-host.word-layout-mobile .lite-docx-wrapper {
     padding: 4px 0 20px 0 !important;
     gap: 16px;
   }
-  .lite-word-host section.lite-docx {
+  .lite-word-host.word-layout-mobile section.lite-docx {
     width: 100% !important;
     min-width: 0 !important;
     padding: 24px 16px !important;
@@ -607,12 +696,40 @@ export function WordWorkspace({
   incomingRemotePatch,
 }: WordWorkspaceProps) {
   const isReadOnly = collabPermission === 'view';
-  const { onDownloadOriginalFile } = useWorkspaceSync();
+  const workspaceSync = useWorkspaceSync();
 
   const [wordEditMode, setWordEditMode] = useState<WordEditMode>(() =>
     resolveInitialWordEditMode(document, isReadOnly)
   );
-  const isEditingLocked = isReadOnly || wordEditMode === 'original';
+  const [isDocProtected, setIsDocProtected] = useState<boolean>(() =>
+    Boolean(document.wordProtected)
+  );
+  const isEditingLocked =
+    isReadOnly || wordEditMode === 'original' || isDocProtected;
+
+  const [wordDrawings, setWordDrawings] = useState<WordDrawingStroke[]>(
+    () => document.wordDrawings ?? []
+  );
+  const [activeDrawTool, setActiveDrawTool] = useState<
+    'pen' | 'highlighter' | 'eraser' | null
+  >(null);
+  const [drawColor, setDrawColor] = useState<string>('#185ABD');
+  const [drawWidth, setDrawWidth] = useState<number>(4);
+  const [customPageBg, setCustomPageBg] = useState<string>('');
+  const [pageBorderStyle, setPageBorderStyle] = useState<
+    'thin' | 'double' | 'word'
+  >('word');
+  const [activeWordStylePreset, setActiveWordStylePreset] =
+    useState<WordStylePresetId>('normal');
+  const [isFileInfoOpen, setIsFileInfoOpen] = useState<boolean>(false);
+  const [isFootnoteModalOpen, setIsFootnoteModalOpen] =
+    useState<boolean>(false);
+  const [isCitationModalOpen, setIsCitationModalOpen] =
+    useState<boolean>(false);
+  const [aiToolsModalTab, setAiToolsModalTab] = useState<
+    'summary' | 'grammar' | 'expand' | null
+  >(null);
+  const [imageResizeTick, setImageResizeTick] = useState<number>(0);
 
   const [paperTheme, setPaperTheme] =
     useState<WordPaperTheme>(defaultPaperTheme);
@@ -628,6 +745,7 @@ export function WordWorkspace({
   const [paragraphSpacingPx, setParagraphSpacingPx] = useState<number>(12);
   const [zoomPercent, setZoomPercent] = useState<number>(100);
   const [activeRibbonTab, setActiveRibbonTab] = useState<RibbonTab>('home');
+  const [isRibbonCollapsed, setIsRibbonCollapsed] = useState<boolean>(false);
 
   const [paperSize, setPaperSize] = useState<WordPaperSize>('A4');
   const [pageOrientation, setPageOrientation] =
@@ -680,8 +798,6 @@ export function WordWorkspace({
   const [editRevision, setEditRevision] = useState<number>(0);
   const [saveFeedback, setSaveFeedback] = useState<boolean>(false);
   const [isExporting, setIsExporting] = useState<boolean>(false);
-  const [isDownloadingOriginal, setIsDownloadingOriginal] =
-    useState<boolean>(false);
   const [exportNotice, setExportNotice] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [openPopover, setOpenPopover] = useState<ActivePopover>(null);
@@ -751,9 +867,16 @@ export function WordWorkspace({
   );
 
   useDocumentPinchZoom(scrollContainerRef, zoomPercent, setZoomPercent, {
-    min: 25,
-    max: 200,
-    disabled: isModalOpen || activeToolModal !== null,
+    min: 10,
+    max: 300,
+    disabled:
+      isModalOpen ||
+      activeToolModal !== null ||
+      isFileInfoOpen ||
+      isFootnoteModalOpen ||
+      isCitationModalOpen ||
+      aiToolsModalTab !== null ||
+      activeDrawTool !== null,
   });
 
   const basePaperWidthPx = isDocxPreviewRendered
@@ -761,17 +884,22 @@ export function WordWorkspace({
     : pageDimensions.widthPx;
 
   const handleFitToWidth = useCallback(() => {
-    if (containerWidth <= 0) {
+    const containerW = scrollContainerRef.current?.clientWidth ?? containerWidth;
+    if (containerW <= 0) {
       setZoomPercent(100);
       return;
     }
-    const available = Math.max(220, containerWidth - 36);
     const pct = Math.max(
-      25,
-      Math.min(200, Math.round((available / basePaperWidthPx) * 100))
+      10,
+      Math.min(300, Math.floor(((containerW - 24) / basePaperWidthPx) * 100))
     );
     setZoomPercent(pct);
   }, [basePaperWidthPx, containerWidth]);
+
+  const handleSelectPageLayout = useCallback((nextLayout: WordPageLayout) => {
+    setPageLayout(nextLayout);
+    saveStoredPageLayout(nextLayout);
+  }, []);
 
   const handleTogglePageLayout = useCallback(() => {
     setPageLayout((prev) => {
@@ -1032,18 +1160,21 @@ export function WordWorkspace({
       setActiveTableCell(null);
       setSelectedImageEl(null);
       setWordComments(document.wordComments ?? []);
+      setWordDrawings(document.wordDrawings ?? []);
+      setIsDocProtected(Boolean(document.wordProtected));
+      setActiveDrawTool(null);
+      setCustomPageBg('');
+      setIsFileInfoOpen(false);
+      setIsFootnoteModalOpen(false);
+      setIsCitationModalOpen(false);
+      setAiToolsModalTab(null);
       setHeaderText(document.title);
       setDocxRenderFailed(false);
 
       if (scrollContainerRef.current) {
         scrollContainerRef.current.scrollTop = 0;
       }
-    } else if (
-      hasNewRawBuffer &&
-      !isDirty &&
-      !document.hasLocalEdits &&
-      !hasLocalEditsSessionRef.current
-    ) {
+    } else if (hasNewRawBuffer && isReadOnlyRef.current) {
       setWordEditMode('original');
     }
 
@@ -1235,9 +1366,19 @@ export function WordWorkspace({
       pageCount: detectedPageCount,
       contentPreview: trimmedPreview || currentDoc.contentPreview,
       wordComments: wordComments.length > 0 ? wordComments : undefined,
+      wordDrawings: wordDrawings.length > 0 ? wordDrawings : undefined,
+      wordProtected: isDocProtected || undefined,
       hasLocalEdits: didEditLocally,
     };
-  }, [detectedPageCount, editRevision, isDirty, outlineEntries, wordComments]);
+  }, [
+    detectedPageCount,
+    editRevision,
+    isDirty,
+    isDocProtected,
+    outlineEntries,
+    wordComments,
+    wordDrawings,
+  ]);
 
   const handleSave = useCallback(() => {
     if (isReadOnly) {
@@ -1521,8 +1662,14 @@ export function WordWorkspace({
 
   const executeFormatCommand = useCallback(
     (command: string, value?: string) => {
-      if (isEditingLocked) {
+      if (isReadOnly || isDocProtected) {
         return;
+      }
+      if (wordEditMode === 'original') {
+        if (editorRef.current) {
+          editorRef.current.contentEditable = 'true';
+        }
+        setWordEditMode('edit');
       }
       restoreEditorSelection();
       try {
@@ -1549,12 +1696,21 @@ export function WordWorkspace({
       handleEditorMutation();
     },
     [
-      isEditingLocked,
+      isDocProtected,
+      isReadOnly,
+      wordEditMode,
       restoreEditorSelection,
       captureCurrentSelection,
       handleEditorMutation,
     ]
   );
+
+  // Auto-reset drawing tool when leaving Vẽ tab or entering Read/Protected mode
+  useEffect(() => {
+    if (activeRibbonTab !== 'draw' || isReadMode || isEditingLocked) {
+      setActiveDrawTool(null);
+    }
+  }, [activeRibbonTab, isEditingLocked, isReadMode]);
 
   const handleApplyBlockTag = (tag: BlockTag) => {
     executeFormatCommand('formatBlock', `<${tag}>`);
@@ -2094,36 +2250,8 @@ export function WordWorkspace({
     }
   };
 
-  const handleDownloadOriginal = async () => {
-    if (isDownloadingOriginal || isExporting) {
-      return;
-    }
-    setIsDownloadingOriginal(true);
-    setExportError(null);
-    setExportNotice(null);
-    try {
-      if (onDownloadOriginalFile) {
-        await onDownloadOriginalFile();
-        showExportNotice(
-          'Tệp nhị phân gốc ban đầu đã được xử lý tải xuống thiết bị.'
-        );
-      } else {
-        const result = await exportOriginalDocumentBinary(document);
-        showExportNotice(result.message);
-      }
-    } catch (err: unknown) {
-      showExportError(
-        err instanceof Error
-          ? err.message
-          : 'Không thể tải xuống bản gốc. Vui lòng thử lại.'
-      );
-    } finally {
-      setIsDownloadingOriginal(false);
-    }
-  };
-
   const handleExportDocx = async () => {
-    if (isExporting || isDownloadingOriginal) {
+    if (isExporting) {
       return;
     }
     setIsExporting(true);
@@ -2141,6 +2269,466 @@ export function WordWorkspace({
     } finally {
       setIsExporting(false);
     }
+  };
+
+  const handleSaveCopyDocx = async () => {
+    if (isExporting) return;
+    setIsExporting(true);
+    setExportError(null);
+    try {
+      const currentHtml = stripInjectedStylesFromHtml(
+        editorRef.current,
+        latestHtmlRef.current
+      );
+      const result = await exportWordToDocx(
+        `${document.title} (Bản sao)`,
+        currentHtml
+      );
+      showExportNotice(result.message);
+    } catch {
+      showExportError('Không thể lưu bản sao .docx.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleDownloadOriginalFromFileTab = async () => {
+    if (isExporting) return;
+    setIsExporting(true);
+    setExportError(null);
+    try {
+      if (workspaceSync.onDownloadOriginalFile) {
+        await workspaceSync.onDownloadOriginalFile();
+        showExportNotice('Đã tải xuống tệp .docx gốc ban đầu.');
+      } else if (document.rawArrayBuffer && document.rawArrayBuffer.byteLength > 0) {
+        const result = await exportOriginalDocumentBinary(document);
+        showExportNotice(result.message);
+      } else {
+        const currentHtml = stripInjectedStylesFromHtml(
+          editorRef.current,
+          latestHtmlRef.current
+        );
+        const result = await exportWordToDocx(document.title, currentHtml);
+        showExportNotice(result.message);
+      }
+    } catch {
+      showExportError('Không thể tải bản gốc .docx.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleExportPdfFromFileTab = async () => {
+    if (isExporting) return;
+    setIsExporting(true);
+    setExportError(null);
+    try {
+      const liveDoc = buildLiveDocument();
+      const { fileName } = await downloadDocumentAsPdf(liveDoc);
+      showExportNotice(`Đã xuất PDF: ${fileName}`);
+    } catch {
+      showExportError('Không thể xuất PDF. Vui lòng thử lại.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleClipboardPaste = async () => {
+    if (isReadOnly || isDocProtected) return;
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        executeFormatCommand('insertText', text);
+        return;
+      }
+    } catch {
+      // Fallback to execCommand below
+    }
+    executeFormatCommand('paste');
+  };
+
+  const handleClipboardCopy = async () => {
+    restoreEditorSelection();
+    const selectedText = window.document.getSelection()?.toString() ?? '';
+    try {
+      window.document.execCommand('copy');
+    } catch {
+      // Ignore execCommand error
+    }
+    if (selectedText) {
+      try {
+        await navigator.clipboard.writeText(selectedText);
+      } catch {
+        // Ignore clipboard permission denial
+      }
+      showExportNotice('Đã sao chép đoạn văn bản.');
+    }
+  };
+
+  const handleClipboardCut = async () => {
+    if (isReadOnly || isDocProtected) return;
+    restoreEditorSelection();
+    const selectedText = window.document.getSelection()?.toString() ?? '';
+    if (selectedText) {
+      try {
+        await navigator.clipboard.writeText(selectedText);
+      } catch {
+        // Ignore clipboard permission denial
+      }
+    }
+    executeFormatCommand('cut');
+  };
+
+  const handleInsertMultilevelList = () => {
+    executeFormatCommand(
+      'insertHTML',
+      `<ol data-multilevel="true"><li>Mục chính 1<ol><li>Mục con 1.1</li><li>Mục con 1.2</li></ol></li><li>Mục chính 2</li></ol><p><br></p>`
+    );
+  };
+
+  const getActiveBlockElement = (): HTMLElement | null => {
+    const editorEl = editorRef.current;
+    if (!editorEl) return null;
+    restoreEditorSelection();
+    const selection = window.document.getSelection();
+    let current: Node | null =
+      selection && selection.rangeCount > 0 ? selection.anchorNode : null;
+    while (current && current !== editorEl) {
+      if (current instanceof HTMLElement) {
+        const tag = current.tagName.toLowerCase();
+        if (
+          tag === 'p' ||
+          tag === 'h1' ||
+          tag === 'h2' ||
+          tag === 'h3' ||
+          tag === 'li' ||
+          tag === 'blockquote'
+        ) {
+          return current;
+        }
+      }
+      current = current.parentNode;
+    }
+    return null;
+  };
+
+  const handleApplyParagraphShading = (bgColor: string) => {
+    setOpenPopover(null);
+    if (isReadOnly || isDocProtected) return;
+    if (wordEditMode === 'original' && editorRef.current) {
+      editorRef.current.contentEditable = 'true';
+      setWordEditMode('edit');
+    }
+    const blockEl = getActiveBlockElement();
+    if (!blockEl) {
+      showExportNotice('Hãy đặt con trỏ vào một đoạn văn bản để tô nền.');
+      return;
+    }
+    blockEl.style.backgroundColor = bgColor;
+    if (bgColor) {
+      blockEl.style.padding = blockEl.style.padding || '6px 10px';
+      blockEl.style.borderRadius = blockEl.style.borderRadius || '6px';
+    }
+    handleEditorMutation();
+  };
+
+  const handleApplyParagraphBorder = (
+    kind: 'box' | 'bottom' | 'left' | 'none'
+  ) => {
+    setOpenPopover(null);
+    if (isReadOnly || isDocProtected) return;
+    if (wordEditMode === 'original' && editorRef.current) {
+      editorRef.current.contentEditable = 'true';
+      setWordEditMode('edit');
+    }
+    const blockEl = getActiveBlockElement();
+    if (!blockEl) {
+      showExportNotice('Hãy đặt con trỏ vào một đoạn văn bản để kẻ viền.');
+      return;
+    }
+    blockEl.style.border = '';
+    blockEl.style.borderBottom = '';
+    blockEl.style.borderLeft = '';
+    if (kind === 'box') {
+      blockEl.style.border = '1px solid #94A3B8';
+      blockEl.style.padding = '8px 12px';
+      blockEl.style.borderRadius = '6px';
+    } else if (kind === 'bottom') {
+      blockEl.style.borderBottom = '2px solid #185ABD';
+      blockEl.style.paddingBottom = '4px';
+    } else if (kind === 'left') {
+      blockEl.style.borderLeft = '4px solid #185ABD';
+      blockEl.style.paddingLeft = '12px';
+    }
+    handleEditorMutation();
+  };
+
+  const handleApplyWordStylePreset = (preset: WordStylePresetId) => {
+    setActiveWordStylePreset(preset);
+    if (isReadOnly || isDocProtected) return;
+    if (preset === 'normal') {
+      executeFormatCommand('formatBlock', '<p>');
+    } else if (preset === 'no_spacing') {
+      executeFormatCommand('formatBlock', '<p>');
+      const blockEl = getActiveBlockElement();
+      if (blockEl) {
+        blockEl.style.marginBottom = '0px';
+        blockEl.style.lineHeight = '1.15';
+        handleEditorMutation();
+      }
+    } else if (preset === 'title') {
+      executeFormatCommand('formatBlock', '<h1>');
+      const blockEl = getActiveBlockElement();
+      if (blockEl) {
+        blockEl.style.fontSize = '2em';
+        blockEl.style.color = '#185ABD';
+        handleEditorMutation();
+      }
+    } else if (preset === 'h1') {
+      executeFormatCommand('formatBlock', '<h1>');
+    } else if (preset === 'h2') {
+      executeFormatCommand('formatBlock', '<h2>');
+    }
+  };
+
+  const handleGenerateOrUpdateToc = () => {
+    const editorEl = editorRef.current;
+    if (!editorEl || isReadOnly || isDocProtected) return;
+    if (wordEditMode === 'original') {
+      editorEl.contentEditable = 'true';
+      setWordEditMode('edit');
+    }
+    const headings = Array.from(
+      editorEl.querySelectorAll<HTMLElement>('h1, h2, h3')
+    ).filter((node) => !node.closest('nav[data-word-toc="true"]'));
+
+    if (headings.length === 0) {
+      showExportNotice(
+        'Chưa có Tiêu đề 1 / 2 / 3 (Heading). Hãy định dạng tiêu đề chương trước khi tạo Mục lục.'
+      );
+      return;
+    }
+
+    const usedIds = new Set<string>();
+    const itemsHtml: string[] = [];
+    headings.forEach((heading, idx) => {
+      const text = (heading.textContent ?? '').replace(/\s+/g, ' ').trim();
+      if (!text) return;
+      let id = heading.id.trim();
+      if (!id || usedIds.has(id)) {
+        id = `heading-${idx + 1}`;
+        while (usedIds.has(id)) {
+          id = `${id}-x`;
+        }
+        heading.id = id;
+      }
+      usedIds.add(id);
+      const tag = heading.tagName.toLowerCase();
+      const padLeft = tag === 'h1' ? 0 : tag === 'h2' ? 16 : 32;
+      itemsHtml.push(
+        `<li style="margin:3px 0;padding-left:${padLeft}px;"><a href="#${escapeHtml(id)}" data-toc-target="${escapeHtml(id)}">${escapeHtml(text)}</a></li>`
+      );
+    });
+
+    const existingToc = editorEl.querySelector('nav[data-word-toc="true"]');
+    const tocEl = window.document.createElement('nav');
+    tocEl.dataset.wordToc = 'true';
+    tocEl.setAttribute('aria-label', 'Mục lục tài liệu');
+    tocEl.style.border = '1px solid #CBD5E1';
+    tocEl.style.borderRadius = '10px';
+    tocEl.style.background = '#F8FAFC';
+    tocEl.style.padding = '14px 18px';
+    tocEl.style.marginBottom = '18px';
+    tocEl.innerHTML = `<div style="font-weight:700;color:#185ABD;margin-bottom:8px;font-size:1.05em;">MỤC LỤC</div><ul style="list-style:none;padding:0;margin:0;">${itemsHtml.join('')}</ul>`;
+
+    if (existingToc && existingToc.parentNode) {
+      existingToc.parentNode.replaceChild(tocEl, existingToc);
+    } else {
+      const targetRoot = editorEl.querySelector('section.lite-docx') ?? editorEl;
+      targetRoot.insertBefore(tocEl, targetRoot.firstChild);
+    }
+    handleEditorMutation();
+    showExportNotice(`Đã tạo/cập nhật Mục lục tự động (${itemsHtml.length} mục).`);
+  };
+
+  const getNextFootnoteIndex = (): number => {
+    const editorEl = editorRef.current;
+    if (!editorEl) return 1;
+    return editorEl.querySelectorAll('sup[data-word-footnote-ref]').length + 1;
+  };
+
+  const getNextBibNumber = (): number => {
+    const editorEl = editorRef.current;
+    if (!editorEl) return 1;
+    return (
+      editorEl.querySelectorAll('section[data-word-bibliography="true"] li')
+        .length + 1
+    );
+  };
+
+  const handleInsertFootnote = (footnoteText: string) => {
+    const editorEl = editorRef.current;
+    if (!editorEl || isReadOnly || isDocProtected) return;
+    const idx = getNextFootnoteIndex();
+    executeFormatCommand(
+      'insertHTML',
+      `<sup data-word-footnote-ref="${idx}"><a href="#word-fn-${idx}" style="color:#185ABD;font-weight:700;">[${idx}]</a></sup>&nbsp;`
+    );
+
+    let fnSection = editorEl.querySelector<HTMLElement>(
+      'section[data-word-footnotes="true"]'
+    );
+    const targetRoot = editorEl.querySelector('section.lite-docx') ?? editorEl;
+    if (!fnSection) {
+      fnSection = window.document.createElement('section');
+      fnSection.dataset.wordFootnotes = 'true';
+      fnSection.style.marginTop = '28px';
+      fnSection.style.paddingTop = '12px';
+      fnSection.style.borderTop = '1px solid #CBD5E1';
+      fnSection.style.fontSize = '0.88em';
+      fnSection.innerHTML =
+        '<div style="font-weight:700;color:#185ABD;margin-bottom:6px;">Chú thích cuối trang</div><ol style="margin:0;padding-left:20px;"></ol>';
+      targetRoot.appendChild(fnSection);
+    }
+    const ol = fnSection.querySelector('ol');
+    if (ol) {
+      const li = window.document.createElement('li');
+      li.id = `word-fn-${idx}`;
+      li.textContent = footnoteText;
+      ol.appendChild(li);
+    }
+    handleEditorMutation();
+  };
+
+  const handleInsertCitation = (payload: {
+    inlineHtml: string;
+    bibliographyHtml: string;
+  }) => {
+    const editorEl = editorRef.current;
+    if (!editorEl || isReadOnly || isDocProtected) return;
+    executeFormatCommand('insertHTML', `${payload.inlineHtml}&nbsp;`);
+
+    let bibSection = editorEl.querySelector<HTMLElement>(
+      'section[data-word-bibliography="true"]'
+    );
+    const targetRoot = editorEl.querySelector('section.lite-docx') ?? editorEl;
+    if (!bibSection) {
+      bibSection = window.document.createElement('section');
+      bibSection.dataset.wordBibliography = 'true';
+      bibSection.style.marginTop = '28px';
+      bibSection.style.paddingTop = '12px';
+      bibSection.style.borderTop = '1px solid #CBD5E1';
+      bibSection.style.fontSize = '0.92em';
+      bibSection.innerHTML =
+        '<div style="font-weight:700;color:#185ABD;margin-bottom:6px;">Tài liệu tham khảo</div><ul style="margin:0;padding-left:18px;space-y:4px;"></ul>';
+      targetRoot.appendChild(bibSection);
+    }
+    const ul = bibSection.querySelector('ul');
+    if (ul) {
+      const li = window.document.createElement('li');
+      li.innerHTML = payload.bibliographyHtml;
+      ul.appendChild(li);
+    }
+    handleEditorMutation();
+  };
+
+  const handleApplyAiGrammarFixes = (
+    fixes: Array<{ find: string; replace: string }>
+  ): number => {
+    const editorEl = editorRef.current;
+    if (!editorEl || isReadOnly || isDocProtected || fixes.length === 0) {
+      return 0;
+    }
+    if (wordEditMode === 'original') {
+      editorEl.contentEditable = 'true';
+      setWordEditMode('edit');
+    }
+    const walker = window.document.createTreeWalker(
+      editorEl,
+      NodeFilter.SHOW_TEXT,
+      {
+        acceptNode: (node) => {
+          const parent = node.parentElement;
+          if (!parent || parent.closest('style, script')) {
+            return NodeFilter.FILTER_REJECT;
+          }
+          return node.nodeValue && node.nodeValue.length > 0
+            ? NodeFilter.FILTER_ACCEPT
+            : NodeFilter.FILTER_REJECT;
+        },
+      }
+    );
+
+    const textNodes: Text[] = [];
+    let current = walker.nextNode();
+    while (current) {
+      if (current instanceof Text) {
+        textNodes.push(current);
+      }
+      current = walker.nextNode();
+    }
+
+    let appliedCount = 0;
+    for (const node of textNodes) {
+      let val = node.nodeValue ?? '';
+      let changed = false;
+      for (const fix of fixes) {
+        if (fix.find && val.includes(fix.find)) {
+          val = val.split(fix.find).join(fix.replace);
+          appliedCount += 1;
+          changed = true;
+        }
+      }
+      if (changed) {
+        node.nodeValue = val;
+      }
+    }
+
+    if (appliedCount > 0) {
+      handleEditorMutation();
+    }
+    return appliedCount;
+  };
+
+  const handleToggleDocProtect = () => {
+    if (isReadOnly) return;
+    setIsDocProtected((prev) => {
+      const next = !prev;
+      if (next) {
+        setActiveDrawTool(null);
+      }
+      return next;
+    });
+    setIsDirty(true);
+    setEditRevision((prev) => prev + 1);
+  };
+
+  const handleStartImageCornerResize = (
+    event: ReactMouseEvent<HTMLButtonElement>
+  ) => {
+    if (!selectedImageEl || isEditingLocked) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startW = selectedImageEl.getBoundingClientRect().width / zoomScale;
+
+    const handleMove = (moveEvent: MouseEvent) => {
+      const deltaX = (moveEvent.clientX - startX) / zoomScale;
+      const nextW = Math.max(48, Math.round(startW + deltaX));
+      selectedImageEl.style.width = `${nextW}px`;
+      selectedImageEl.style.maxWidth = '100%';
+      selectedImageEl.style.height = 'auto';
+      setImageResizeTick((t) => t + 1);
+    };
+
+    const handleUp = () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+      handleEditorMutation();
+    };
+
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
   };
 
   const handleDecreaseFont = () => {
@@ -2224,10 +2812,10 @@ export function WordWorkspace({
       active
         ? isDark
           ? 'bg-[#185ABD]/35 text-blue-100 ring-1 ring-blue-400/50'
-          : 'bg-[#185ABD]/15 text-[#185ABD] ring-1 ring-[#185ABD]/35'
+          : 'bg-[#EEF4FF] text-[#185ABD] ring-1 ring-[#185ABD]/25'
         : isDark
           ? 'text-slate-300 hover:bg-white/[0.08] hover:text-white'
-          : 'text-slate-700 hover:bg-black/[0.05] hover:text-slate-950'
+          : 'text-slate-700 hover:bg-slate-100 hover:text-slate-950'
     }`;
 
   const renderOutlineContent = (variant: 'desktop' | 'mobile') => (
@@ -2364,8 +2952,11 @@ export function WordWorkspace({
       ? Number(((fontSize * zoomPercent) / 100).toFixed(1))
       : fontSize;
 
+  const effectivePageHexBg =
+    customPageBg && paperTheme !== 'dark' ? customPageBg : themeStyle.pageHexBg;
+
   const hostCssVars: CSSProperties = {
-    '--lite-doc-page-bg': themeStyle.pageHexBg,
+    '--lite-doc-page-bg': effectivePageHexBg,
     '--lite-doc-page-text': themeStyle.pageHexText,
     '--lite-doc-font-family': fontStack,
     '--lite-doc-line-height': String(lineHeight),
@@ -2388,7 +2979,12 @@ export function WordWorkspace({
       {/* Floating Context Selection Mini-Toolbar */}
       <FloatingSelectionToolbar
         containerRef={editorRef}
-        disabled={isEditingLocked || isRenderingDocx || isModalOpen}
+        disabled={
+          isEditingLocked ||
+          isRenderingDocx ||
+          isModalOpen ||
+          activeDrawTool !== null
+        }
         activeState={{
           block: formatState.block,
           bold: formatState.bold,
@@ -2417,236 +3013,102 @@ export function WordWorkspace({
       {/* Shared Top Workspace Header (hidden in distraction-free Read Mode) */}
       {!isReadMode && (
         <WorkspaceTopBar
-        document={document}
-        theme={isDark ? 'dark' : 'light'}
-        onBackHome={onBackHome}
-        onShare={() => onOpenModal('share', buildLiveDocument())}
-        onRenameTitle={isReadOnly ? undefined : handleRenameTitle}
-        collaborators={collaborators}
-        selfSessionId={selfSessionId}
-        collabPermission={collabPermission}
-        leftExtra={
-          <>
-            {/* Mobile Outline Drawer Trigger */}
-            <button
-              type="button"
-              onClick={() => setIsMobileDrawerOpen(true)}
-              aria-label="Mở mục lục tự động"
-              title="Mục lục tự động"
-              className={`md:hidden inline-flex items-center justify-center min-h-[38px] min-w-[38px] rounded-xl border transition-colors ${
-                isDark
-                  ? 'bg-white/[0.06] hover:bg-white/[0.12] border-white/10 text-slate-200'
-                  : 'bg-[#FAF8F5] hover:bg-[#EFECE6] border-[#E7E2DA] text-slate-700'
-              }`}
-            >
-              <List className="h-4 w-4" />
-            </button>
-
-            {/* Desktop Outline Sidebar Collapse/Expand Trigger */}
-            <button
-              type="button"
-              onClick={() => setIsDesktopSidebarOpen((prev) => !prev)}
-              aria-label={
-                isDesktopSidebarOpen
-                  ? 'Thu gọn cột Mục lục'
-                  : 'Mở rộng cột Mục lục'
-              }
-              title={
-                isDesktopSidebarOpen ? 'Thu gọn Mục lục' : 'Mở rộng Mục lục'
-              }
-              className={`hidden md:inline-flex items-center justify-center h-9 w-9 rounded-xl border transition-colors ${
-                isDark
-                  ? 'bg-white/[0.06] hover:bg-white/[0.12] border-white/10 text-slate-200'
-                  : 'bg-[#FAF8F5] hover:bg-[#EFECE6] border-[#E7E2DA] text-slate-700'
-              }`}
-            >
-              {isDesktopSidebarOpen ? (
-                <PanelLeftClose className="h-4 w-4" />
-              ) : (
-                <PanelLeftOpen className="h-4 w-4" />
-              )}
-            </button>
-          </>
-        }
-        toolbar={
-          <>
-            {/* Mode Switcher: Xem nguyên bản <-> Chỉnh sửa nhanh */}
-            <div
-              role="group"
-              aria-label="Chế độ xem và chỉnh sửa Word"
-              className={`shrink-0 inline-flex items-center p-0.5 rounded-xl border ${
-                isDark
-                  ? 'bg-white/[0.04] border-white/10'
-                  : 'bg-[#F5F2EC] border-[#E5E0D8]'
-              }`}
-            >
-              <button
-                type="button"
-                onMouseDown={handlePreventMouseDown}
-                onClick={() => handleSwitchWordMode('original')}
-                aria-pressed={wordEditMode === 'original'}
-                title="Xem nguyên bản (khóa sửa nhầm, giữ chuẩn định dạng gốc)"
-                className={`inline-flex items-center gap-1 min-h-[30px] px-2 sm:px-2.5 rounded-[10px] text-[11px] sm:text-xs font-semibold transition-all whitespace-nowrap ${
-                  wordEditMode === 'original'
-                    ? isDark
-                      ? 'bg-indigo-500/25 text-indigo-100 shadow-sm ring-1 ring-indigo-400/40'
-                      : 'bg-white text-indigo-700 shadow-sm ring-1 ring-indigo-200/80'
-                    : isDark
-                      ? 'text-slate-300 hover:text-white'
-                      : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <Eye className="h-3.5 w-3.5 shrink-0" />
-                <span>Xem nguyên bản</span>
-              </button>
-              <button
-                type="button"
-                disabled={isReadOnly}
-                onMouseDown={handlePreventMouseDown}
-                onClick={() => handleSwitchWordMode('edit')}
-                aria-pressed={wordEditMode === 'edit'}
-                title={
-                  isReadOnly
-                    ? 'Tài liệu đang ở chế độ chỉ xem'
-                    : 'Chuyển sang Chỉnh sửa nhanh'
-                }
-                className={`inline-flex items-center gap-1 min-h-[30px] px-2 sm:px-2.5 rounded-[10px] text-[11px] sm:text-xs font-semibold transition-all whitespace-nowrap disabled:opacity-45 disabled:cursor-not-allowed ${
-                  wordEditMode === 'edit' && !isReadOnly
-                    ? isDark
-                      ? 'bg-indigo-500/25 text-indigo-100 shadow-sm ring-1 ring-indigo-400/40'
-                      : 'bg-white text-indigo-700 shadow-sm ring-1 ring-indigo-200/80'
-                    : isDark
-                      ? 'text-slate-300 hover:text-white'
-                      : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <Pencil className="h-3.5 w-3.5 shrink-0" />
-                <span>Chỉnh sửa nhanh</span>
-              </button>
-            </div>
-
-            {/* Quick Page Layout Toggle: Bố cục In <-> Xem di động */}
-            <button
-              type="button"
-              onMouseDown={handlePreventMouseDown}
-              onClick={handleTogglePageLayout}
-              aria-pressed={pageLayout === 'mobile'}
-              aria-label={
+          document={document}
+          theme={isDark ? 'dark' : 'light'}
+          onBackHome={onBackHome}
+          onShare={() => onOpenModal('share', buildLiveDocument())}
+          onRenameTitle={isReadOnly ? undefined : handleRenameTitle}
+          collaborators={collaborators}
+          selfSessionId={selfSessionId}
+          collabPermission={collabPermission}
+          modeSwitch={{
+            visible: Boolean(
+              (document.rawArrayBuffer &&
+                document.rawArrayBuffer.byteLength > 0) ||
+                document.isUploaded ||
+                document.storagePath ||
+                document.r2ObjectKey
+            ),
+            mode: wordEditMode,
+            onChange: handleSwitchWordMode,
+            editDisabled: isReadOnly,
+          }}
+          onSave={isReadOnly ? undefined : handleSave}
+          isSaved={saveFeedback}
+          isDirty={isDirty}
+          onDownloadEdited={handleExportDocx}
+          extraMenuItems={[
+            {
+              id: 'toggle-page-layout',
+              label:
                 pageLayout === 'print'
-                  ? 'Đang ở Bố cục In — bấm để chuyển sang Xem di động'
-                  : 'Đang ở Xem di động — bấm để chuyển sang Bố cục In'
-              }
-              title={
-                pageLayout === 'print'
-                  ? 'Bố cục In (bấm để chuyển Xem di động)'
-                  : 'Xem di động (bấm để chuyển Bố cục In)'
-              }
-              className={`shrink-0 inline-flex items-center justify-center gap-1.5 min-h-[36px] px-2 sm:px-2.5 rounded-xl text-xs font-semibold border transition-all whitespace-nowrap ${
-                pageLayout === 'mobile'
-                  ? isDark
-                    ? 'bg-blue-500/20 border-blue-400/45 text-blue-200'
-                    : 'bg-blue-50 border-blue-300 text-blue-700'
-                  : isDark
-                    ? 'bg-white/[0.06] hover:bg-white/[0.12] border-white/10 text-slate-200'
-                    : 'bg-[#FAF8F5] hover:bg-[#EFECE6] border-[#E5E0D8] text-slate-700'
-              }`}
-            >
-              {pageLayout === 'print' ? (
-                <ScanText className="h-3.5 w-3.5 shrink-0" />
-              ) : (
-                <Smartphone className="h-3.5 w-3.5 shrink-0" />
-              )}
-              <span className="text-[11px] sm:text-xs">
-                {pageLayout === 'print' ? 'Bố cục In' : 'Xem di động'}
-              </span>
-            </button>
-
-            {/* Save Changes Button (disabled in read-only share mode) */}
-            {!isReadOnly && (
-              <button
-                type="button"
-                onClick={handleSave}
-                aria-label="Lưu thay đổi tài liệu Word"
-                title="Lưu thay đổi (Ctrl+S)"
-                className={`shrink-0 inline-flex items-center justify-center gap-1.5 min-h-[36px] px-2.5 sm:px-3 rounded-xl text-xs font-semibold border transition-all whitespace-nowrap ${
-                  saveFeedback
-                    ? isDark
-                      ? 'bg-emerald-500/20 border-emerald-400/50 text-emerald-200'
-                      : 'bg-emerald-50 border-emerald-300 text-emerald-700'
-                    : isDirty
-                      ? 'bg-indigo-600 hover:bg-indigo-700 border-indigo-600 text-white shadow-sm'
-                      : isDark
-                        ? 'bg-white/[0.06] hover:bg-white/[0.12] border-white/10 text-slate-200'
-                        : 'bg-[#FAF8F5] hover:bg-[#EFECE6] border-[#E5E0D8] text-slate-700'
-                }`}
-              >
-                {saveFeedback ? (
-                  <>
-                    <Check className="h-3.5 w-3.5 shrink-0" />
-                    <span className="hidden sm:inline">Đã lưu</span>
-                  </>
+                  ? 'Chuyển sang Xem di động'
+                  : 'Chuyển sang Bố cục In',
+              icon:
+                pageLayout === 'print' ? (
+                  <Smartphone className="h-4 w-4 shrink-0 text-[#185ABD]" />
                 ) : (
-                  <>
-                    <span className="relative flex items-center justify-center">
-                      <Save className="h-3.5 w-3.5 shrink-0" />
-                      {isDirty && (
-                        <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-amber-400 ring-1 ring-indigo-600" />
-                      )}
-                    </span>
-                    <span className="hidden sm:inline">Lưu thay đổi</span>
-                  </>
+                  <ScanText className="h-4 w-4 shrink-0 text-[#185ABD]" />
+                ),
+              onClick: handleTogglePageLayout,
+            },
+            {
+              id: 'read-mode',
+              label: 'Chế độ đọc tập trung',
+              icon: <Maximize2 className="h-4 w-4 shrink-0 text-[#185ABD]" />,
+              onClick: () => setIsReadMode(true),
+            },
+            {
+              id: 'word-count',
+              label: `Thống kê từ (${wordCount.toLocaleString('vi-VN')} từ)`,
+              icon: <BookOpen className="h-4 w-4 shrink-0 text-[#185ABD]" />,
+              onClick: () => setActiveToolModal('word_count'),
+            },
+          ]}
+          leftExtra={
+            <>
+              {/* Mobile Outline Drawer Trigger */}
+              <button
+                type="button"
+                onClick={() => setIsMobileDrawerOpen(true)}
+                aria-label="Mở mục lục tự động"
+                title="Mục lục tự động"
+                className={`md:hidden inline-flex items-center justify-center min-h-[38px] min-w-[38px] rounded-xl border transition-colors ${
+                  isDark
+                    ? 'bg-white/[0.06] hover:bg-white/[0.12] border-white/10 text-slate-200'
+                    : 'bg-[#FAF8F5] hover:bg-[#EFECE6] border-[#E7E2DA] text-slate-700'
+                }`}
+              >
+                <List className="h-4 w-4" />
+              </button>
+
+              {/* Desktop Outline Sidebar Collapse/Expand Trigger */}
+              <button
+                type="button"
+                onClick={() => setIsDesktopSidebarOpen((prev) => !prev)}
+                aria-label={
+                  isDesktopSidebarOpen
+                    ? 'Thu gọn cột Mục lục'
+                    : 'Mở rộng cột Mục lục'
+                }
+                title={
+                  isDesktopSidebarOpen ? 'Thu gọn Mục lục' : 'Mở rộng Mục lục'
+                }
+                className={`hidden md:inline-flex items-center justify-center h-9 w-9 rounded-xl border transition-colors ${
+                  isDark
+                    ? 'bg-white/[0.06] hover:bg-white/[0.12] border-white/10 text-slate-200'
+                    : 'bg-[#FAF8F5] hover:bg-[#EFECE6] border-[#E7E2DA] text-slate-700'
+                }`}
+              >
+                {isDesktopSidebarOpen ? (
+                  <PanelLeftClose className="h-4 w-4" />
+                ) : (
+                  <PanelLeftOpen className="h-4 w-4" />
                 )}
               </button>
-            )}
-
-            {/* Download 100% Original File Button */}
-            <button
-              type="button"
-              onClick={() => void handleDownloadOriginal()}
-              disabled={isDownloadingOriginal || isExporting}
-              aria-label="Tải xuống bản gốc"
-              title="Tải xuống bản gốc ban đầu"
-              className={`shrink-0 inline-flex items-center justify-center gap-1.5 min-h-[36px] px-2.5 sm:px-3 rounded-xl text-xs font-semibold border transition-colors whitespace-nowrap disabled:opacity-60 disabled:cursor-wait ${
-                isDark
-                  ? 'bg-sky-500/15 hover:bg-sky-500/25 border-sky-400/35 text-sky-200'
-                  : 'bg-sky-50 hover:bg-sky-100 border-sky-200/80 text-sky-700'
-              }`}
-            >
-              {isDownloadingOriginal ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
-              ) : (
-                <FileDown className="h-3.5 w-3.5 shrink-0" />
-              )}
-              <span className="hidden sm:inline">
-                {isDownloadingOriginal ? 'Đang tải...' : 'Tải xuống bản gốc'}
-              </span>
-            </button>
-
-            {/* Export Real .docx Button */}
-            <button
-              type="button"
-              onClick={() => void handleExportDocx()}
-              disabled={isExporting || isDownloadingOriginal}
-              aria-label="Tải xuống tệp Word .docx"
-              title="Tải xuống tệp .docx (bản chỉnh sửa)"
-              className={`shrink-0 inline-flex items-center justify-center gap-1.5 min-h-[36px] px-2.5 sm:px-3 rounded-xl text-xs font-semibold border transition-colors whitespace-nowrap disabled:opacity-60 disabled:cursor-wait ${
-                isDark
-                  ? 'bg-blue-500/20 hover:bg-blue-500/30 border-blue-400/35 text-blue-200'
-                  : 'bg-blue-50 hover:bg-blue-100 border-blue-200/80 text-blue-700'
-              }`}
-            >
-              {isExporting ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
-              ) : (
-                <Download className="h-3.5 w-3.5 shrink-0" />
-              )}
-              <span className="hidden md:inline">
-                {isExporting ? 'Đang xuất...' : 'Tải xuống .docx'}
-              </span>
-            </button>
-          </>
-        }
-      />
+            </>
+          }
+        />
       )}
 
       {/* Hidden local image input for Insert -> Image */}
@@ -2658,22 +3120,26 @@ export function WordWorkspace({
         className="hidden"
       />
 
-      {/* Unified Horizontal-Scrollable Microsoft Word Ribbon (#185ABD) */}
+      {/* Microsoft Word 365 Fluent Ribbon (#185ABD) with Collapse Toggle */}
       {!isReadMode && (
         <div
           ref={ribbonRef}
-          className={`shrink-0 border-b px-2.5 sm:px-4 py-1.5 z-20 transition-colors duration-200 relative ${themeStyle.ribbonBg} ${themeStyle.ribbonBorder}`}
+          className={`shrink-0 border-b z-20 transition-colors duration-200 relative ${themeStyle.ribbonBg} ${themeStyle.ribbonBorder}`}
         >
-          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 min-w-0">
-            {/* 1. Primary 4-Tab Ribbon Switcher */}
+          {/* Tab Strip Row */}
+          <div
+            className={`flex items-center justify-between gap-2 px-2.5 sm:px-4 border-b ${
+              isDark
+                ? 'border-white/10'
+                : paperTheme === 'sepia'
+                  ? 'border-[#E4D8C5]'
+                  : 'border-slate-200/80'
+            }`}
+          >
             <div
               role="tablist"
               aria-label="Chọn phần công cụ Word"
-              className={`inline-flex items-center gap-0.5 p-0.5 rounded-xl border shrink-0 ${
-                isDark
-                  ? 'bg-[#1E2534] border-white/10'
-                  : 'bg-[#F1F5FA] border-[#D8E2F0]'
-              }`}
+              className="flex items-center gap-1 overflow-x-auto no-scrollbar min-w-0"
             >
               {RIBBON_TABS.map((tab) => {
                 const isSelected = activeRibbonTab === tab.key;
@@ -2684,422 +3150,746 @@ export function WordWorkspace({
                     role="tab"
                     aria-selected={isSelected}
                     onMouseDown={handlePreventMouseDown}
-                    onClick={() => setActiveRibbonTab(tab.key)}
-                    className={`min-h-[28px] px-2.5 rounded-lg text-xs font-semibold transition-all whitespace-nowrap ${
+                    onClick={() => {
+                      if (isSelected && isRibbonCollapsed) {
+                        setIsRibbonCollapsed(false);
+                      } else {
+                        setActiveRibbonTab(tab.key);
+                        if (isRibbonCollapsed) {
+                          setIsRibbonCollapsed(false);
+                        }
+                      }
+                    }}
+                    className={`relative px-3 py-2 text-xs transition-colors whitespace-nowrap shrink-0 ${
                       isSelected
-                        ? 'bg-[#185ABD] text-white shadow-sm'
+                        ? isDark
+                          ? 'text-blue-300 font-semibold'
+                          : 'text-[#185ABD] font-semibold'
                         : isDark
-                          ? 'text-slate-300 hover:text-white'
-                          : 'text-slate-700 hover:text-[#185ABD]'
+                          ? 'text-slate-300 hover:text-white font-medium'
+                          : 'text-slate-600 hover:text-[#185ABD] font-medium'
                     }`}
                   >
-                    {tab.label}
+                    <span>{tab.label}</span>
+                    {isSelected && (
+                      <span
+                        aria-hidden="true"
+                        className="absolute inset-x-2 bottom-0 h-[2px] rounded-full bg-[#185ABD]"
+                      />
+                    )}
                   </button>
                 );
               })}
             </div>
 
-            <span
-              aria-hidden="true"
-              className={`h-5 w-px mx-0.5 shrink-0 ${
-                isDark ? 'bg-white/10' : 'bg-[#E6E2DA]'
-              }`}
-            />
-
-            {isReadOnly ? (
-              <span
-                className={`shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border ${
-                  isDark
-                    ? 'bg-amber-500/15 border-amber-400/30 text-amber-200'
-                    : 'bg-amber-50 border-amber-200 text-amber-800'
-                }`}
-              >
-                Chế độ chỉ xem
-              </span>
-            ) : wordEditMode === 'original' ? (
-              <div
-                className={`shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold border ${
-                  isDark
-                    ? 'bg-blue-500/15 border-blue-400/30 text-blue-200'
-                    : 'bg-blue-50 border-blue-200 text-[#185ABD]'
-                }`}
-              >
-                <Lock className="h-3 w-3 shrink-0" />
-                <span>Xem nguyên bản (khóa sửa)</span>
+            <div className="flex items-center gap-1.5 shrink-0 py-1">
+              {isReadOnly ? (
+                <span
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold border ${
+                    isDark
+                      ? 'bg-amber-500/15 border-amber-400/30 text-amber-200'
+                      : 'bg-amber-50 border-amber-200 text-amber-800'
+                  }`}
+                >
+                  Chỉ xem
+                </span>
+              ) : wordEditMode === 'original' ? (
                 <button
                   type="button"
                   onClick={() => handleSwitchWordMode('edit')}
-                  className="underline underline-offset-2 font-bold hover:opacity-80"
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold border transition-colors ${
+                    isDark
+                      ? 'bg-blue-500/15 border-blue-400/30 text-blue-200 hover:bg-blue-500/25'
+                      : 'bg-[#EEF4FF] border-[#185ABD]/25 text-[#185ABD] hover:bg-blue-100/70'
+                  }`}
                 >
-                  Chỉnh sửa nhanh
+                  <Lock className="h-3 w-3 shrink-0" />
+                  <span className="hidden sm:inline">Bản gốc ·</span>
+                  <span className="underline underline-offset-2">Chỉnh sửa</span>
                 </button>
-              </div>
-            ) : null}
+              ) : null}
 
-            {/* TAB 1: TRANG ĐẦU (HOME) */}
-            {activeRibbonTab === 'home' && (
-              <fieldset
-                disabled={isEditingLocked}
-                className={`flex items-center gap-1 min-w-0 border-0 p-0 m-0 shrink-0 ${
-                  isEditingLocked ? 'opacity-45 pointer-events-none' : ''
+              <button
+                type="button"
+                onMouseDown={handlePreventMouseDown}
+                onClick={() => setIsRibbonCollapsed((prev) => !prev)}
+                aria-expanded={!isRibbonCollapsed}
+                aria-label={
+                  isRibbonCollapsed
+                    ? 'Mở rộng thanh công cụ Ribbon'
+                    : 'Thu gọn thanh công cụ Ribbon'
+                }
+                title={
+                  isRibbonCollapsed ? 'Mở rộng Ribbon' : 'Thu gọn Ribbon'
+                }
+                className={`inline-flex items-center justify-center h-7 w-7 rounded-lg transition-colors ${
+                  isDark
+                    ? 'text-slate-300 hover:bg-white/10 hover:text-white'
+                    : 'text-slate-600 hover:bg-slate-200/70 hover:text-[#185ABD]'
                 }`}
               >
-                {/* Undo / Redo */}
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={() => executeFormatCommand('undo')}
-                  aria-label="Hoàn tác"
-                  title="Hoàn tác (Ctrl+Z)"
-                  className={toolbarBtnClass(false)}
-                >
-                  <Undo2 className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={() => executeFormatCommand('redo')}
-                  aria-label="Làm lại"
-                  title="Làm lại (Ctrl+Y)"
-                  className={toolbarBtnClass(false)}
-                >
-                  <Redo2 className="h-3.5 w-3.5" />
-                </button>
+                {isRibbonCollapsed ? (
+                  <ChevronDown className="h-4 w-4" />
+                ) : (
+                  <ChevronUp className="h-4 w-4" />
+                )}
+              </button>
+            </div>
+          </div>
 
-                {/* Format Painter */}
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={handleToggleFormatPainter}
-                  aria-pressed={isFormatPainterActive}
-                  aria-label="Sao chép định dạng (Format Painter)"
-                  title="Chổi sao chép định dạng (chọn chữ mẫu -> bấm chổi -> bôi chữ đích)"
-                  className={toolbarBtnClass(isFormatPainterActive)}
-                >
-                  <Paintbrush className="h-3.5 w-3.5" />
-                </button>
-
-                {/* Block Style */}
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={() =>
-                    setOpenPopover((prev) => (prev === 'block' ? null : 'block'))
-                  }
-                  aria-expanded={openPopover === 'block'}
-                  aria-label="Chọn kiểu đoạn hoặc tiêu đề"
-                  className={`shrink-0 inline-flex items-center justify-between gap-1 min-h-[30px] px-2 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap ${
-                    isDark
-                      ? 'bg-[#1E2534] border-white/10 text-slate-200 hover:bg-white/10'
-                      : 'bg-[#FAF8F5] border-[#E4DFD6] text-slate-800 hover:bg-[#F2EFEA]'
-                  }`}
-                >
-                  <span>{currentBlockLabel}</span>
-                  <ChevronDown className="h-3.5 w-3.5 opacity-70" />
-                </button>
-
-                {/* Font Family Selector */}
-                <select
-                  aria-label="Phông chữ"
-                  value={fontFamily}
-                  onChange={(e) =>
-                    handleSelectFontFamily(e.target.value as WordFontFamily)
-                  }
-                  className={`h-[30px] px-2 rounded-lg border text-xs font-medium outline-none shrink-0 ${
-                    isDark
-                      ? 'bg-[#1E2534] border-white/10 text-slate-200'
-                      : 'bg-[#FAF8F5] border-[#E4DFD6] text-slate-800'
-                  }`}
-                >
-                  {FONT_FAMILIES.map((family) => (
-                    <option key={family} value={family}>
-                      {family}
-                    </option>
-                  ))}
-                </select>
-
-                {/* Font Size Selector + A^ / Av */}
-                <div
-                  role="group"
-                  aria-label="Cỡ chữ"
-                  className={`inline-flex items-center rounded-lg border p-0.5 shrink-0 ${
-                    isDark
-                      ? 'bg-[#1E2534] border-white/10'
-                      : 'bg-[#F5F3EE] border-[#E5E0D8]'
-                  }`}
-                >
-                  <select
-                    aria-label="Chọn cỡ chữ"
-                    value={fontSizeIndex}
-                    onChange={(e) => setFontSizeIndex(Number(e.target.value))}
-                    className={`h-[24px] px-1 rounded text-[11px] font-semibold tabular-nums bg-transparent outline-none ${
-                      isDark ? 'text-slate-200' : 'text-slate-800'
-                    }`}
-                  >
-                    {FONT_SIZES.map((sz, idx) => (
-                      <option
-                        key={sz}
-                        value={idx}
-                        className="text-slate-900 bg-white"
-                      >
-                        {sz}
-                      </option>
-                    ))}
-                  </select>
+          {/* Fluent Floating Command Card */}
+          {!isRibbonCollapsed && (
+            <div
+              className={`rounded-xl border mx-2 my-1.5 px-2 py-1.5 flex items-center gap-1.5 overflow-x-auto no-scrollbar min-w-0 ${
+                isDark
+                  ? 'bg-[#1D2432] border-white/10 shadow-sm'
+                  : paperTheme === 'sepia'
+                    ? 'bg-[#FFFDF9] border-[#E4D8C5] shadow-[0_1px_3px_rgba(15,23,42,0.05)]'
+                    : 'bg-white border-slate-200/80 shadow-[0_1px_3px_rgba(15,23,42,0.06)]'
+              }`}
+            >
+            {/* TAB 0: TỆP (FILE) */}
+            {activeRibbonTab === 'file' && (
+              <div className="flex items-center gap-1.5 shrink-0">
+                {!isReadOnly && (
                   <button
                     type="button"
-                    onMouseDown={handlePreventMouseDown}
-                    onClick={handleIncreaseFont}
-                    disabled={fontSizeIndex === FONT_SIZES.length - 1}
-                    title="Tăng cỡ chữ (A^)"
-                    className="min-h-[24px] px-1.5 rounded text-[11px] font-bold hover:bg-black/5 disabled:opacity-35"
+                    onClick={handleSave}
+                    className="inline-flex items-center gap-1.5 min-h-[32px] px-3 rounded-lg bg-[#185ABD] hover:bg-[#10489A] text-white text-xs font-semibold whitespace-nowrap transition-colors"
                   >
-                    A^
+                    <Check className="h-3.5 w-3.5 shrink-0" />
+                    <span>Lưu tài liệu</span>
                   </button>
-                  <button
-                    type="button"
-                    onMouseDown={handlePreventMouseDown}
-                    onClick={handleDecreaseFont}
-                    disabled={fontSizeIndex === 0}
-                    title="Giảm cỡ chữ (Av)"
-                    className="min-h-[24px] px-1.5 rounded text-[11px] font-bold hover:bg-black/5 disabled:opacity-35"
-                  >
-                    Av
-                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => void handleSaveCopyDocx()}
+                  disabled={isExporting}
+                  className={toolbarBtnClass(false)}
+                >
+                  <FilePlus2 className="h-3.5 w-3.5 text-[#185ABD] mr-1 shrink-0" />
+                  <span>Lưu bản sao (.docx)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => void handleDownloadOriginalFromFileTab()}
+                  disabled={isExporting}
+                  className={toolbarBtnClass(false)}
+                >
+                  <FileOutput className="h-3.5 w-3.5 text-[#185ABD] mr-1 shrink-0" />
+                  <span>Tải bản gốc .docx</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => void handleExportDocx()}
+                  disabled={isExporting}
+                  className={toolbarBtnClass(false)}
+                >
+                  <FileSearch className="h-3.5 w-3.5 text-[#185ABD] mr-1 shrink-0" />
+                  <span>Tải bản sửa .docx</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => void handleExportPdfFromFileTab()}
+                  disabled={isExporting}
+                  className={toolbarBtnClass(false)}
+                >
+                  <FileOutput className="h-3.5 w-3.5 text-rose-600 mr-1 shrink-0" />
+                  <span>Xuất PDF</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className={toolbarBtnClass(false)}
+                >
+                  <Printer className="h-3.5 w-3.5 text-[#185ABD] mr-1 shrink-0" />
+                  <span>In văn bản</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsFileInfoOpen(true)}
+                  className={toolbarBtnClass(isFileInfoOpen)}
+                >
+                  <Info className="h-3.5 w-3.5 text-[#185ABD] mr-1 shrink-0" />
+                  <span>Thông tin tệp</span>
+                </button>
+              </div>
+            )}
+
+            {/* TAB 1: TRANG CHỦ (HOME) — 2-Row 5-Cluster ONLYOFFICE Ribbon */}
+            {activeRibbonTab === 'home' && (
+              <fieldset
+                disabled={isReadOnly || isDocProtected}
+                className={`flex items-stretch gap-2 min-w-0 border-0 p-0 m-0 shrink-0 ${
+                  isReadOnly || isDocProtected
+                    ? 'opacity-45 pointer-events-none'
+                    : ''
+                }`}
+              >
+                {/* Cluster 1: Clipboard + Undo/Redo + Format Painter */}
+                <div className="flex flex-col justify-center gap-1 shrink-0">
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => void handleClipboardPaste()}
+                      title="Dán"
+                      className={toolbarBtnClass(false)}
+                    >
+                      <ClipboardPaste className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
+                      <span>Dán</span>
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => void handleClipboardCopy()}
+                      title="Sao chép"
+                      aria-label="Sao chép"
+                      className={toolbarBtnClass(false)}
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => void handleClipboardCut()}
+                      title="Cắt"
+                      aria-label="Cắt"
+                      className={toolbarBtnClass(false)}
+                    >
+                      <Scissors className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={handleToggleFormatPainter}
+                      aria-pressed={isFormatPainterActive}
+                      title="Chổi sao chép định dạng (Format Painter)"
+                      className={toolbarBtnClass(isFormatPainterActive)}
+                    >
+                      <Paintbrush className="h-3.5 w-3.5 mr-1" />
+                      <span>Chổi</span>
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => executeFormatCommand('undo')}
+                      aria-label="Hoàn tác"
+                      title="Hoàn tác (Ctrl+Z)"
+                      className={toolbarBtnClass(false)}
+                    >
+                      <Undo2 className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => executeFormatCommand('redo')}
+                      aria-label="Làm lại"
+                      title="Làm lại (Ctrl+Y)"
+                      className={toolbarBtnClass(false)}
+                    >
+                      <Redo2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </div>
-
-                {/* B / I / U (+ style) / S / x2 / H2O / Aa */}
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={() => executeFormatCommand('bold')}
-                  aria-pressed={formatState.bold}
-                  title="In đậm (Ctrl+B)"
-                  className={toolbarBtnClass(formatState.bold)}
-                >
-                  <Bold className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={() => executeFormatCommand('italic')}
-                  aria-pressed={formatState.italic}
-                  title="In nghiêng (Ctrl+I)"
-                  className={toolbarBtnClass(formatState.italic)}
-                >
-                  <Italic className="h-3.5 w-3.5" />
-                </button>
-                <div className="inline-flex items-center shrink-0">
-                  <button
-                    type="button"
-                    onMouseDown={handlePreventMouseDown}
-                    onClick={() => handleApplyUnderlineStyle(underlineStyle)}
-                    aria-pressed={formatState.underline}
-                    title="Gạch chân (Ctrl+U)"
-                    className={toolbarBtnClass(formatState.underline)}
-                  >
-                    <Underline className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onMouseDown={handlePreventMouseDown}
-                    onClick={() =>
-                      setOpenPopover((prev) =>
-                        prev === 'underline' ? null : 'underline'
-                      )
-                    }
-                    aria-label="Kiểu gạch chân"
-                    title="Chọn kiểu gạch chân"
-                    className="h-[30px] px-1 rounded hover:bg-black/5"
-                  >
-                    <ChevronDown className="h-3 w-3 opacity-75" />
-                  </button>
-                </div>
-
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={() => executeFormatCommand('strikeThrough')}
-                  aria-pressed={formatState.strikeThrough}
-                  title="Gạch ngang chữ"
-                  className={toolbarBtnClass(formatState.strikeThrough)}
-                >
-                  <Strikethrough className="h-3.5 w-3.5" />
-                </button>
-
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={() => executeFormatCommand('superscript')}
-                  title="Chỉ số trên (x²)"
-                  aria-label="Chỉ số trên"
-                  className={toolbarBtnClass(false)}
-                >
-                  <Superscript className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={() => executeFormatCommand('subscript')}
-                  title="Chỉ số dưới (H₂O)"
-                  aria-label="Chỉ số dưới"
-                  className={toolbarBtnClass(false)}
-                >
-                  <Subscript className="h-3.5 w-3.5" />
-                </button>
-
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={() =>
-                    setOpenPopover((prev) => (prev === 'case' ? null : 'case'))
-                  }
-                  aria-expanded={openPopover === 'case'}
-                  title="Đổi chữ HOA / thường (Aa)"
-                  aria-label="Đổi chữ HOA hoặc thường"
-                  className={toolbarBtnClass(openPopover === 'case')}
-                >
-                  <CaseSensitive className="h-3.5 w-3.5" />
-                </button>
-
-                {/* Color & Highlight & Clear */}
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={() =>
-                    setOpenPopover((prev) => (prev === 'color' ? null : 'color'))
-                  }
-                  aria-expanded={openPopover === 'color'}
-                  title="Màu chữ"
-                  className={toolbarBtnClass(openPopover === 'color')}
-                >
-                  <Palette className="h-3.5 w-3.5" />
-                  <span
-                    aria-hidden="true"
-                    className="ml-1 h-2.5 w-2.5 rounded-full border border-black/20"
-                    style={{ backgroundColor: customTextColor }}
-                  />
-                </button>
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={() =>
-                    setOpenPopover((prev) =>
-                      prev === 'highlight' ? null : 'highlight'
-                    )
-                  }
-                  aria-expanded={openPopover === 'highlight'}
-                  title="Tô sáng (Highlight)"
-                  className={toolbarBtnClass(openPopover === 'highlight')}
-                >
-                  <Highlighter className="h-3.5 w-3.5 text-amber-500" />
-                </button>
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={() => executeFormatCommand('removeFormat')}
-                  title="Xóa định dạng"
-                  aria-label="Xóa định dạng"
-                  className={toolbarBtnClass(false)}
-                >
-                  <RemoveFormatting className="h-3.5 w-3.5" />
-                </button>
 
                 <span
                   aria-hidden="true"
-                  className={`h-5 w-px mx-0.5 shrink-0 ${
-                    isDark ? 'bg-white/10' : 'bg-[#E6E2DA]'
+                  className={`w-px self-stretch my-0.5 shrink-0 ${
+                    isDark ? 'bg-white/10' : 'bg-slate-200/80'
                   }`}
                 />
 
-                {/* Alignment + Lists + Indent */}
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={() => executeFormatCommand('justifyLeft')}
-                  aria-pressed={formatState.align === 'left'}
-                  title="Căn trái"
-                  className={toolbarBtnClass(formatState.align === 'left')}
+                {/* Cluster 2: Font */}
+                <div className="flex flex-col justify-center gap-1 shrink-0">
+                  <div className="flex items-center gap-1">
+                    <select
+                      aria-label="Phông chữ"
+                      value={fontFamily}
+                      onChange={(e) =>
+                        handleSelectFontFamily(e.target.value as WordFontFamily)
+                      }
+                      className={`h-[28px] px-2 rounded-lg border text-xs font-medium outline-none shrink-0 ${
+                        isDark
+                          ? 'bg-[#1E2534] border-white/10 text-slate-200'
+                          : 'bg-[#FAF8F5] border-slate-200 text-slate-800'
+                      }`}
+                    >
+                      {FONT_FAMILIES.map((family) => (
+                        <option key={family} value={family}>
+                          {family}
+                        </option>
+                      ))}
+                    </select>
+
+                    <div
+                      role="group"
+                      aria-label="Cỡ chữ"
+                      className={`inline-flex items-center rounded-lg border p-0.5 shrink-0 ${
+                        isDark
+                          ? 'bg-[#1E2534] border-white/10'
+                          : 'bg-[#F5F3EE] border-slate-200'
+                      }`}
+                    >
+                      <select
+                        aria-label="Chọn cỡ chữ"
+                        value={fontSizeIndex}
+                        onChange={(e) => setFontSizeIndex(Number(e.target.value))}
+                        className={`h-[22px] px-1 rounded text-[11px] font-semibold tabular-nums bg-transparent outline-none ${
+                          isDark ? 'text-slate-200' : 'text-slate-800'
+                        }`}
+                      >
+                        {FONT_SIZES.map((sz, idx) => (
+                          <option
+                            key={sz}
+                            value={idx}
+                            className="text-slate-900 bg-white"
+                          >
+                            {sz}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onMouseDown={handlePreventMouseDown}
+                        onClick={handleIncreaseFont}
+                        disabled={fontSizeIndex === FONT_SIZES.length - 1}
+                        title="Tăng cỡ chữ (A^)"
+                        className="min-h-[22px] px-1.5 rounded text-[11px] font-bold hover:bg-black/5 disabled:opacity-35"
+                      >
+                        A^
+                      </button>
+                      <button
+                        type="button"
+                        onMouseDown={handlePreventMouseDown}
+                        onClick={handleDecreaseFont}
+                        disabled={fontSizeIndex === 0}
+                        title="Giảm cỡ chữ (Av)"
+                        className="min-h-[22px] px-1.5 rounded text-[11px] font-bold hover:bg-black/5 disabled:opacity-35"
+                      >
+                        Av
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() =>
+                        setOpenPopover((prev) => (prev === 'case' ? null : 'case'))
+                      }
+                      aria-expanded={openPopover === 'case'}
+                      title="Đổi chữ HOA / thường (Aa)"
+                      aria-label="Đổi chữ HOA hoặc thường"
+                      className={toolbarBtnClass(openPopover === 'case')}
+                    >
+                      <CaseSensitive className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-0.5">
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => executeFormatCommand('bold')}
+                      aria-pressed={formatState.bold}
+                      title="In đậm (Ctrl+B)"
+                      className={toolbarBtnClass(formatState.bold)}
+                    >
+                      <Bold className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => executeFormatCommand('italic')}
+                      aria-pressed={formatState.italic}
+                      title="In nghiêng (Ctrl+I)"
+                      className={toolbarBtnClass(formatState.italic)}
+                    >
+                      <Italic className="h-3.5 w-3.5" />
+                    </button>
+                    <div className="inline-flex items-center shrink-0">
+                      <button
+                        type="button"
+                        onMouseDown={handlePreventMouseDown}
+                        onClick={() => handleApplyUnderlineStyle(underlineStyle)}
+                        aria-pressed={formatState.underline}
+                        title="Gạch chân (Ctrl+U)"
+                        className={toolbarBtnClass(formatState.underline)}
+                      >
+                        <Underline className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onMouseDown={handlePreventMouseDown}
+                        onClick={() =>
+                          setOpenPopover((prev) =>
+                            prev === 'underline' ? null : 'underline'
+                          )
+                        }
+                        aria-label="Kiểu gạch chân"
+                        title="Chọn kiểu gạch chân"
+                        className="h-[28px] px-0.5 rounded hover:bg-black/5"
+                      >
+                        <ChevronDown className="h-3 w-3 opacity-75" />
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => executeFormatCommand('strikeThrough')}
+                      aria-pressed={formatState.strikeThrough}
+                      title="Gạch ngang chữ"
+                      className={toolbarBtnClass(formatState.strikeThrough)}
+                    >
+                      <Strikethrough className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => executeFormatCommand('superscript')}
+                      title="Chỉ số trên (x²)"
+                      aria-label="Chỉ số trên"
+                      className={toolbarBtnClass(false)}
+                    >
+                      <Superscript className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => executeFormatCommand('subscript')}
+                      title="Chỉ số dưới (H₂O)"
+                      aria-label="Chỉ số dưới"
+                      className={toolbarBtnClass(false)}
+                    >
+                      <Subscript className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() =>
+                        setOpenPopover((prev) =>
+                          prev === 'highlight' ? null : 'highlight'
+                        )
+                      }
+                      aria-expanded={openPopover === 'highlight'}
+                      title="Tô sáng (Highlight)"
+                      className={toolbarBtnClass(openPopover === 'highlight')}
+                    >
+                      <Highlighter className="h-3.5 w-3.5 text-amber-500" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() =>
+                        setOpenPopover((prev) => (prev === 'color' ? null : 'color'))
+                      }
+                      aria-expanded={openPopover === 'color'}
+                      title="Màu chữ"
+                      className={toolbarBtnClass(openPopover === 'color')}
+                    >
+                      <Palette className="h-3.5 w-3.5" />
+                      <span
+                        aria-hidden="true"
+                        className="ml-0.5 h-2.5 w-2.5 rounded-full border border-black/20"
+                        style={{ backgroundColor: customTextColor }}
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => executeFormatCommand('removeFormat')}
+                      title="Xóa định dạng"
+                      aria-label="Xóa định dạng"
+                      className={toolbarBtnClass(false)}
+                    >
+                      <RemoveFormatting className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                <span
+                  aria-hidden="true"
+                  className={`w-px self-stretch my-0.5 shrink-0 ${
+                    isDark ? 'bg-white/10' : 'bg-slate-200/80'
+                  }`}
+                />
+
+                {/* Cluster 3: Paragraph (Lists, Multilevel, Indent, LineHeight, Align, Shading, Border) */}
+                <div className="flex flex-col justify-center gap-1 shrink-0">
+                  <div className="flex items-center gap-0.5">
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => executeFormatCommand('insertUnorderedList')}
+                      aria-pressed={formatState.unorderedList}
+                      title="Danh sách dấu chấm"
+                      className={toolbarBtnClass(formatState.unorderedList)}
+                    >
+                      <List className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => executeFormatCommand('insertOrderedList')}
+                      aria-pressed={formatState.orderedList}
+                      title="Danh sách đánh số"
+                      className={toolbarBtnClass(formatState.orderedList)}
+                    >
+                      <ListOrdered className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={handleInsertMultilevelList}
+                      title="Danh sách đa cấp (1. / 1.1.)"
+                      className={toolbarBtnClass(false)}
+                    >
+                      <ListTree className="h-3.5 w-3.5 text-[#185ABD]" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => executeFormatCommand('outdent')}
+                      title="Giảm thụt lề"
+                      className={toolbarBtnClass(false)}
+                    >
+                      <IndentDecrease className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => executeFormatCommand('indent')}
+                      title="Tăng thụt lề"
+                      className={toolbarBtnClass(false)}
+                    >
+                      <IndentIncrease className="h-3.5 w-3.5" />
+                    </button>
+                    <select
+                      aria-label="Giãn dòng"
+                      value={lineHeight}
+                      onChange={(e) =>
+                        setLineHeight(Number(e.target.value) as WordLineHeight)
+                      }
+                      title="Giãn dòng"
+                      className={`h-[28px] px-1.5 rounded-lg border text-[11px] font-semibold tabular-nums outline-none ml-0.5 ${
+                        isDark
+                          ? 'bg-[#1E2534] border-white/10 text-slate-200'
+                          : 'bg-[#FAF8F5] border-slate-200 text-slate-800'
+                      }`}
+                    >
+                      {LINE_HEIGHTS.map((lh) => (
+                        <option key={lh} value={lh}>
+                          ↕ {lh}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex items-center gap-0.5">
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => executeFormatCommand('justifyLeft')}
+                      aria-pressed={formatState.align === 'left'}
+                      title="Căn trái"
+                      className={toolbarBtnClass(formatState.align === 'left')}
+                    >
+                      <AlignLeft className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => executeFormatCommand('justifyCenter')}
+                      aria-pressed={formatState.align === 'center'}
+                      title="Căn giữa"
+                      className={toolbarBtnClass(formatState.align === 'center')}
+                    >
+                      <AlignCenter className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => executeFormatCommand('justifyRight')}
+                      aria-pressed={formatState.align === 'right'}
+                      title="Căn phải"
+                      className={toolbarBtnClass(formatState.align === 'right')}
+                    >
+                      <AlignRight className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() => executeFormatCommand('justifyFull')}
+                      aria-pressed={formatState.align === 'justify'}
+                      title="Căn đều"
+                      className={toolbarBtnClass(formatState.align === 'justify')}
+                    >
+                      <AlignJustify className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() =>
+                        setOpenPopover((prev) =>
+                          prev === 'para_shading' ? null : 'para_shading'
+                        )
+                      }
+                      aria-expanded={openPopover === 'para_shading'}
+                      title="Tô nền đoạn văn (Paragraph Shading)"
+                      className={toolbarBtnClass(openPopover === 'para_shading')}
+                    >
+                      <PaintBucket className="h-3.5 w-3.5 text-[#185ABD]" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() =>
+                        setOpenPopover((prev) =>
+                          prev === 'para_border' ? null : 'para_border'
+                        )
+                      }
+                      aria-expanded={openPopover === 'para_border'}
+                      title="Kẻ viền đoạn văn (Paragraph Border)"
+                      className={toolbarBtnClass(openPopover === 'para_border')}
+                    >
+                      <Square className="h-3.5 w-3.5 text-[#185ABD]" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={handlePreventMouseDown}
+                      onClick={() =>
+                        setOpenPopover((prev) =>
+                          prev === 'block' ? null : 'block'
+                        )
+                      }
+                      aria-expanded={openPopover === 'block'}
+                      title="Kiểu đoạn"
+                      className={`h-[28px] px-1.5 rounded-lg border text-[11px] font-medium ml-0.5 inline-flex items-center gap-0.5 ${
+                        isDark
+                          ? 'bg-[#1E2534] border-white/10 text-slate-200'
+                          : 'bg-[#FAF8F5] border-slate-200 text-slate-700'
+                      }`}
+                    >
+                      <span className="max-w-[68px] truncate">
+                        {currentBlockLabel}
+                      </span>
+                      <ChevronDown className="h-3 w-3 opacity-70" />
+                    </button>
+                  </div>
+                </div>
+
+                <span
+                  aria-hidden="true"
+                  className={`w-px self-stretch my-0.5 shrink-0 ${
+                    isDark ? 'bg-white/10' : 'bg-slate-200/80'
+                  }`}
+                />
+
+                {/* Cluster 4: Kiểu chữ (Styles horizontal preview strip) */}
+                <div
+                  role="group"
+                  aria-label="Kiểu chữ nhanh"
+                  className="flex items-center gap-1 shrink-0"
                 >
-                  <AlignLeft className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={() => executeFormatCommand('justifyCenter')}
-                  aria-pressed={formatState.align === 'center'}
-                  title="Căn giữa"
-                  className={toolbarBtnClass(formatState.align === 'center')}
-                >
-                  <AlignCenter className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={() => executeFormatCommand('justifyRight')}
-                  aria-pressed={formatState.align === 'right'}
-                  title="Căn phải"
-                  className={toolbarBtnClass(formatState.align === 'right')}
-                >
-                  <AlignRight className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={() => executeFormatCommand('justifyFull')}
-                  aria-pressed={formatState.align === 'justify'}
-                  title="Căn đều"
-                  className={toolbarBtnClass(formatState.align === 'justify')}
-                >
-                  <AlignJustify className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={() => executeFormatCommand('insertUnorderedList')}
-                  aria-pressed={formatState.unorderedList}
-                  title="Danh sách dấu chấm"
-                  className={toolbarBtnClass(formatState.unorderedList)}
-                >
-                  <List className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={() => executeFormatCommand('insertOrderedList')}
-                  aria-pressed={formatState.orderedList}
-                  title="Danh sách đánh số"
-                  className={toolbarBtnClass(formatState.orderedList)}
-                >
-                  <ListOrdered className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={() => executeFormatCommand('outdent')}
-                  title="Giảm thụt lề"
-                  className={toolbarBtnClass(false)}
-                >
-                  <IndentDecrease className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onMouseDown={handlePreventMouseDown}
-                  onClick={() => executeFormatCommand('indent')}
-                  title="Tăng thụt lề"
-                  className={toolbarBtnClass(false)}
-                >
-                  <IndentIncrease className="h-3.5 w-3.5" />
-                </button>
+                  {(
+                    [
+                      {
+                        id: 'normal',
+                        title: 'Thường',
+                        sub: 'AaBbCc',
+                        previewCls: 'text-xs font-normal',
+                      },
+                      {
+                        id: 'no_spacing',
+                        title: 'Không cách',
+                        sub: 'AaBbCc',
+                        previewCls: 'text-xs font-normal tracking-tight',
+                      },
+                      {
+                        id: 'title',
+                        title: 'Tiêu đề',
+                        sub: 'AaBb',
+                        previewCls: 'text-sm font-bold text-[#185ABD]',
+                      },
+                      {
+                        id: 'h1',
+                        title: 'Tiêu đề 1',
+                        sub: 'AaBb',
+                        previewCls: 'text-xs font-bold text-[#185ABD]',
+                      },
+                      {
+                        id: 'h2',
+                        title: 'Tiêu đề 2',
+                        sub: 'AaBb',
+                        previewCls: 'text-xs font-semibold text-sky-700',
+                      },
+                    ] as const
+                  ).map((st) => {
+                    const active = activeWordStylePreset === st.id;
+                    return (
+                      <button
+                        key={st.id}
+                        type="button"
+                        onMouseDown={handlePreventMouseDown}
+                        onClick={() => handleApplyWordStylePreset(st.id)}
+                        className={`flex flex-col items-center justify-center min-w-[64px] h-[54px] px-2 rounded-lg border transition-all ${
+                          active
+                            ? isDark
+                              ? 'bg-[#185ABD]/25 border-blue-400 text-white'
+                              : 'bg-[#EEF4FF] border-[#185ABD] text-[#185ABD] shadow-xs'
+                            : isDark
+                              ? 'bg-[#171C27] border-white/10 text-slate-300 hover:bg-white/5'
+                              : 'bg-[#FAFBFD] border-slate-200 text-slate-700 hover:border-[#185ABD]/50'
+                        }`}
+                      >
+                        <span className={st.previewCls}>{st.sub}</span>
+                        <span className="text-[10px] font-medium truncate mt-0.5">
+                          {st.title}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <span
+                  aria-hidden="true"
+                  className={`w-px self-stretch my-0.5 shrink-0 ${
+                    isDark ? 'bg-white/10' : 'bg-slate-200/80'
+                  }`}
+                />
+
+                {/* Cluster 5: Chỉnh sửa (Find & Replace) */}
+                <div className="flex flex-col justify-center shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setIsFindOpen((prev) => !prev)}
+                    aria-pressed={isFindOpen}
+                    title="Tìm kiếm & Thay thế (Ctrl+F / Ctrl+H)"
+                    className={toolbarBtnClass(isFindOpen)}
+                  >
+                    <Search className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
+                    <span>Tìm &amp; Thay thế</span>
+                  </button>
+                </div>
               </fieldset>
             )}
 
             {/* TAB 2: CHÈN (INSERT) */}
             {activeRibbonTab === 'insert' && (
               <fieldset
-                disabled={isEditingLocked}
+                disabled={isReadOnly || isDocProtected}
                 className={`flex items-center gap-1.5 min-w-0 border-0 p-0 m-0 shrink-0 ${
-                  isEditingLocked ? 'opacity-45 pointer-events-none' : ''
+                  isReadOnly || isDocProtected
+                    ? 'opacity-45 pointer-events-none'
+                    : ''
                 }`}
               >
                 <button
@@ -3198,22 +3988,241 @@ export function WordWorkspace({
                   aria-pressed={showHeaderFooter}
                   className={toolbarBtnClass(showHeaderFooter)}
                 >
-                  <span>Header / Footer &amp; Số trang</span>
+                  <span>Header / Footer</span>
+                </button>
+
+                <button
+                  type="button"
+                  onMouseDown={handlePreventMouseDown}
+                  onClick={() => {
+                    if (!showHeaderFooter) {
+                      setShowHeaderFooter(true);
+                      setShowPageNumbers(true);
+                    } else {
+                      setShowPageNumbers((prev) => !prev);
+                    }
+                  }}
+                  aria-pressed={showHeaderFooter && showPageNumbers}
+                  className={toolbarBtnClass(showHeaderFooter && showPageNumbers)}
+                >
+                  <span>Đánh số trang</span>
                 </button>
               </fieldset>
             )}
 
-            {/* TAB 3: BỐ TRÍ (LAYOUT) */}
+            {/* TAB 3: VẼ (DRAW) */}
+            {activeRibbonTab === 'draw' && (
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  disabled={isEditingLocked}
+                  onClick={() =>
+                    setActiveDrawTool((prev) => (prev === 'pen' ? null : 'pen'))
+                  }
+                  aria-pressed={activeDrawTool === 'pen'}
+                  className={toolbarBtnClass(activeDrawTool === 'pen')}
+                >
+                  <Pen className="h-3.5 w-3.5 mr-1 text-[#185ABD]" />
+                  <span>Bút vẽ</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isEditingLocked}
+                  onClick={() =>
+                    setActiveDrawTool((prev) =>
+                      prev === 'highlighter' ? null : 'highlighter'
+                    )
+                  }
+                  aria-pressed={activeDrawTool === 'highlighter'}
+                  className={toolbarBtnClass(activeDrawTool === 'highlighter')}
+                >
+                  <Highlighter className="h-3.5 w-3.5 mr-1 text-amber-500" />
+                  <span>Bút dạ quang</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isEditingLocked}
+                  onClick={() =>
+                    setActiveDrawTool((prev) =>
+                      prev === 'eraser' ? null : 'eraser'
+                    )
+                  }
+                  aria-pressed={activeDrawTool === 'eraser'}
+                  className={toolbarBtnClass(activeDrawTool === 'eraser')}
+                >
+                  <Eraser className="h-3.5 w-3.5 mr-1 text-rose-500" />
+                  <span>Tẩy</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveDrawTool(null)}
+                  className={toolbarBtnClass(activeDrawTool === null)}
+                >
+                  <Ban className="h-3.5 w-3.5 mr-1" />
+                  <span>Thoát vẽ</span>
+                </button>
+
+                <span
+                  aria-hidden="true"
+                  className={`h-5 w-px mx-0.5 shrink-0 ${
+                    isDark ? 'bg-white/10' : 'bg-slate-200/80'
+                  }`}
+                />
+
+                <div className="flex items-center gap-1 px-1">
+                  {DRAW_COLOR_SWATCHES.map((sw) => (
+                    <button
+                      key={sw.value}
+                      type="button"
+                      onClick={() => setDrawColor(sw.value)}
+                      title={sw.label}
+                      aria-label={`Màu vẽ ${sw.label}`}
+                      className={`h-5 w-5 rounded-full border transition-transform ${
+                        drawColor === sw.value
+                          ? 'ring-2 ring-[#185ABD] ring-offset-1 scale-110'
+                          : 'border-black/20'
+                      }`}
+                      style={{ backgroundColor: sw.value }}
+                    />
+                  ))}
+                </div>
+
+                <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg border border-slate-200/80">
+                  {([2, 4, 6, 10] as const).map((w) => (
+                    <button
+                      key={w}
+                      type="button"
+                      onClick={() => setDrawWidth(w)}
+                      className={`px-2 py-1 rounded text-[11px] font-semibold tabular-nums ${
+                        drawWidth === w
+                          ? 'bg-[#185ABD] text-white'
+                          : isDark
+                            ? 'text-slate-300'
+                            : 'text-slate-700'
+                      }`}
+                    >
+                      {w}px
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  disabled={wordDrawings.length === 0 || isEditingLocked}
+                  onClick={() => {
+                    setWordDrawings((prev) => prev.slice(0, -1));
+                    setIsDirty(true);
+                  }}
+                  className={toolbarBtnClass(false)}
+                >
+                  <Undo2 className="h-3.5 w-3.5 mr-1" />
+                  <span>Hoàn tác nét</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={wordDrawings.length === 0 || isEditingLocked}
+                  onClick={() => {
+                    setWordDrawings([]);
+                    setIsDirty(true);
+                  }}
+                  className={toolbarBtnClass(false)}
+                >
+                  <Trash2 className="h-3.5 w-3.5 mr-1 text-rose-500" />
+                  <span>Xóa tất cả ({wordDrawings.length})</span>
+                </button>
+              </div>
+            )}
+
+            {/* TAB 4: BỐ CỤC (LAYOUT) */}
             {activeRibbonTab === 'layout' && (
               <div className="flex items-center gap-1.5 shrink-0">
-                {/* Paper Theme */}
+                <select
+                  aria-label="Lề trang"
+                  value={marginPreset}
+                  onChange={(e) =>
+                    handleSelectMarginPreset(e.target.value as WordMarginPreset)
+                  }
+                  className={`h-[30px] px-2 rounded-lg border text-xs font-medium outline-none ${
+                    isDark
+                      ? 'bg-[#1E2534] border-white/10 text-slate-200'
+                      : 'bg-[#FAF8F5] border-slate-200 text-slate-800'
+                  }`}
+                >
+                  <option value="normal">Lề Thường (2cm)</option>
+                  <option value="narrow">Lề Hẹp (1.2cm)</option>
+                  <option value="wide">Lề Rộng (3.2cm)</option>
+                  <option value="custom">Lề Tùy chỉnh</option>
+                </select>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPageOrientation((prev) =>
+                      prev === 'portrait' ? 'landscape' : 'portrait'
+                    )
+                  }
+                  className={toolbarBtnClass(pageOrientation === 'landscape')}
+                >
+                  <span>
+                    {pageOrientation === 'portrait' ? 'Hướng Dọc' : 'Hướng Ngang'}
+                  </span>
+                </button>
+
+                <select
+                  aria-label="Khổ giấy"
+                  value={paperSize}
+                  onChange={(e) => setPaperSize(e.target.value as WordPaperSize)}
+                  className={`h-[30px] px-2 rounded-lg border text-xs font-medium outline-none ${
+                    isDark
+                      ? 'bg-[#1E2534] border-white/10 text-slate-200'
+                      : 'bg-[#FAF8F5] border-slate-200 text-slate-800'
+                  }`}
+                >
+                  <option value="A4">Khổ A4</option>
+                  <option value="A5">Khổ A5</option>
+                  <option value="Letter">Letter</option>
+                </select>
+
+                <div
+                  role="group"
+                  aria-label="Chia cột văn bản"
+                  className={`inline-flex items-center gap-0.5 p-0.5 rounded-lg border shrink-0 ${
+                    isDark
+                      ? 'bg-[#1E2534] border-white/10'
+                      : 'bg-[#F5F3EE] border-slate-200'
+                  }`}
+                >
+                  <Columns className="h-3.5 w-3.5 mx-1 text-[#185ABD]" />
+                  {([1, 2, 3] as const).map((cols) => (
+                    <button
+                      key={cols}
+                      type="button"
+                      onClick={() => setColumnCount(cols)}
+                      className={`min-h-[26px] px-2 rounded-md text-[11px] font-semibold ${
+                        columnCount === cols
+                          ? 'bg-[#185ABD] text-white'
+                          : isDark
+                            ? 'text-slate-300'
+                            : 'text-slate-700'
+                      }`}
+                    >
+                      {cols} cột
+                    </button>
+                  ))}
+                </div>
+
+                {/* Paper Theme + Custom Tint */}
                 <div
                   role="group"
                   aria-label="Chọn màu giấy"
                   className={`inline-flex items-center gap-0.5 p-0.5 rounded-lg border shrink-0 ${
                     isDark
                       ? 'bg-[#1E2534] border-white/10'
-                      : 'bg-[#F5F3EE] border-[#E5E0D8]'
+                      : 'bg-[#F5F3EE] border-slate-200'
                   }`}
                 >
                   {(['light', 'sepia', 'dark'] as const).map((mode) => {
@@ -3224,7 +4233,12 @@ export function WordWorkspace({
                         key={mode}
                         type="button"
                         onMouseDown={handlePreventMouseDown}
-                        onClick={() => setPaperTheme(mode)}
+                        onClick={() => {
+                          setPaperTheme(mode);
+                          if (mode === 'dark') {
+                            setCustomPageBg('');
+                          }
+                        }}
                         aria-pressed={isSelected}
                         className={`inline-flex items-center gap-1 min-h-[26px] px-2 rounded-md text-[11px] font-medium whitespace-nowrap ${
                           isSelected
@@ -3249,135 +4263,27 @@ export function WordWorkspace({
                   })}
                 </div>
 
-                {/* Paper Size: A4 | A5 | Letter */}
-                <select
-                  aria-label="Khổ giấy"
-                  value={paperSize}
-                  onChange={(e) => setPaperSize(e.target.value as WordPaperSize)}
-                  className={`h-[30px] px-2 rounded-lg border text-xs font-medium outline-none ${
-                    isDark
-                      ? 'bg-[#1E2534] border-white/10 text-slate-200'
-                      : 'bg-[#FAF8F5] border-[#E4DFD6] text-slate-800'
-                  }`}
-                >
-                  <option value="A4">Khổ A4</option>
-                  <option value="A5">Khổ A5</option>
-                  <option value="Letter">Letter</option>
-                </select>
+                {paperTheme !== 'dark' && (
+                  <div className="flex items-center gap-1 px-1">
+                    {CUSTOM_PAGE_BG_SWATCHES.map((sw) => (
+                      <button
+                        key={sw.label}
+                        type="button"
+                        onClick={() => setCustomPageBg(sw.value)}
+                        title={`Màu nền giấy: ${sw.label}`}
+                        className={`h-5 w-5 rounded-full border ${
+                          customPageBg === sw.value
+                            ? 'ring-2 ring-[#185ABD] ring-offset-1'
+                            : 'border-slate-300'
+                        }`}
+                        style={{
+                          backgroundColor: sw.value || themeStyle.pageHexBg,
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
 
-                {/* Orientation: Dọc / Ngang */}
-                <button
-                  type="button"
-                  onClick={() =>
-                    setPageOrientation((prev) =>
-                      prev === 'portrait' ? 'landscape' : 'portrait'
-                    )
-                  }
-                  className={toolbarBtnClass(pageOrientation === 'landscape')}
-                >
-                  <span>
-                    {pageOrientation === 'portrait' ? 'Hướng Dọc' : 'Hướng Ngang'}
-                  </span>
-                </button>
-
-                {/* Margin Presets */}
-                <select
-                  aria-label="Lề trang"
-                  value={marginPreset}
-                  onChange={(e) =>
-                    handleSelectMarginPreset(e.target.value as WordMarginPreset)
-                  }
-                  className={`h-[30px] px-2 rounded-lg border text-xs font-medium outline-none ${
-                    isDark
-                      ? 'bg-[#1E2534] border-white/10 text-slate-200'
-                      : 'bg-[#FAF8F5] border-[#E4DFD6] text-slate-800'
-                  }`}
-                >
-                  <option value="normal">Lề Thường (2cm)</option>
-                  <option value="narrow">Lề Hẹp (1.2cm)</option>
-                  <option value="wide">Lề Rộng (3.2cm)</option>
-                  <option value="custom">Lề Tùy chỉnh</option>
-                </select>
-
-                {/* Columns 1 / 2 / 3 */}
-                <div
-                  role="group"
-                  aria-label="Chia cột văn bản"
-                  className={`inline-flex items-center gap-0.5 p-0.5 rounded-lg border shrink-0 ${
-                    isDark
-                      ? 'bg-[#1E2534] border-white/10'
-                      : 'bg-[#F5F3EE] border-[#E5E0D8]'
-                  }`}
-                >
-                  <Columns className="h-3.5 w-3.5 mx-1 text-[#185ABD]" />
-                  {([1, 2, 3] as const).map((cols) => (
-                    <button
-                      key={cols}
-                      type="button"
-                      onClick={() => setColumnCount(cols)}
-                      className={`min-h-[26px] px-2 rounded-md text-[11px] font-semibold ${
-                        columnCount === cols
-                          ? 'bg-[#185ABD] text-white'
-                          : isDark
-                            ? 'text-slate-300'
-                            : 'text-slate-700'
-                      }`}
-                    >
-                      {cols} cột
-                    </button>
-                  ))}
-                </div>
-
-                {/* Line Height: 1.0 | 1.15 | 1.5 | 2.0 */}
-                <div
-                  role="group"
-                  aria-label="Giãn dòng"
-                  className={`inline-flex items-center gap-0.5 p-0.5 rounded-lg border shrink-0 ${
-                    isDark
-                      ? 'bg-[#1E2534] border-white/10'
-                      : 'bg-[#F5F3EE] border-[#E5E0D8]'
-                  }`}
-                >
-                  <span className={`px-1.5 text-[11px] ${themeStyle.textMuted}`}>
-                    Giãn dòng:
-                  </span>
-                  {LINE_HEIGHTS.map((lh) => (
-                    <button
-                      key={lh}
-                      type="button"
-                      onClick={() => setLineHeight(lh)}
-                      className={`min-h-[26px] px-2 rounded-md text-[11px] font-semibold tabular-nums ${
-                        lineHeight === lh
-                          ? 'bg-[#185ABD] text-white'
-                          : isDark
-                            ? 'text-slate-300'
-                            : 'text-slate-700'
-                      }`}
-                    >
-                      {lh}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Paragraph Spacing */}
-                <select
-                  aria-label="Khoảng cách đoạn"
-                  value={paragraphSpacingPx}
-                  onChange={(e) => setParagraphSpacingPx(Number(e.target.value))}
-                  className={`h-[30px] px-2 rounded-lg border text-xs font-medium outline-none ${
-                    isDark
-                      ? 'bg-[#1E2534] border-white/10 text-slate-200'
-                      : 'bg-[#FAF8F5] border-[#E4DFD6] text-slate-800'
-                  }`}
-                >
-                  {PARAGRAPH_SPACINGS.map((sp) => (
-                    <option key={sp.valuePx} value={sp.valuePx}>
-                      Đoạn: {sp.label}
-                    </option>
-                  ))}
-                </select>
-
-                {/* Page Border & Ruler toggles */}
                 <button
                   type="button"
                   onClick={() => setPageBorderEnabled((prev) => !prev)}
@@ -3387,38 +4293,102 @@ export function WordWorkspace({
                   <Square className="h-3.5 w-3.5 mr-1" />
                   <span>Viền trang</span>
                 </button>
+
+                {pageBorderEnabled && (
+                  <select
+                    aria-label="Kiểu viền trang"
+                    value={pageBorderStyle}
+                    onChange={(e) =>
+                      setPageBorderStyle(
+                        e.target.value as 'thin' | 'double' | 'word'
+                      )
+                    }
+                    className={`h-[28px] px-1.5 rounded-lg border text-[11px] font-medium outline-none ${
+                      isDark
+                        ? 'bg-[#1E2534] border-white/10 text-slate-200'
+                        : 'bg-[#FAF8F5] border-slate-200 text-slate-800'
+                    }`}
+                  >
+                    <option value="word">Viền xanh Word</option>
+                    <option value="thin">Viền mảnh</option>
+                    <option value="double">Viền đôi</option>
+                  </select>
+                )}
+
+                <select
+                  aria-label="Khoảng cách đoạn"
+                  value={paragraphSpacingPx}
+                  onChange={(e) => setParagraphSpacingPx(Number(e.target.value))}
+                  className={`h-[30px] px-2 rounded-lg border text-xs font-medium outline-none ${
+                    isDark
+                      ? 'bg-[#1E2534] border-white/10 text-slate-200'
+                      : 'bg-[#FAF8F5] border-slate-200 text-slate-800'
+                  }`}
+                >
+                  {PARAGRAPH_SPACINGS.map((sp) => (
+                    <option key={sp.valuePx} value={sp.valuePx}>
+                      Đoạn: {sp.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* TAB 5: THAM KHẢO (REFERENCES) */}
+            {activeRibbonTab === 'references' && (
+              <div className="flex items-center gap-1.5 shrink-0">
                 <button
                   type="button"
-                  onClick={() => setShowRuler((prev) => !prev)}
-                  aria-pressed={showRuler}
-                  className={toolbarBtnClass(showRuler)}
+                  disabled={isEditingLocked}
+                  onClick={handleGenerateOrUpdateToc}
+                  className={toolbarBtnClass(false)}
                 >
-                  <Ruler className="h-3.5 w-3.5 mr-1" />
-                  <span>Thước kẻ</span>
+                  <ListTree className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
+                  <span>Tạo / Cập nhật Mục lục tự động</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isEditingLocked}
+                  onClick={() => setIsFootnoteModalOpen(true)}
+                  className={toolbarBtnClass(isFootnoteModalOpen)}
+                >
+                  <BookMarked className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
+                  <span>Chèn Chú thích cuối trang (Footnote)</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isEditingLocked}
+                  onClick={() => setIsCitationModalOpen(true)}
+                  className={toolbarBtnClass(isCitationModalOpen)}
+                >
+                  <Quote className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
+                  <span>Chèn Trích dẫn (APA / IEEE)</span>
                 </button>
               </div>
             )}
 
-            {/* TAB 4: XEM LẠI & CÔNG CỤ (REVIEW & TOOLS) */}
-            {activeRibbonTab === 'view' && (
+            {/* TAB 6: CỘNG TÁC (COLLAB) */}
+            {activeRibbonTab === 'collab' && (
               <div className="flex items-center gap-1.5 shrink-0">
                 <button
                   type="button"
-                  onClick={() => setIsFindOpen((prev) => !prev)}
-                  aria-pressed={isFindOpen}
-                  className={toolbarBtnClass(isFindOpen)}
+                  onClick={() => onOpenModal('share', buildLiveDocument())}
+                  className="inline-flex items-center gap-1.5 min-h-[30px] px-3 rounded-lg bg-[#185ABD] hover:bg-[#10489A] text-white text-xs font-semibold whitespace-nowrap"
                 >
-                  <Search className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
-                  <span>Tìm &amp; Thay thế</span>
+                  <Share2 className="h-3.5 w-3.5 shrink-0" />
+                  <span>Chia sẻ tài liệu</span>
                 </button>
 
                 <button
                   type="button"
-                  onClick={() => setActiveToolModal('word_count')}
-                  className={toolbarBtnClass(activeToolModal === 'word_count')}
+                  onClick={() => workspaceSync.onOpenVersionHistory?.()}
+                  disabled={!workspaceSync.onOpenVersionHistory}
+                  className={toolbarBtnClass(false)}
                 >
-                  <BookOpen className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
-                  <span>Đếm từ ({wordCount.toLocaleString('vi-VN')})</span>
+                  <History className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
+                  <span>Lịch sử phiên bản</span>
                 </button>
 
                 <button
@@ -3433,22 +4403,97 @@ export function WordWorkspace({
 
                 <button
                   type="button"
-                  onClick={() => setIsReadMode(true)}
-                  className={toolbarBtnClass(false)}
+                  onClick={() => setActiveToolModal('word_count')}
+                  className={toolbarBtnClass(activeToolModal === 'word_count')}
                 >
-                  <Maximize2 className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
-                  <span>Đọc tập trung</span>
+                  <Users className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
+                  <span>Đếm từ ({wordCount.toLocaleString('vi-VN')})</span>
+                </button>
+              </div>
+            )}
+
+            {/* TAB 7: BẢO VỆ (PROTECT) */}
+            {activeRibbonTab === 'protect' && (
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  disabled={isReadOnly}
+                  onClick={handleToggleDocProtect}
+                  aria-pressed={isDocProtected}
+                  className={toolbarBtnClass(isDocProtected)}
+                >
+                  {isDocProtected ? (
+                    <Unlock className="h-3.5 w-3.5 text-amber-600 mr-1" />
+                  ) : (
+                    <Lock className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
+                  )}
+                  <span>
+                    {isDocProtected
+                      ? 'Mở khóa tài liệu (đang chỉ đọc)'
+                      : 'Khóa chỉ đọc (Protect Document)'}
+                  </span>
                 </button>
 
                 <button
                   type="button"
-                  onClick={() => setActiveToolModal('extract_summary')}
-                  className={toolbarBtnClass(
-                    activeToolModal === 'extract_summary'
-                  )}
+                  onClick={() => setActiveToolModal('word_count')}
+                  className={toolbarBtnClass(activeToolModal === 'word_count')}
                 >
-                  <FileSearch className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
-                  <span>Trích xuất &amp; Tóm tắt</span>
+                  <ShieldCheck className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
+                  <span>Thống kê từ</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsFileInfoOpen(true)}
+                  className={toolbarBtnClass(isFileInfoOpen)}
+                >
+                  <Info className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
+                  <span>Thông tin &amp; Quyền tệp</span>
+                </button>
+              </div>
+            )}
+
+            {/* TAB 8: XEM (VIEW) */}
+            {activeRibbonTab === 'view' && (
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleSelectPageLayout('print')}
+                  aria-pressed={pageLayout === 'print'}
+                  className={toolbarBtnClass(pageLayout === 'print')}
+                >
+                  <ScanText className="h-3.5 w-3.5 mr-1" />
+                  <span>Bố cục In</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleSelectPageLayout('mobile')}
+                  aria-pressed={pageLayout === 'mobile'}
+                  className={toolbarBtnClass(pageLayout === 'mobile')}
+                >
+                  <Smartphone className="h-3.5 w-3.5 mr-1" />
+                  <span>Xem di động</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsReadMode(true)}
+                  className={toolbarBtnClass(false)}
+                >
+                  <Maximize2 className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
+                  <span>Chế độ Đọc</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowRuler((prev) => !prev)}
+                  aria-pressed={showRuler}
+                  className={toolbarBtnClass(showRuler)}
+                >
+                  <Ruler className="h-3.5 w-3.5 mr-1" />
+                  <span>Thước kẻ</span>
                 </button>
 
                 <button
@@ -3457,13 +4502,147 @@ export function WordWorkspace({
                   aria-pressed={isDesktopSidebarOpen}
                   className={toolbarBtnClass(isDesktopSidebarOpen)}
                 >
+                  <BookOpen className="h-3.5 w-3.5 mr-1" />
                   <span>Mục lục ({outlineEntries.length})</span>
+                </button>
+
+                <div className="inline-flex items-center gap-0.5 p-0.5 rounded-lg border border-slate-200/80">
+                  <button
+                    type="button"
+                    onClick={() => setZoomPercent((z) => Math.max(10, z - 10))}
+                    aria-label="Thu nhỏ"
+                    className="h-7 w-7 rounded flex items-center justify-center hover:bg-black/5"
+                  >
+                    <ZoomOut className="h-3.5 w-3.5" />
+                  </button>
+                  {WORD_VIEW_ZOOM_PRESETS.map((z) => (
+                    <button
+                      key={z}
+                      type="button"
+                      onClick={() => setZoomPercent(z)}
+                      className={`px-1.5 py-0.5 rounded text-[11px] font-semibold tabular-nums ${
+                        zoomPercent === z
+                          ? 'bg-[#185ABD] text-white'
+                          : isDark
+                            ? 'text-slate-300'
+                            : 'text-slate-700'
+                      }`}
+                    >
+                      {z}%
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setZoomPercent((z) => Math.min(300, z + 10))}
+                    aria-label="Phóng to"
+                    className="h-7 w-7 rounded flex items-center justify-center hover:bg-black/5"
+                  >
+                    <ZoomIn className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleFitToWidth}
+                    className="px-2 py-0.5 rounded bg-[#EEF4FF] text-[#185ABD] text-[11px] font-bold hover:bg-blue-100"
+                  >
+                    Fit
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 9: AI TOOLS */}
+            {activeRibbonTab === 'ai' && (
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setAiToolsModalTab('summary')}
+                  className={toolbarBtnClass(aiToolsModalTab === 'summary')}
+                >
+                  <Sparkles className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
+                  <span>Tóm tắt văn bản</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setAiToolsModalTab('grammar')}
+                  className={toolbarBtnClass(aiToolsModalTab === 'grammar')}
+                >
+                  <SpellCheck2 className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
+                  <span>Sửa chính tả &amp; ngữ pháp tiếng Việt</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setAiToolsModalTab('expand')}
+                  className={toolbarBtnClass(aiToolsModalTab === 'expand')}
+                >
+                  <Wand2 className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
+                  <span>Viết tiếp / Mở rộng đoạn văn</span>
                 </button>
               </div>
             )}
-          </div>
+            </div>
+          )}
 
           {/* Floating Ribbon Popovers */}
+          {openPopover === 'para_shading' && (
+            <div
+              role="menu"
+              className={`absolute left-80 top-full mt-1.5 w-56 rounded-xl border p-2.5 shadow-xl z-30 space-y-2 ${
+                isDark
+                  ? 'bg-[#1E2430] border-white/15 text-slate-100'
+                  : 'bg-white border-slate-200 text-slate-900'
+              }`}
+            >
+              <p className="text-[11px] font-semibold opacity-75">
+                Tô nền đoạn văn hiện tại
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {PARAGRAPH_SHADING_SWATCHES.map((sw) => (
+                  <button
+                    key={sw.label}
+                    type="button"
+                    onMouseDown={handlePreventMouseDown}
+                    onClick={() => handleApplyParagraphShading(sw.value)}
+                    className="px-2 py-1 rounded-lg border border-slate-300 text-[11px] font-medium text-slate-800 hover:border-[#185ABD]"
+                    style={{ backgroundColor: sw.value || '#FFFFFF' }}
+                  >
+                    {sw.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {openPopover === 'para_border' && (
+            <div
+              role="menu"
+              className={`absolute left-80 top-full mt-1.5 w-48 rounded-xl border p-1.5 shadow-xl z-30 ${
+                isDark
+                  ? 'bg-[#1E2430] border-white/15 text-slate-100'
+                  : 'bg-white border-slate-200 text-slate-900'
+              }`}
+            >
+              {(
+                [
+                  { kind: 'box', label: 'Khung đầy đủ' },
+                  { kind: 'bottom', label: 'Viền dưới' },
+                  { kind: 'left', label: 'Thanh trái' },
+                  { kind: 'none', label: 'Không viền' },
+                ] as const
+              ).map((b) => (
+                <button
+                  key={b.kind}
+                  type="button"
+                  onMouseDown={handlePreventMouseDown}
+                  onClick={() => handleApplyParagraphBorder(b.kind)}
+                  className="w-full text-left px-3 py-1.5 rounded-lg text-xs hover:bg-[#185ABD]/10"
+                >
+                  {b.label}
+                </button>
+              ))}
+            </div>
+          )}
           {openPopover === 'block' && (
             <div
               role="menu"
@@ -4000,30 +5179,30 @@ export function WordWorkspace({
             </div>
           )}
 
-          {/* Layout-Aware Scaled Page Host (25%-200% zoom only scales document) */}
+          {/* Layout-Aware Scaled Page Host (10%-300% zoom only scales document) */}
           {(() => {
             const isPrint = pageLayout === 'print';
             const scaledWidthPx = Math.round(basePaperWidthPx * zoomScale);
-            const outerStyle: CSSProperties =
-              isPrint && zoomScale !== 1
-                ? {
-                    width: `${scaledWidthPx}px`,
-                    ...(contentHeight > 0
-                      ? { height: `${Math.ceil(contentHeight * zoomScale)}px` }
-                      : {}),
-                    margin: '0 auto',
-                    position: 'relative',
-                  }
-                : {};
-            const innerStyle: CSSProperties =
-              isPrint && zoomScale !== 1
-                ? {
-                    ...hostCssVars,
-                    marginLeft: `${(scaledWidthPx - basePaperWidthPx) / 2}px`,
-                    transform: `scale(${zoomScale})`,
-                    transformOrigin: 'top center',
-                  }
-                : hostCssVars;
+            const outerStyle: CSSProperties = isPrint
+              ? {
+                  width: `${scaledWidthPx}px`,
+                  ...(contentHeight > 0
+                    ? { height: `${Math.ceil(contentHeight * zoomScale)}px` }
+                    : {}),
+                  margin: '0 auto',
+                  position: 'relative',
+                }
+              : {};
+            const innerStyle: CSSProperties = isPrint
+              ? {
+                  ...hostCssVars,
+                  width: `${basePaperWidthPx}px`,
+                  maxWidth: `${basePaperWidthPx}px`,
+                  transform:
+                    zoomScale === 1 ? undefined : `scale(${zoomScale})`,
+                  transformOrigin: 'top left',
+                }
+              : hostCssVars;
 
             const paperPaddingStyle: CSSProperties =
               !isDocxPreviewRendered && isPrint
@@ -4045,19 +5224,49 @@ export function WordWorkspace({
 
             return (
               <div style={outerStyle}>
+                {/* Protected Document Status Banner */}
+                {isDocProtected && !isReadMode && (
+                  <div className="mb-2 px-3 py-1.5 rounded-lg border border-amber-300 bg-amber-50 text-amber-900 text-xs flex items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 font-medium">
+                      <Lock className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                      Tài liệu đang được khóa chỉ đọc (Protect Document).
+                    </span>
+                    {!isReadOnly && (
+                      <button
+                        type="button"
+                        onClick={handleToggleDocProtect}
+                        className="px-2.5 py-1 rounded-md bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-semibold shrink-0"
+                      >
+                        Mở khóa chỉnh sửa
+                      </button>
+                    )}
+                  </div>
+                )}
+
                 <div
                   ref={pageSurfaceRef}
-                  style={innerStyle}
-                  className={`lite-word-host mx-auto transition-colors duration-200 ${
+                  style={{
+                    ...innerStyle,
+                    ...(!isDocxPreviewRendered &&
+                    customPageBg &&
+                    paperTheme !== 'dark'
+                      ? { backgroundColor: customPageBg }
+                      : {}),
+                  }}
+                  className={`relative lite-word-host mx-auto transition-colors duration-200 ${
                     pageLayout === 'mobile'
                       ? 'word-layout-mobile'
                       : 'word-layout-print'
                   } ${
                     isDocxPreviewRendered
                       ? ''
-                      : `lite-word-editor-surface rounded-xl sm:rounded-2xl border shadow-sm flex flex-col ${themeStyle.paperBg} ${themeStyle.paperBorder} ${
+                      : `lite-word-editor-surface rounded-sm border shadow-[0_4px_20px_rgba(0,0,0,0.06)] flex flex-col ${themeStyle.paperBg} ${themeStyle.paperBorder} ${
                           pageBorderEnabled
-                            ? 'ring-2 ring-[#185ABD]/35 ring-offset-2 ring-offset-transparent'
+                            ? pageBorderStyle === 'double'
+                              ? 'ring-4 ring-double ring-slate-500/50'
+                              : pageBorderStyle === 'thin'
+                                ? 'ring-1 ring-slate-400'
+                                : 'ring-2 ring-[#185ABD]/45 ring-offset-2 ring-offset-transparent'
                             : ''
                         }`
                   }`}
@@ -4089,7 +5298,11 @@ export function WordWorkspace({
 
                   <div
                     ref={editorRef}
-                    contentEditable={!isEditingLocked && !isRenderingDocx}
+                    contentEditable={
+                      !isEditingLocked &&
+                      !isRenderingDocx &&
+                      activeDrawTool === null
+                    }
                     suppressContentEditableWarning
                     spellCheck={false}
                     role="textbox"
@@ -4109,8 +5322,31 @@ export function WordWorkspace({
                       }
                       handleEditorMutation();
                     }}
+                    onDoubleClick={() => {
+                      if (
+                        wordEditMode === 'original' &&
+                        !isReadOnly &&
+                        !isDocProtected &&
+                        editorRef.current
+                      ) {
+                        editorRef.current.contentEditable = 'true';
+                        setWordEditMode('edit');
+                        editorRef.current.focus();
+                      }
+                    }}
                     onClick={(event) => {
                       const target = event.target;
+                      if (target instanceof HTMLElement) {
+                        const tocLink = target.closest('a[data-toc-target]');
+                        if (tocLink instanceof HTMLAnchorElement) {
+                          event.preventDefault();
+                          const targetId = tocLink.dataset.tocTarget;
+                          if (targetId) {
+                            handleJumpToSection(targetId);
+                          }
+                          return;
+                        }
+                      }
                       if (
                         target instanceof HTMLImageElement &&
                         editorRef.current?.contains(target)
@@ -4142,6 +5378,56 @@ export function WordWorkspace({
                             isPrint ? '' : 'px-5 sm:px-10 py-6 sm:py-10'
                           } outline-none break-words ${themeStyle.textPrimary} ${themeStyle.editorProse} [&_h1]:text-[1.65em] [&_h1]:font-bold [&_h1]:leading-snug [&_h1]:tracking-tight [&_h1]:mb-4 [&_h1]:mt-2 [&_h1]:scroll-mt-6 [&_h2]:text-[1.3em] [&_h2]:font-bold [&_h2]:leading-snug [&_h2]:mt-7 [&_h2]:mb-3 [&_h2]:pb-2 [&_h2]:border-b [&_h2]:scroll-mt-6 [&_h3]:text-[1.12em] [&_h3]:font-semibold [&_h3]:mt-5 [&_h3]:mb-2 [&_h3]:scroll-mt-6 [&_p]:mb-[var(--lite-doc-para-spacing,12px)] [&_p]:indent-[var(--lite-doc-first-indent,0px)] [&_ul]:list-disc [&_ul]:pl-6 [&_ul]:mb-4 [&_ul]:space-y-1.5 [&_ol]:list-decimal [&_ol]:pl-6 [&_ol]:mb-4 [&_ol]:space-y-1.5 [&_blockquote]:border-l-4 [&_blockquote]:rounded-r-xl [&_blockquote]:px-4 [&_blockquote]:py-3 [&_blockquote]:my-4 [&_table]:w-full [&_table]:border-collapse [&_table]:my-5 [&_table]:text-[0.94em] [&_th]:border [&_th]:px-3 [&_th]:py-2 [&_th]:text-left [&_th]:font-semibold [&_td]:border [&_td]:px-3 [&_td]:py-2 [&_td]:align-top [&_img]:max-w-full [&_img]:h-auto [&_img]:rounded-xl [&_img]:my-4 [&_img]:cursor-pointer`
                     }
+                  />
+
+                  {/* Direct Corner Drag Resize Overlay for Selected Image */}
+                  {!isReadMode &&
+                    !isEditingLocked &&
+                    selectedImageEl &&
+                    pageSurfaceRef.current &&
+                    (() => {
+                      void imageResizeTick;
+                      const surfaceRect =
+                        pageSurfaceRef.current.getBoundingClientRect();
+                      const imgRect = selectedImageEl.getBoundingClientRect();
+                      const left = (imgRect.left - surfaceRect.left) / zoomScale;
+                      const top = (imgRect.top - surfaceRect.top) / zoomScale;
+                      const width = imgRect.width / zoomScale;
+                      const height = imgRect.height / zoomScale;
+                      return (
+                        <div
+                          aria-hidden="true"
+                          style={{
+                            left: `${left}px`,
+                            top: `${top}px`,
+                            width: `${width}px`,
+                            height: `${height}px`,
+                          }}
+                          className="pointer-events-none absolute z-30 border-2 border-[#185ABD] rounded-lg"
+                        >
+                          <button
+                            type="button"
+                            onMouseDown={handleStartImageCornerResize}
+                            aria-label="Kéo góc để đổi kích thước ảnh"
+                            title="Kéo góc đổi kích thước ảnh"
+                            className="pointer-events-auto absolute -right-2 -bottom-2 h-4 w-4 rounded-full bg-[#185ABD] border-2 border-white shadow cursor-nwse-resize"
+                          />
+                        </div>
+                      );
+                    })()}
+
+                  {/* Freehand Ink Drawing Overlay (pointer-events-none when inactive) */}
+                  <WordDrawingOverlay
+                    strokes={wordDrawings}
+                    activeTool={activeDrawTool}
+                    strokeColor={drawColor}
+                    strokeWidth={drawWidth}
+                    disabled={isReadOnly || isDocProtected || isReadMode}
+                    onChangeStrokes={(next) => {
+                      setWordDrawings(next);
+                      setIsDirty(true);
+                      setEditRevision((prev) => prev + 1);
+                    }}
                   />
 
                   {/* Optional Page Footer */}
@@ -4265,6 +5551,60 @@ export function WordWorkspace({
         onInsertHtml={(html) => {
           executeFormatCommand('insertHTML', html);
         }}
+      />
+
+      <WordFileInfoModal
+        isOpen={isFileInfoOpen}
+        isDark={isDark}
+        document={document}
+        stats={docStats}
+        isProtected={isDocProtected}
+        hasOriginalBinary={Boolean(
+          document.rawArrayBuffer && document.rawArrayBuffer.byteLength > 0
+        )}
+        onClose={() => setIsFileInfoOpen(false)}
+      />
+
+      <WordFootnoteModal
+        isOpen={isFootnoteModalOpen}
+        isDark={isDark}
+        nextIndex={getNextFootnoteIndex()}
+        onInsert={handleInsertFootnote}
+        onClose={() => setIsFootnoteModalOpen(false)}
+      />
+
+      <WordCitationModal
+        isOpen={isCitationModalOpen}
+        isDark={isDark}
+        nextBibNumber={getNextBibNumber()}
+        onInsert={handleInsertCitation}
+        onClose={() => setIsCitationModalOpen(false)}
+      />
+
+      <WordAiToolsModal
+        isOpen={aiToolsModalTab !== null}
+        initialTab={aiToolsModalTab ?? 'summary'}
+        isDark={isDark}
+        documentTitle={document.title}
+        plainText={(editorRef.current?.innerText ?? '').trim()}
+        selectedText={selectedQuote}
+        headings={outlineEntries.map((entry) => entry.section.title)}
+        isReadOnly={isEditingLocked}
+        onInsertHtmlAtTop={(html) => {
+          const editorEl = editorRef.current;
+          if (!editorEl || isEditingLocked) return;
+          const wrapper = window.document.createElement('div');
+          wrapper.innerHTML = html;
+          const targetRoot =
+            editorEl.querySelector('section.lite-docx') ?? editorEl;
+          targetRoot.insertBefore(wrapper, targetRoot.firstChild);
+          handleEditorMutation();
+        }}
+        onInsertHtmlAtCursor={(html) => {
+          executeFormatCommand('insertHTML', html);
+        }}
+        onApplyGrammarFixes={handleApplyAiGrammarFixes}
+        onClose={() => setAiToolsModalTab(null)}
       />
     </div>
   );

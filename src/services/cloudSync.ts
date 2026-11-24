@@ -7,17 +7,23 @@ import {
   uploadFileViaR2PresignedUrl,
 } from './r2Storage';
 import type {
+  CellStyle,
   CloudUserSummary,
   DocumentItem,
   DocumentType,
   ExcelChartItem,
   ExcelChartSeries,
   ExcelConditionalFormat,
+  ExcelDrawingStroke,
+  ExcelFloatingObject,
+  ExcelPageSetup,
   OutlineSection,
   PdfPageItem,
   SlideAnimationConfig,
   SlideChartData,
   SlideChartSeries,
+  SlideCommentItem,
+  SlideDrawingStroke,
   SlideImageItem,
   SlidePreviewItem,
   SlideShapeKind,
@@ -26,6 +32,7 @@ import type {
   SpreadsheetMergeRange,
   SpreadsheetSheet,
   WordCommentItem,
+  WordDrawingStroke,
 } from '../types/document';
 
 const STORAGE_BUCKET = 'user-files';
@@ -34,6 +41,8 @@ const MAX_INLINE_DATA_URI_CHARS_WITH_BINARY = 96_000;
 const MAX_INLINE_DATA_URI_CHARS_NO_BINARY = 350_000;
 const MAX_SLIDE_INLINE_IMAGE_BUDGET_CHARS = 900_000;
 const MAX_JSONB_STRING_CHARS = 65_536;
+const MAX_DRAWING_STROKES = 400;
+const MAX_POINTS_PER_STROKE = 2000;
 
 const CLOUD_MIME_BY_TYPE: Record<DocumentType, string> = {
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
@@ -65,6 +74,9 @@ export interface CloudParsedContent {
   outline: OutlineSection[];
   wordParagraphs?: Record<string, string[]>;
   wordComments?: WordCommentItem[];
+  wordDrawings?: WordDrawingStroke[];
+  wordProtected?: boolean;
+  slideProtected?: boolean;
 }
 
 interface CloudDocumentRow {
@@ -385,7 +397,8 @@ function sanitizeSlidesForCloud(
               animType === 'appear' ||
               animType === 'fadeIn' ||
               animType === 'flyIn' ||
-              animType === 'zoomIn'
+              animType === 'zoomIn' ||
+              animType === 'pulse'
             ) {
               const safeAnim: SlideAnimationConfig = { type: animType };
               if (
@@ -398,6 +411,54 @@ function sanitizeSlidesForCloud(
             } else {
               delete safeBlock.animation;
             }
+          }
+          if (typeof block.underline === 'boolean') {
+            safeBlock.underline = block.underline;
+          } else {
+            delete safeBlock.underline;
+          }
+          if (typeof block.strikethrough === 'boolean') {
+            safeBlock.strikethrough = block.strikethrough;
+          } else {
+            delete safeBlock.strikethrough;
+          }
+          if (typeof block.highlightColor === 'string' && block.highlightColor.trim()) {
+            safeBlock.highlightColor = block.highlightColor.trim().slice(0, 64);
+          } else {
+            delete safeBlock.highlightColor;
+          }
+          if (
+            block.textScript === 'normal' ||
+            block.textScript === 'super' ||
+            block.textScript === 'sub'
+          ) {
+            safeBlock.textScript = block.textScript;
+          } else {
+            delete safeBlock.textScript;
+          }
+          if (
+            typeof block.lineHeight === 'number' &&
+            Number.isFinite(block.lineHeight) &&
+            block.lineHeight > 0
+          ) {
+            safeBlock.lineHeight = block.lineHeight;
+          } else {
+            delete safeBlock.lineHeight;
+          }
+          if (block.textColumns === 1 || block.textColumns === 2) {
+            safeBlock.textColumns = block.textColumns;
+          } else {
+            delete safeBlock.textColumns;
+          }
+          if (
+            block.align === 'left' ||
+            block.align === 'center' ||
+            block.align === 'right' ||
+            block.align === 'justify'
+          ) {
+            safeBlock.align = block.align;
+          } else {
+            delete safeBlock.align;
           }
           if (typeof block.groupId === 'string' && block.groupId.trim()) {
             safeBlock.groupId = block.groupId;
@@ -454,14 +515,221 @@ function sanitizeSlidesForCloud(
         }
       }
 
+      const cleanSlideDrawings: SlideDrawingStroke[] | undefined =
+        sanitizeDrawingStrokes(slide.drawings, 'sdraw', '#C43E1C');
+      if (cleanSlideDrawings) {
+        nextSlide.drawings = cleanSlideDrawings;
+      } else {
+        delete nextSlide.drawings;
+      }
+
+      if (Array.isArray(slide.comments)) {
+        const cleanComments: SlideCommentItem[] = [];
+        for (const item of slide.comments) {
+          if (cleanComments.length >= 200) {
+            break;
+          }
+          if (!isPlainRecord(item) || typeof item.text !== 'string') {
+            continue;
+          }
+          const text = item.text.trim();
+          if (!text) {
+            continue;
+          }
+          cleanComments.push({
+            id:
+              typeof item.id === 'string' && item.id.trim()
+                ? item.id.trim().slice(0, 120)
+                : `scmt-${cleanComments.length + 1}`,
+            text: text.slice(0, 4096),
+            author:
+              typeof item.author === 'string' && item.author.trim()
+                ? item.author.trim().slice(0, 120)
+                : 'Người dùng',
+            createdAt:
+              typeof item.createdAt === 'string' && item.createdAt.trim()
+                ? item.createdAt.trim().slice(0, 64)
+                : new Date().toISOString(),
+          });
+        }
+        if (cleanComments.length > 0) {
+          nextSlide.comments = cleanComments;
+        } else {
+          delete nextSlide.comments;
+        }
+      } else {
+        delete nextSlide.comments;
+      }
+
+      if (typeof slide.footerText === 'string') {
+        nextSlide.footerText = slide.footerText.trim().slice(0, 300);
+      } else {
+        delete nextSlide.footerText;
+      }
+
+      if (typeof slide.showSlideNumber === 'boolean') {
+        nextSlide.showSlideNumber = slide.showSlideNumber;
+      } else {
+        delete nextSlide.showSlideNumber;
+      }
+
       return nextSlide;
     });
 }
 
-function sanitizeSheetsForCloud(rawSheets: unknown): SpreadsheetSheet[] | undefined {
+function sanitizeDrawingStrokes(
+  raw: unknown,
+  idPrefix: string,
+  fallbackColor: string
+): WordDrawingStroke[] | undefined {
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+  const cleanStrokes: WordDrawingStroke[] = [];
+  for (const stroke of raw) {
+    if (cleanStrokes.length >= MAX_DRAWING_STROKES) {
+      break;
+    }
+    if (!isPlainRecord(stroke)) {
+      continue;
+    }
+    const tool = stroke.tool;
+    if (tool !== 'pen' && tool !== 'highlighter') {
+      continue;
+    }
+    if (!Array.isArray(stroke.points)) {
+      continue;
+    }
+    const points: Array<{ x: number; y: number }> = [];
+    for (const pt of stroke.points) {
+      if (points.length >= MAX_POINTS_PER_STROKE) {
+        break;
+      }
+      if (
+        isPlainRecord(pt) &&
+        typeof pt.x === 'number' &&
+        typeof pt.y === 'number' &&
+        Number.isFinite(pt.x) &&
+        Number.isFinite(pt.y)
+      ) {
+        points.push({ x: pt.x, y: pt.y });
+      }
+    }
+    if (points.length === 0) {
+      continue;
+    }
+    cleanStrokes.push({
+      id:
+        typeof stroke.id === 'string' && stroke.id.trim()
+          ? stroke.id.trim()
+          : `${idPrefix}-${cleanStrokes.length + 1}`,
+      tool,
+      color:
+        typeof stroke.color === 'string' && stroke.color.trim()
+          ? stroke.color.trim().slice(0, 64)
+          : fallbackColor,
+      width:
+        typeof stroke.width === 'number' &&
+        Number.isFinite(stroke.width) &&
+        stroke.width > 0
+          ? stroke.width
+          : 2,
+      points,
+    });
+  }
+  return cleanStrokes.length > 0 ? cleanStrokes : undefined;
+}
+
+function sanitizeWordDrawingsForCloud(
+  raw: unknown
+): WordDrawingStroke[] | undefined {
+  return sanitizeDrawingStrokes(raw, 'wdraw', '#185ABD');
+}
+
+function sanitizeCellStyleForCloud(rawStyle: unknown): CellStyle | null {
+  if (!isPlainRecord(rawStyle)) {
+    return null;
+  }
+  const style: CellStyle = {};
+  if (typeof rawStyle.bold === 'boolean') style.bold = rawStyle.bold;
+  if (typeof rawStyle.italic === 'boolean') style.italic = rawStyle.italic;
+  if (typeof rawStyle.underline === 'boolean') style.underline = rawStyle.underline;
+  if (typeof rawStyle.strike === 'boolean') style.strike = rawStyle.strike;
+  if (typeof rawStyle.fontSize === 'number' && Number.isFinite(rawStyle.fontSize) && rawStyle.fontSize > 0) {
+    style.fontSize = rawStyle.fontSize;
+  }
+  if (typeof rawStyle.fontFamily === 'string' && rawStyle.fontFamily.trim()) {
+    style.fontFamily = rawStyle.fontFamily.trim().slice(0, 120);
+  }
+  if (typeof rawStyle.textColor === 'string' && rawStyle.textColor.trim()) {
+    style.textColor = rawStyle.textColor.trim().slice(0, 64);
+  }
+  if (typeof rawStyle.bgColor === 'string' && rawStyle.bgColor.trim()) {
+    style.bgColor = rawStyle.bgColor.trim().slice(0, 64);
+  }
+  if (
+    rawStyle.align === 'left' ||
+    rawStyle.align === 'center' ||
+    rawStyle.align === 'right' ||
+    rawStyle.align === 'justify'
+  ) {
+    style.align = rawStyle.align;
+  }
+  if (
+    rawStyle.valign === 'top' ||
+    rawStyle.valign === 'middle' ||
+    rawStyle.valign === 'bottom'
+  ) {
+    style.valign = rawStyle.valign;
+  }
+  if (typeof rawStyle.wrapText === 'boolean') style.wrapText = rawStyle.wrapText;
+  if (typeof rawStyle.numFmt === 'string' && rawStyle.numFmt.trim()) {
+    style.numFmt = rawStyle.numFmt.slice(0, 120);
+  }
+  if (
+    rawStyle.textRotation === 'horizontal' ||
+    rawStyle.textRotation === 'vertical' ||
+    rawStyle.textRotation === 'up45' ||
+    rawStyle.textRotation === 'down45'
+  ) {
+    style.textRotation = rawStyle.textRotation;
+  }
+  if (typeof rawStyle.hyperlink === 'string') {
+    const trimmedLink = rawStyle.hyperlink.trim();
+    if (
+      trimmedLink &&
+      !/^(?:javascript|vbscript|blob):/i.test(trimmedLink) &&
+      trimmedLink.length <= 2048
+    ) {
+      style.hyperlink = trimmedLink;
+    }
+  }
+  if (typeof rawStyle.borderTop === 'string' && rawStyle.borderTop.trim()) {
+    style.borderTop = rawStyle.borderTop.trim().slice(0, 120);
+  }
+  if (typeof rawStyle.borderRight === 'string' && rawStyle.borderRight.trim()) {
+    style.borderRight = rawStyle.borderRight.trim().slice(0, 120);
+  }
+  if (typeof rawStyle.borderBottom === 'string' && rawStyle.borderBottom.trim()) {
+    style.borderBottom = rawStyle.borderBottom.trim().slice(0, 120);
+  }
+  if (typeof rawStyle.borderLeft === 'string' && rawStyle.borderLeft.trim()) {
+    style.borderLeft = rawStyle.borderLeft.trim().slice(0, 120);
+  }
+  return Object.keys(style).length > 0 ? style : null;
+}
+
+function sanitizeSheetsForCloud(
+  rawSheets: unknown,
+  options?: { hasBinaryBackup?: boolean; stripOversizedDataUris?: boolean }
+): SpreadsheetSheet[] | undefined {
   if (!Array.isArray(rawSheets)) {
     return undefined;
   }
+  const shouldStripOversizedData = options?.stripOversizedDataUris !== false;
+  const maxInlineImageLength = options?.hasBinaryBackup
+    ? MAX_INLINE_DATA_URI_CHARS_WITH_BINARY
+    : MAX_INLINE_DATA_URI_CHARS_NO_BINARY;
 
   const cleanedSheets: SpreadsheetSheet[] = [];
   rawSheets.forEach((entry, index) => {
@@ -513,10 +781,15 @@ function sanitizeSheetsForCloud(rawSheets: unknown): SpreadsheetSheet[] | undefi
     };
 
     if (isPlainRecord(entry.cellStyles)) {
-      const cleanedCellStyles = sanitizeJsonSafeValue(entry.cellStyles, 4096, 1);
-      if (isPlainRecord(cleanedCellStyles) && Object.keys(cleanedCellStyles).length > 0) {
-        cleanedSheet.cellStyles =
-          cleanedCellStyles as unknown as SpreadsheetSheet['cellStyles'];
+      const cleanedCellStyles: Record<string, CellStyle> = {};
+      for (const [cellKey, rawStyle] of Object.entries(entry.cellStyles)) {
+        const sanitizedStyle = sanitizeCellStyleForCloud(rawStyle);
+        if (sanitizedStyle) {
+          cleanedCellStyles[cellKey] = sanitizedStyle;
+        }
+      }
+      if (Object.keys(cleanedCellStyles).length > 0) {
+        cleanedSheet.cellStyles = cleanedCellStyles;
       }
     }
 
@@ -704,6 +977,160 @@ function sanitizeSheetsForCloud(rawSheets: unknown): SpreadsheetSheet[] | undefi
       }
     }
 
+    if (isPlainRecord(entry.cellComments)) {
+      const cleanComments: Record<string, string> = {};
+      for (const [cellKey, commentVal] of Object.entries(entry.cellComments)) {
+        if (typeof commentVal === 'string' && commentVal.trim()) {
+          cleanComments[cellKey] = commentVal.trim().slice(0, 4096);
+        }
+      }
+      if (Object.keys(cleanComments).length > 0) {
+        cleanedSheet.cellComments = cleanComments;
+      }
+    }
+
+    const cleanDrawings: ExcelDrawingStroke[] | undefined = sanitizeDrawingStrokes(
+      entry.drawings,
+      'draw',
+      '#EF4444'
+    );
+    if (cleanDrawings) {
+      cleanedSheet.drawings = cleanDrawings;
+    }
+
+    if (Array.isArray(entry.floatingObjects)) {
+      const cleanFloating: ExcelFloatingObject[] = [];
+      for (const obj of entry.floatingObjects) {
+        if (!isPlainRecord(obj)) {
+          continue;
+        }
+        const kind = obj.kind;
+        if (kind !== 'image' && kind !== 'shape' && kind !== 'textbox') {
+          continue;
+        }
+        const x =
+          typeof obj.x === 'number' && Number.isFinite(obj.x) ? obj.x : 0;
+        const y =
+          typeof obj.y === 'number' && Number.isFinite(obj.y) ? obj.y : 0;
+        const width =
+          typeof obj.width === 'number' &&
+          Number.isFinite(obj.width) &&
+          obj.width > 0
+            ? obj.width
+            : 160;
+        const height =
+          typeof obj.height === 'number' &&
+          Number.isFinite(obj.height) &&
+          obj.height > 0
+            ? obj.height
+            : 100;
+
+        let safeSrc: string | undefined;
+        if (typeof obj.src === 'string') {
+          const trimmedSrc = obj.src.trim();
+          const isOversizedData =
+            shouldStripOversizedData &&
+            trimmedSrc.startsWith('data:') &&
+            trimmedSrc.length > maxInlineImageLength;
+          if (trimmedSrc && !trimmedSrc.startsWith('blob:') && !isOversizedData) {
+            safeSrc = trimmedSrc;
+          }
+        }
+        if (kind === 'image' && !safeSrc) {
+          continue;
+        }
+
+        const floatingItem: ExcelFloatingObject = {
+          id:
+            typeof obj.id === 'string' && obj.id.trim()
+              ? obj.id.trim()
+              : `obj-${cleanFloating.length + 1}`,
+          kind,
+          x,
+          y,
+          width,
+          height,
+        };
+        if (safeSrc) {
+          floatingItem.src = safeSrc;
+        }
+        if (typeof obj.text === 'string') {
+          floatingItem.text = obj.text.slice(0, MAX_JSONB_STRING_CHARS);
+        }
+        if (
+          obj.shapeKind === 'rect' ||
+          obj.shapeKind === 'roundRect' ||
+          obj.shapeKind === 'ellipse' ||
+          obj.shapeKind === 'arrowRight' ||
+          obj.shapeKind === 'star' ||
+          obj.shapeKind === 'callout'
+        ) {
+          floatingItem.shapeKind = obj.shapeKind;
+        }
+        if (typeof obj.fillColor === 'string' && obj.fillColor.trim()) {
+          floatingItem.fillColor = obj.fillColor.trim().slice(0, 64);
+        }
+        if (typeof obj.borderColor === 'string' && obj.borderColor.trim()) {
+          floatingItem.borderColor = obj.borderColor.trim().slice(0, 64);
+        }
+        cleanFloating.push(floatingItem);
+      }
+      if (cleanFloating.length > 0) {
+        cleanedSheet.floatingObjects = cleanFloating;
+      }
+    }
+
+    if (isPlainRecord(entry.pageSetup)) {
+      const rawSetup = entry.pageSetup;
+      const margins =
+        rawSetup.margins === 'normal' ||
+        rawSetup.margins === 'narrow' ||
+        rawSetup.margins === 'wide'
+          ? rawSetup.margins
+          : 'normal';
+      const orientation =
+        rawSetup.orientation === 'portrait' || rawSetup.orientation === 'landscape'
+          ? rawSetup.orientation
+          : 'portrait';
+      const paperSize =
+        rawSetup.paperSize === 'A4' ||
+        rawSetup.paperSize === 'A5' ||
+        rawSetup.paperSize === 'Letter'
+          ? rawSetup.paperSize
+          : 'A4';
+      const cleanPageSetup: ExcelPageSetup = {
+        margins,
+        orientation,
+        paperSize,
+      };
+      if (typeof rawSetup.printArea === 'string' && rawSetup.printArea.trim()) {
+        cleanPageSetup.printArea = rawSetup.printArea.trim().slice(0, 64);
+      }
+      if (typeof rawSetup.printGridlines === 'boolean') {
+        cleanPageSetup.printGridlines = rawSetup.printGridlines;
+      }
+      cleanedSheet.pageSetup = cleanPageSetup;
+    }
+
+    if (typeof entry.isProtected === 'boolean') {
+      cleanedSheet.isProtected = entry.isProtected;
+    }
+
+    if (Array.isArray(entry.lockedRanges)) {
+      const cleanLocked = entry.lockedRanges
+        .filter((range): range is string => typeof range === 'string')
+        .map((range) => range.trim())
+        .filter((range) => range.length > 0 && range.length <= 64)
+        .slice(0, 500);
+      if (cleanLocked.length > 0) {
+        cleanedSheet.lockedRanges = cleanLocked;
+      }
+    }
+
+    if (typeof entry.showGridlines === 'boolean') {
+      cleanedSheet.showGridlines = entry.showGridlines;
+    }
+
     cleanedSheets.push(cleanedSheet);
   });
 
@@ -838,7 +1265,10 @@ function normalizeParsedContent(
   ) {
     normalized.slideAspectRatio = raw.slideAspectRatio;
   }
-  const normalizedSheets = sanitizeSheetsForCloud(raw.sheets);
+  const normalizedSheets = sanitizeSheetsForCloud(raw.sheets, {
+    hasBinaryBackup: options?.hasBinaryBackup,
+    stripOversizedDataUris: false,
+  });
   if (normalizedSheets) {
     normalized.sheets = normalizedSheets;
   }
@@ -852,6 +1282,16 @@ function normalizeParsedContent(
   const normalizedComments = sanitizeWordCommentsForCloud(raw.wordComments);
   if (normalizedComments) {
     normalized.wordComments = normalizedComments;
+  }
+  const normalizedWordDrawings = sanitizeWordDrawingsForCloud(raw.wordDrawings);
+  if (normalizedWordDrawings) {
+    normalized.wordDrawings = normalizedWordDrawings;
+  }
+  if (typeof raw.wordProtected === 'boolean') {
+    normalized.wordProtected = raw.wordProtected;
+  }
+  if (typeof raw.slideProtected === 'boolean') {
+    normalized.slideProtected = raw.slideProtected;
   }
 
   return normalized;
@@ -935,6 +1375,9 @@ function mapCloudRowToDocumentItem(row: CloudDocumentRow): DocumentItem {
     wordParagraphs: parsed.wordParagraphs,
     wordHtml: parsed.wordHtml,
     wordComments: parsed.wordComments,
+    wordDrawings: parsed.wordDrawings,
+    wordProtected: parsed.wordProtected,
+    slideProtected: parsed.slideProtected,
     isUploaded: true,
     lastSavedAt: row.updated_at ?? undefined,
     lastAccessedAt: row.last_accessed_at ?? undefined,
@@ -1415,7 +1858,10 @@ export async function upsertCloudDocument(
     stripOversizedDataUris: true,
   });
   const sanitizedOutline = sanitizeOutlineForCloud(doc.outline ?? []);
-  const sanitizedSheets = sanitizeSheetsForCloud(doc.sheets);
+  const sanitizedSheets = sanitizeSheetsForCloud(doc.sheets, {
+    hasBinaryBackup,
+    stripOversizedDataUris: true,
+  });
   const sanitizedPdfPages = sanitizePdfPagesForCloud(doc.pdfPages, hasBinaryBackup);
 
   const parsedContent: CloudParsedContent = {
@@ -1445,6 +1891,16 @@ export async function upsertCloudDocument(
   const sanitizedWordComments = sanitizeWordCommentsForCloud(doc.wordComments);
   if (sanitizedWordComments) {
     parsedContent.wordComments = sanitizedWordComments;
+  }
+  const sanitizedWordDrawings = sanitizeWordDrawingsForCloud(doc.wordDrawings);
+  if (sanitizedWordDrawings) {
+    parsedContent.wordDrawings = sanitizedWordDrawings;
+  }
+  if (typeof doc.wordProtected === 'boolean') {
+    parsedContent.wordProtected = doc.wordProtected;
+  }
+  if (typeof doc.slideProtected === 'boolean') {
+    parsedContent.slideProtected = doc.slideProtected;
   }
 
   const touchUpdatedAt = options?.touchUpdatedAt !== false;

@@ -6,62 +6,102 @@ import type {
   MouseEvent as ReactMouseEvent,
 } from 'react';
 import {
+  AArrowDown,
+  AArrowUp,
+  AlertTriangle,
   AlignCenter,
+  AlignJustify,
   AlignLeft,
   AlignRight,
   AlignVerticalJustifyCenter,
   AlignVerticalJustifyEnd,
   AlignVerticalJustifyStart,
   ArrowDown,
+  ArrowDownToLine,
+  ArrowRightToLine,
   ArrowUp,
   BarChart3,
   Bold,
   Calculator,
-  Check,
+  CaseSensitive,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  ClipboardPaste,
   Columns3,
   Copy,
   Download,
   Eraser,
+  ExternalLink,
   Eye,
   EyeOff,
+  FileDown,
   FileSpreadsheet,
+  FileText,
   Filter,
   Grid3x3,
+  Highlighter,
+  History,
+  ImagePlus,
+  Info,
   Italic,
   LineChart,
+  Link2,
   ListChecks,
   ListFilter,
   Loader2,
+  Lock,
+  Maximize2,
   Merge,
+  MessageSquarePlus,
+  MousePointer2,
+  Paintbrush,
   PaintBucket,
   Palette,
+  PenTool,
   Pencil,
+  Percent,
   PieChart,
   Plus,
+  Printer,
+  RefreshCw,
   RotateCcw,
   Rows3,
   Save,
+  Scissors,
   Search,
+  Shapes,
+  Share2,
+  Shield,
+  ShieldCheck,
+  ShieldOff,
   Sigma,
   Snowflake,
   Sparkles,
   Split,
+  Strikethrough,
+  Table,
   Table2,
   Trash2,
   Type,
   Underline,
+  Unlock,
+  Users,
+  Wand2,
   WrapText,
   X,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import type {
   CellStyle,
   DocumentItem,
   ExcelChartItem,
   ExcelConditionalFormat,
+  ExcelDrawingStroke,
+  ExcelFloatingObject,
+  ExcelPageSetup,
   ModalType,
   SpreadsheetMergeRange,
   SpreadsheetSheet,
@@ -75,6 +115,7 @@ import {
   letterToColumnIndex,
 } from '../../utils/formulaEvaluator';
 import { exportExcelToXlsx } from '../../utils/fileExporter';
+import { downloadDocumentAsPdf } from '../../utils/quickConverter';
 import { saveFileUniversal } from '../../utils/saveFileUniversal';
 import type {
   CollaboratorPresence,
@@ -90,13 +131,24 @@ import {
   ConditionalFormatModal,
   DataValidationModal,
   evaluateConditionalFormats,
-  EXCEL_FORMULA_CATALOG,
-  EXCEL_FORMULA_CATEGORY_LABELS,
   ExcelChartsPanel,
   InsertChartModal,
   TextToColumnsModal,
 } from './ExcelDataChartModal';
-import type { ExcelFormulaCategory } from './ExcelDataChartModal';
+import {
+  ExcelAiToolsModal,
+  ExcelCellMetaModal,
+  ExcelDrawingOverlay,
+  ExcelFloatingObjectsLayer,
+  ExcelFormulaLibraryModal,
+  ONLYOFFICE_FORMULA_LIBRARY,
+} from './ExcelOnlyOfficePanels';
+import type {
+  ExcelAiToolTab,
+  ExcelCellMetaMode,
+  ExcelDrawingTool,
+  FormulaLibraryCategory,
+} from './ExcelOnlyOfficePanels';
 
 export interface ExcelWorkspaceProps {
   document: DocumentItem;
@@ -120,16 +172,103 @@ export interface ExcelWorkspaceProps {
   incomingRemotePatch?: DocRealtimePatch | null;
 }
 
-type RibbonTabId = 'home' | 'insert-formula' | 'data-view';
+type RibbonTabId =
+  | 'file'
+  | 'home'
+  | 'insert'
+  | 'draw'
+  | 'layout'
+  | 'formulas'
+  | 'data'
+  | 'collab'
+  | 'protect'
+  | 'view'
+  | 'ai';
 
 type OpenPopoverId =
   | 'fillColor'
   | 'textColor'
   | 'borders'
   | 'autoSum'
-  | 'formulas'
   | 'freeze'
+  | 'case'
+  | 'textDir'
+  | 'fill'
+  | 'clear'
+  | 'shapes'
+  | 'customSort'
+  | 'commentsList'
   | null;
+
+const ONLYOFFICE_RIBBON_TABS: ReadonlyArray<{
+  id: RibbonTabId;
+  label: string;
+}> = [
+  { id: 'file', label: 'Tệp' },
+  { id: 'home', label: 'Trang chủ' },
+  { id: 'insert', label: 'Chèn' },
+  { id: 'draw', label: 'Vẽ' },
+  { id: 'layout', label: 'Bố cục' },
+  { id: 'formulas', label: 'Công thức' },
+  { id: 'data', label: 'Dữ liệu' },
+  { id: 'collab', label: 'Cộng tác' },
+  { id: 'protect', label: 'Bảo vệ' },
+  { id: 'view', label: 'Xem' },
+  { id: 'ai', label: 'AI Tools' },
+];
+
+const FONT_FAMILY_OPTIONS: ReadonlyArray<{ label: string; value: string }> = [
+  { label: 'Mặc định', value: '' },
+  { label: 'Arial', value: 'Arial, sans-serif' },
+  { label: 'Calibri', value: 'Calibri, sans-serif' },
+  { label: 'Times New Roman', value: '"Times New Roman", serif' },
+  { label: 'Georgia', value: 'Georgia, serif' },
+  { label: 'Verdana', value: 'Verdana, sans-serif' },
+  { label: 'Courier New', value: '"Courier New", monospace' },
+];
+
+const DRAW_COLOR_SWATCHES = [
+  '#107C41',
+  '#DC2626',
+  '#2563EB',
+  '#D97706',
+  '#0F172A',
+  '#7C3AED',
+  '#FACC15',
+] as const;
+
+const DEFAULT_PAGE_SETUP: ExcelPageSetup = {
+  margins: 'normal',
+  orientation: 'portrait',
+  paperSize: 'A4',
+  printGridlines: true,
+};
+
+function isSafeHttpUrl(url: string | undefined): boolean {
+  if (!url) return false;
+  const trimmed = url.trim().toLowerCase();
+  return trimmed.startsWith('https://') || trimmed.startsWith('http://');
+}
+
+function isCellInLockedRanges(
+  rowIdx: number,
+  colIdx: number,
+  lockedRanges: string[] | undefined
+): boolean {
+  if (!lockedRanges || lockedRanges.length === 0) return false;
+  for (const rangeStr of lockedRanges) {
+    const parsed = parseCellOrRangeInput(rangeStr);
+    if (!parsed) continue;
+    const minR = Math.min(parsed.startRow, parsed.endRow);
+    const maxR = Math.max(parsed.startRow, parsed.endRow);
+    const minC = Math.min(parsed.startCol, parsed.endCol);
+    const maxC = Math.max(parsed.startCol, parsed.endCol);
+    if (rowIdx >= minR && rowIdx <= maxR && colIdx >= minC && colIdx <= maxC) {
+      return true;
+    }
+  }
+  return false;
+}
 
 interface CellCoord {
   row: number;
@@ -456,6 +595,25 @@ function normalizeSheetForEditor(
         }))
       : undefined;
 
+  let normalizedComments: Record<string, string> | undefined;
+  if (sheet.cellComments) {
+    const mapped: Record<string, string> = {};
+    for (const [key, text] of Object.entries(sheet.cellComments)) {
+      if (typeof text !== 'string' || !text.trim()) continue;
+      const parts = key.split(':');
+      if (parts.length === 2) {
+        const r = Number(parts[0]);
+        const c = Number(parts[1]);
+        if (Number.isInteger(r) && Number.isInteger(c) && r >= 0 && c >= 0) {
+          mapped[makeCellKey(r + rowShift, c)] = text;
+        }
+      }
+    }
+    if (Object.keys(mapped).length > 0) {
+      normalizedComments = mapped;
+    }
+  }
+
   return {
     id: sheet.id || `sheet-${fallbackIdx + 1}`,
     name: sheet.name || `Sheet ${fallbackIdx + 1}`,
@@ -474,6 +632,22 @@ function normalizeSheetForEditor(
     dataValidations: normalizedValidations,
     conditionalFormats: normalizedConditionalFormats,
     charts: normalizedCharts,
+    cellComments: normalizedComments,
+    drawings: Array.isArray(sheet.drawings)
+      ? sheet.drawings.map((d) => ({
+          ...d,
+          points: d.points.map((p) => ({ ...p })),
+        }))
+      : undefined,
+    floatingObjects: Array.isArray(sheet.floatingObjects)
+      ? sheet.floatingObjects.map((o) => ({ ...o }))
+      : undefined,
+    pageSetup: sheet.pageSetup ? { ...sheet.pageSetup } : undefined,
+    isProtected: sheet.isProtected,
+    lockedRanges: Array.isArray(sheet.lockedRanges)
+      ? [...sheet.lockedRanges]
+      : undefined,
+    showGridlines: sheet.showGridlines,
   };
 }
 
@@ -908,11 +1082,10 @@ export function ExcelWorkspace({
   const workspaceSync = useWorkspaceSync();
   const isReadOnly = collabPermission === 'view';
   const [viewMode, setViewMode] = useState<'original' | 'edit'>(() =>
-    collabPermission === 'view' ||
-    (Boolean(document.isUploaded) && !document.hasLocalEdits)
-      ? 'original'
-      : 'edit'
+    collabPermission === 'view' ? 'original' : 'edit'
   );
+  const viewModeRef = useRef<'original' | 'edit'>(viewMode);
+  viewModeRef.current = viewMode;
   const isEditingLocked = isReadOnly || viewMode === 'original';
 
   const [sheets, setSheets] = useState<SpreadsheetSheet[]>(() =>
@@ -922,8 +1095,36 @@ export function ExcelWorkspace({
   const [activeRibbonTab, setActiveRibbonTab] = useState<RibbonTabId>('home');
   const [isRibbonCollapsed, setIsRibbonCollapsed] = useState(false);
   const [openPopover, setOpenPopover] = useState<OpenPopoverId>(null);
-  const [formulaBrowserCategory, setFormulaBrowserCategory] =
-    useState<ExcelFormulaCategory>('math');
+  const [showFormulaBar, setShowFormulaBar] = useState(true);
+  const [recalcVersion, setRecalcVersion] = useState(0);
+
+  // ONLYOFFICE Draw, Floating Objects, Clipboard, Format Painter & Modals
+  const [activeDrawTool, setActiveDrawTool] = useState<ExcelDrawingTool>(null);
+  const [drawColor, setDrawColor] = useState<string>('#107C41');
+  const [drawStrokeWidth, setDrawStrokeWidth] = useState<number>(3);
+  const [selectedFloatingObjId, setSelectedFloatingObjId] = useState<
+    string | null
+  >(null);
+  const [clipboardData, setClipboardData] = useState<{
+    values: (string | number)[][];
+    styles: (CellStyle | undefined)[][];
+  } | null>(null);
+  const [formatPainterStyle, setFormatPainterStyle] =
+    useState<CellStyle | null>(null);
+  const [formulaModalCategory, setFormulaModalCategory] =
+    useState<FormulaLibraryCategory | null>(null);
+  const [aiModalTab, setAiModalTab] = useState<ExcelAiToolTab | null>(null);
+  const [cellMetaModal, setCellMetaModal] = useState<{
+    mode: ExcelCellMetaMode;
+    origRow: number;
+    colIdx: number;
+  } | null>(null);
+  const [isFileInfoOpen, setIsFileInfoOpen] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [isDownloadingOriginal, setIsDownloadingOriginal] = useState(false);
+  const [customSortColIdx, setCustomSortColIdx] = useState(0);
+  const [customSortDir, setCustomSortDir] = useState<'asc' | 'desc'>('asc');
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [sortConfig, setSortConfig] = useState<SortConfig | null>(null);
@@ -967,8 +1168,11 @@ export function ExcelWorkspace({
 
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
-  const [isDownloadingOriginal, setIsDownloadingOriginal] = useState(false);
   const [feedbackBanner, setFeedbackBanner] = useState<string | null>(null);
+  const [naturalCanvasSize, setNaturalCanvasSize] = useState<{
+    width: number;
+    height: number;
+  }>({ width: 0, height: 0 });
 
   const sheetsRef = useRef<SpreadsheetSheet[]>(sheets);
   sheetsRef.current = sheets;
@@ -981,19 +1185,25 @@ export function ExcelWorkspace({
   const saveTimerRef = useRef<number | null>(null);
   const feedbackTimerRef = useRef<number | null>(null);
   const gridContainerRef = useRef<HTMLDivElement | null>(null);
+  const sheetCanvasRef = useRef<HTMLDivElement | null>(null);
   const cellInputRef = useRef<HTMLInputElement | null>(null);
   const formulaInputRef = useRef<HTMLInputElement | null>(null);
 
   // Pinch-to-zoom & Ctrl+Wheel on Grid Viewport ONLY (never scaling Ribbon/StatusBar)
   useDocumentPinchZoom(gridContainerRef, zoomPercent, setZoomPercent, {
-    min: 25,
-    max: 200,
+    min: 10,
+    max: 300,
     disabled:
       isModalOpen ||
       chartModalType !== null ||
       isCondFormatModalOpen ||
       isValidationModalOpen ||
-      isTextToColsModalOpen,
+      isTextToColsModalOpen ||
+      formulaModalCategory !== null ||
+      aiModalTab !== null ||
+      cellMetaModal !== null ||
+      isFileInfoOpen ||
+      activeDrawTool !== null,
   });
 
   useEffect(() => {
@@ -1019,12 +1229,10 @@ export function ExcelWorkspace({
     setRenamingSheetIdx(null);
     setOpenValidationKey(null);
     setZoomPercent(100);
-    setViewMode(
-      collabPermission === 'view' ||
-        (Boolean(document.isUploaded) && !document.hasLocalEdits)
-        ? 'original'
-        : 'edit'
-    );
+    const initialMode: 'original' | 'edit' =
+      collabPermission === 'view' ? 'original' : 'edit';
+    viewModeRef.current = initialMode;
+    setViewMode(initialMode);
   }, [document.id, collabPermission]);
 
   useEffect(() => {
@@ -1149,6 +1357,13 @@ export function ExcelWorkspace({
   const activeSheet = sheets[safeSheetIdx];
   const columnCount = activeSheet.columns.length;
   const zoomScale = zoomPercent / 100;
+  const isSheetProtected = Boolean(activeSheet.isProtected);
+  const isEditBlocked = isEditingLocked || isSheetProtected;
+  const showGridlines = activeSheet.showGridlines !== false;
+  const activePageSetup: ExcelPageSetup = {
+    ...DEFAULT_PAGE_SETUP,
+    ...(activeSheet.pageSetup ?? {}),
+  };
 
   const hiddenRowSet = useMemo(
     () => new Set<number>(activeSheet.hiddenRows ?? []),
@@ -1173,10 +1388,10 @@ export function ExcelWorkspace({
     return list;
   }, [columnCount, hiddenColSet]);
 
-  const evaluatedMatrix = useMemo<(string | number)[][]>(
-    () => evaluateSheetMatrix(activeSheet.rows),
-    [activeSheet.rows]
-  );
+  const evaluatedMatrix = useMemo<(string | number)[][]>(() => {
+    void recalcVersion;
+    return evaluateSheetMatrix(activeSheet.rows);
+  }, [activeSheet.rows, recalcVersion]);
 
   const conditionalStyleMap = useMemo(
     () =>
@@ -1432,7 +1647,7 @@ export function ExcelWorkspace({
         {})
       : {};
 
-  const anchorEffectiveAlign: 'left' | 'center' | 'right' =
+  const anchorEffectiveAlign: 'left' | 'center' | 'right' | 'justify' =
     anchorStyle.align ??
     (parseNumericValue(anchorEvaluatedValue) !== null ? 'right' : 'left');
   const anchorEffectiveValign: 'top' | 'middle' | 'bottom' =
@@ -1614,12 +1829,9 @@ export function ExcelWorkspace({
     hiddenRowSet.size,
   ]);
 
-  // Precompute Freeze Panes sticky offsets (px scaled by zoomScale)
-  const headerHeightPx = Math.max(22, Math.round(BASE_HEADER_HEIGHT * zoomScale));
-  const rowHeaderWidthPx = Math.max(
-    32,
-    Math.round(BASE_ROW_HEADER_WIDTH * zoomScale)
-  );
+  // Precompute Freeze Panes sticky offsets at natural 100% scale
+  const headerHeightPx = BASE_HEADER_HEIGHT;
+  const rowHeaderWidthPx = BASE_ROW_HEADER_WIDTH;
   const frozenRowsCount = !hasActiveTransforms
     ? Math.max(0, Math.min(activeSheet.frozenRows ?? 0, visibleRows.length))
     : 0;
@@ -1635,20 +1847,12 @@ export function ExcelWorkspace({
       map.set(i, acc);
       const origR = visibleRows[i]?.originalIndex ?? i;
       const rawH = activeSheet.rowHeights?.[origR];
-      const h = Math.max(
-        20,
-        Math.round((rawH && rawH > 16 ? rawH : DEFAULT_ROW_HEIGHT) * zoomScale)
-      );
+      const h =
+        rawH && rawH > 16 ? Math.round(rawH) : DEFAULT_ROW_HEIGHT;
       acc += h;
     }
     return map;
-  }, [
-    activeSheet.rowHeights,
-    frozenRowsCount,
-    headerHeightPx,
-    visibleRows,
-    zoomScale,
-  ]);
+  }, [activeSheet.rowHeights, frozenRowsCount, headerHeightPx, visibleRows]);
 
   const frozenColLeftOffsets = useMemo(() => {
     const map = new Map<number, number>();
@@ -1658,7 +1862,7 @@ export function ExcelWorkspace({
       if (colIdx === undefined) break;
       map.set(colIdx, acc);
       const rawW = activeSheet.colWidths?.[colIdx] ?? DEFAULT_COL_WIDTH;
-      acc += Math.max(48, Math.round(rawW * zoomScale));
+      acc += Math.round(rawW);
     }
     return map;
   }, [
@@ -1666,8 +1870,55 @@ export function ExcelWorkspace({
     frozenColsCount,
     rowHeaderWidthPx,
     visibleColIndices,
-    zoomScale,
   ]);
+
+  const estimatedNaturalWidth = useMemo(
+    () =>
+      BASE_ROW_HEADER_WIDTH +
+      visibleColIndices.reduce(
+        (sum, c) => sum + Math.round(activeSheet.colWidths?.[c] ?? DEFAULT_COL_WIDTH),
+        0
+      ),
+    [activeSheet.colWidths, visibleColIndices]
+  );
+
+  useEffect(() => {
+    const el = sheetCanvasRef.current;
+    if (!el) return;
+    const measure = () => {
+      const w = Math.max(el.offsetWidth, el.scrollWidth);
+      const h = Math.max(el.offsetHeight, el.scrollHeight);
+      setNaturalCanvasSize((prev) =>
+        prev.width === w && prev.height === h ? prev : { width: w, height: h }
+      );
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [
+    activeSheet.id,
+    activeSheet.rows.length,
+    activeSheet.columns.length,
+    activeSheet.colWidths,
+    activeSheet.rowHeights,
+    activeSheet.charts?.length,
+    visibleColIndices.length,
+    visibleRows.length,
+  ]);
+
+  const effectiveNaturalWidth =
+    naturalCanvasSize.width > 0 ? naturalCanvasSize.width : estimatedNaturalWidth;
+  const effectiveNaturalHeight = naturalCanvasSize.height;
+  const scaledCanvasWidth =
+    zoomScale === 1
+      ? undefined
+      : Math.max(1, Math.ceil(effectiveNaturalWidth * zoomScale));
+  const scaledCanvasHeight =
+    zoomScale === 1 || effectiveNaturalHeight <= 0
+      ? undefined
+      : Math.max(1, Math.ceil(effectiveNaturalHeight * zoomScale));
 
   const showTransientFeedback = useCallback((msg: string) => {
     setFeedbackBanner(msg);
@@ -1680,81 +1931,38 @@ export function ExcelWorkspace({
     }, 4500);
   }, []);
 
-  const handleDownloadOriginalBinary = useCallback(async () => {
-    if (isDownloadingOriginal) return;
-    setIsDownloadingOriginal(true);
-    try {
-      if (workspaceSync.onDownloadOriginalFile) {
-        await workspaceSync.onDownloadOriginalFile();
-        showTransientFeedback('Đã tải xuống bản gốc.');
-        return;
-      }
-      const fallbackFileName =
-        document.originalFileName ||
-        (document.title.toLowerCase().endsWith('.xlsx') ||
-        document.title.toLowerCase().endsWith('.xls') ||
-        document.title.toLowerCase().endsWith('.csv')
-          ? document.title
-          : `${document.title || 'bang-tinh'}.xlsx`);
-      const fallbackMime =
-        document.originalMimeType ||
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-
-      if (document.rawArrayBuffer && document.rawArrayBuffer.byteLength > 0) {
-        const blob = new Blob([document.rawArrayBuffer.slice(0)], {
-          type: fallbackMime,
-        });
-        const res = await saveFileUniversal(blob, fallbackFileName, {
-          mimeType: fallbackMime,
-          shareTitle: document.title,
-        });
-        showTransientFeedback(res.message);
-        return;
-      }
-      if (document.sourceFile) {
-        const res = await saveFileUniversal(
-          document.sourceFile,
-          document.sourceFile.name || fallbackFileName,
-          { mimeType: document.sourceFile.type || fallbackMime }
+  const ensureEditMode = useCallback(
+    (targetOrigRow?: number, targetCol?: number): boolean => {
+      if (isReadOnly) return false;
+      if (activeSheet.isProtected) {
+        showTransientFeedback(
+          'Trang tính đang được bảo vệ. Vào thẻ Bảo vệ để mở khóa trước khi sửa.'
         );
-        showTransientFeedback(res.message);
-        return;
+        return false;
       }
-      const url = document.fileUrl ?? document.objectUrl;
-      if (url) {
-        const resp = await fetch(url);
-        if (resp.ok) {
-          const blob = await resp.blob();
-          const res = await saveFileUniversal(blob, fallbackFileName, {
-            mimeType: blob.type || fallbackMime,
-          });
-          showTransientFeedback(res.message);
-          return;
-        }
+      if (
+        targetOrigRow !== undefined &&
+        targetCol !== undefined &&
+        isCellInLockedRanges(targetOrigRow, targetCol, activeSheet.lockedRanges)
+      ) {
+        showTransientFeedback(
+          `Ô ${formatCellRef(targetOrigRow, targetCol)} nằm trong vùng đã khóa (Bảo vệ → Mở khóa vùng ô).`
+        );
+        return false;
       }
-      exportExcelToXlsx(document.title, sheetsRef.current);
-      showTransientFeedback(`Đã xuất "${fallbackFileName}".`);
-    } catch (err: unknown) {
-      showTransientFeedback(
-        err instanceof Error
-          ? err.message
-          : 'Không thể tải xuống bản gốc lúc này.'
-      );
-    } finally {
-      setIsDownloadingOriginal(false);
-    }
-  }, [
-    document.fileUrl,
-    document.objectUrl,
-    document.originalFileName,
-    document.originalMimeType,
-    document.rawArrayBuffer,
-    document.sourceFile,
-    document.title,
-    isDownloadingOriginal,
-    showTransientFeedback,
-    workspaceSync,
-  ]);
+      if (viewModeRef.current !== 'edit') {
+        viewModeRef.current = 'edit';
+        setViewMode('edit');
+      }
+      return true;
+    },
+    [
+      activeSheet.isProtected,
+      activeSheet.lockedRanges,
+      isReadOnly,
+      showTransientFeedback,
+    ]
+  );
 
   const broadcastExcelPatch = useCallback(
     (
@@ -1824,12 +2032,19 @@ export function ExcelWorkspace({
         rowIndex: number;
         colIndex: number;
         value: string | number;
-      }
+      },
+      options?: { bypassProtection?: boolean }
     ) => {
-      if (isEditingLocked) return;
+      if (isReadOnly || viewModeRef.current === 'original') return;
       const prevSheets = sheetsRef.current;
       const currentSheet = prevSheets[safeSheetIdx];
       if (!currentSheet) return;
+      if (currentSheet.isProtected && !options?.bypassProtection) {
+        showTransientFeedback(
+          'Trang tính đang được bảo vệ. Vào thẻ Bảo vệ để mở khóa.'
+        );
+        return;
+      }
       const updatedSheet = updater(currentSheet);
       if (updatedSheet === currentSheet) return;
       didUserEditRef.current = true;
@@ -1849,12 +2064,18 @@ export function ExcelWorkspace({
         nextSheets
       );
     },
-    [broadcastExcelPatch, isEditingLocked, safeSheetIdx]
+    [broadcastExcelPatch, isReadOnly, safeSheetIdx, showTransientFeedback]
   );
 
   const commitCellValue = useCallback(
     (originalRow: number, col: number, draft: string) => {
-      if (isEditingLocked) return;
+      if (isReadOnly || viewModeRef.current === 'original') return;
+      if (
+        activeSheet.isProtected ||
+        isCellInLockedRanges(originalRow, col, activeSheet.lockedRanges)
+      ) {
+        return;
+      }
       const normalized = normalizeCommittedValue(draft);
       const existing = activeSheet.rows[originalRow]?.[col] ?? '';
       if (existing === normalized) return;
@@ -1872,7 +2093,13 @@ export function ExcelWorkspace({
         { rowIndex: originalRow, colIndex: col, value: normalized }
       );
     },
-    [activeSheet.rows, isEditingLocked, updateActiveSheet]
+    [
+      activeSheet.isProtected,
+      activeSheet.lockedRanges,
+      activeSheet.rows,
+      isReadOnly,
+      updateActiveSheet,
+    ]
   );
 
   // Fill Handle Completion
@@ -1996,7 +2223,7 @@ export function ExcelWorkspace({
       source: 'cell' | 'formula',
       initialOverride?: string
     ) => {
-      if (isEditingLocked) return;
+      if (!ensureEditMode(originalRow, col)) return;
       cancelBlurCommitRef.current = false;
       const rawVal = activeSheet.rows[originalRow]?.[col];
       setEditingCell({ originalRow, col, source });
@@ -2008,7 +2235,7 @@ export function ExcelWorkspace({
             : String(rawVal)
       );
     },
-    [activeSheet.rows, isEditingLocked]
+    [activeSheet.rows, ensureEditMode]
   );
 
   const cancelEditing = useCallback(() => {
@@ -2268,12 +2495,17 @@ export function ExcelWorkspace({
     applyStyleToSelection((prev) => ({ ...prev, underline: target }));
   };
 
+  const handleToggleStrike = () => {
+    const target = !anchorStyle.strike;
+    applyStyleToSelection((prev) => ({ ...prev, strike: target }));
+  };
+
   const handleToggleWrapText = () => {
     const target = !anchorStyle.wrapText;
     applyStyleToSelection((prev) => ({ ...prev, wrapText: target }));
   };
 
-  const handleSetAlign = (align: 'left' | 'center' | 'right') => {
+  const handleSetAlign = (align: 'left' | 'center' | 'right' | 'justify') => {
     applyStyleToSelection((prev) => ({ ...prev, align }));
   };
 
@@ -2281,8 +2513,75 @@ export function ExcelWorkspace({
     applyStyleToSelection((prev) => ({ ...prev, valign }));
   };
 
+  const handleSetFontFamily = (fontFamily: string) => {
+    applyStyleToSelection((prev) => ({
+      ...prev,
+      fontFamily: fontFamily || undefined,
+    }));
+  };
+
   const handleSetFontSize = (size: number) => {
-    applyStyleToSelection((prev) => ({ ...prev, fontSize: size }));
+    const clamped = Math.max(8, Math.min(36, Math.round(size)));
+    applyStyleToSelection((prev) => ({ ...prev, fontSize: clamped }));
+  };
+
+  const handleStepFontSize = (delta: number) => {
+    const current = Math.round(anchorStyle.fontSize ?? 13);
+    handleSetFontSize(current + delta);
+  };
+
+  const handleSetTextRotation = (
+    textRotation: 'horizontal' | 'vertical' | 'up45' | 'down45'
+  ) => {
+    applyStyleToSelection((prev) => ({
+      ...prev,
+      textRotation: textRotation === 'horizontal' ? undefined : textRotation,
+    }));
+    setOpenPopover(null);
+  };
+
+  const handleTransformTextCase = (mode: 'upper' | 'lower' | 'proper') => {
+    setOpenPopover(null);
+    if (isEditBlocked || !normalizedRange) return;
+    updateActiveSheet((sheet) => {
+      const nextRows = sheet.rows.map((r) => [...r]);
+      let changed = false;
+      for (let r = normalizedRange.minRow; r <= normalizedRange.maxRow; r += 1) {
+        const origR = visibleRows[r]?.originalIndex;
+        if (origR === undefined || !nextRows[origR]) continue;
+        for (
+          let c = normalizedRange.minCol;
+          c <= normalizedRange.maxCol;
+          c += 1
+        ) {
+          if (
+            hiddenColSet.has(c) ||
+            isCellInLockedRanges(origR, c, sheet.lockedRanges)
+          ) {
+            continue;
+          }
+          const raw = nextRows[origR][c];
+          if (typeof raw !== 'string' || !raw.trim() || raw.trim().startsWith('=')) {
+            continue;
+          }
+          const converted =
+            mode === 'upper'
+              ? raw.toLocaleUpperCase('vi-VN')
+              : mode === 'lower'
+                ? raw.toLocaleLowerCase('vi-VN')
+                : raw
+                    .toLocaleLowerCase('vi-VN')
+                    .replace(/(^|\s)([^\s])/g, (_, sep: string, ch: string) => {
+                      return `${sep}${ch.toLocaleUpperCase('vi-VN')}`;
+                    });
+          if (converted !== raw) {
+            nextRows[origR][c] = converted;
+            changed = true;
+          }
+        }
+      }
+      return changed ? { ...sheet, rows: nextRows } : sheet;
+    });
   };
 
   const handleSetFillColor = (color: string | undefined) => {
@@ -2296,7 +2595,7 @@ export function ExcelWorkspace({
   };
 
   const handleApplyBorderPreset = (
-    preset: 'all' | 'thick-box' | 'bottom' | 'none'
+    preset: 'all' | 'outside' | 'thick-box' | 'bottom' | 'none'
   ) => {
     if (!normalizedRange) return;
     const { minRow, maxRow, minCol, maxCol } = normalizedRange;
@@ -2320,6 +2619,16 @@ export function ExcelWorkspace({
           borderLeft: thin,
         };
       }
+      if (preset === 'outside') {
+        const edge = '1px solid #334155';
+        return {
+          ...prev,
+          borderTop: visR === minRow ? edge : prev.borderTop,
+          borderBottom: visR === maxRow ? edge : prev.borderBottom,
+          borderLeft: colIdx === minCol ? edge : prev.borderLeft,
+          borderRight: colIdx === maxCol ? edge : prev.borderRight,
+        };
+      }
       if (preset === 'bottom') {
         if (visR === maxRow) {
           return { ...prev, borderBottom: '1.5px solid #334155' };
@@ -2337,6 +2646,728 @@ export function ExcelWorkspace({
       };
     });
     setOpenPopover(null);
+  };
+
+  // --- ONLYOFFICE File, Clipboard, Fill, Clear, Table, Insert, Draw, Layout, Protect, AI Handlers ---
+  const handleSaveCopy = () => {
+    const copyTitle = `${document.title || 'Bang-tinh'} (Bản sao)`;
+    exportExcelToXlsx(copyTitle, sheetsRef.current);
+    showTransientFeedback(`Đã tải xuống bản sao "${copyTitle}.xlsx".`);
+  };
+
+  const handleDownloadOriginalFile = async () => {
+    if (isDownloadingOriginal) return;
+    setIsDownloadingOriginal(true);
+    try {
+      if (workspaceSync.onDownloadOriginalFile) {
+        await workspaceSync.onDownloadOriginalFile();
+        showTransientFeedback('Đã tải xuống bản gốc .xlsx.');
+        return;
+      }
+      const fallbackName =
+        document.originalFileName || `${document.title || 'bang-tinh'}.xlsx`;
+      const fallbackMime =
+        document.originalMimeType ||
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      if (document.rawArrayBuffer && document.rawArrayBuffer.byteLength > 0) {
+        const blob = new Blob([document.rawArrayBuffer.slice(0)], {
+          type: fallbackMime,
+        });
+        const res = await saveFileUniversal(blob, fallbackName, {
+          mimeType: fallbackMime,
+          shareTitle: document.title,
+        });
+        showTransientFeedback(res.message);
+        return;
+      }
+      exportExcelToXlsx(document.title, sheetsRef.current);
+      showTransientFeedback(`Đã tải xuống "${fallbackName}".`);
+    } catch (err: unknown) {
+      showTransientFeedback(
+        err instanceof Error ? err.message : 'Không thể tải bản gốc lúc này.'
+      );
+    } finally {
+      setIsDownloadingOriginal(false);
+    }
+  };
+
+  const handleExportPdf = async () => {
+    if (isExportingPdf) return;
+    setIsExportingPdf(true);
+    try {
+      const result = await downloadDocumentAsPdf(buildLiveDocument(sheetsRef.current));
+      showTransientFeedback(result.message || 'Đã xuất tệp PDF.');
+    } catch (err: unknown) {
+      showTransientFeedback(
+        err instanceof Error ? err.message : 'Không thể xuất PDF lúc này.'
+      );
+    } finally {
+      setIsExportingPdf(false);
+    }
+  };
+
+  const handlePrintSheet = () => {
+    const marginCss =
+      activePageSetup.margins === 'narrow'
+        ? '8mm'
+        : activePageSetup.margins === 'wide'
+          ? '24mm'
+          : '14mm';
+    const styleId = 'lite-excel-print-page-style';
+    let styleEl = window.document.getElementById(styleId);
+    if (!styleEl) {
+      styleEl = window.document.createElement('style');
+      styleEl.id = styleId;
+      window.document.head.appendChild(styleEl);
+    }
+    styleEl.textContent = `@media print { @page { size: ${activePageSetup.paperSize} ${activePageSetup.orientation}; margin: ${marginCss}; } ${
+      activePageSetup.printGridlines === false
+        ? 'table td, table th { border-color: transparent !important; }'
+        : ''
+    } }`;
+    window.print();
+  };
+
+  const handleCopyCells = useCallback(() => {
+    if (!normalizedRange) return;
+    const values: (string | number)[][] = [];
+    const styles: (CellStyle | undefined)[][] = [];
+    for (let r = normalizedRange.minRow; r <= normalizedRange.maxRow; r += 1) {
+      const origR = visibleRows[r]?.originalIndex;
+      if (origR === undefined) continue;
+      const rowVals: (string | number)[] = [];
+      const rowStyles: (CellStyle | undefined)[] = [];
+      for (let c = normalizedRange.minCol; c <= normalizedRange.maxCol; c += 1) {
+        if (hiddenColSet.has(c)) continue;
+        rowVals.push(activeSheet.rows[origR]?.[c] ?? '');
+        const st = activeSheet.cellStyles?.[makeCellKey(origR, c)];
+        rowStyles.push(st ? { ...st } : undefined);
+      }
+      values.push(rowVals);
+      styles.push(rowStyles);
+    }
+    setClipboardData({ values, styles });
+    const tsv = values.map((row) => row.map((v) => String(v)).join('\t')).join('\n');
+    if (navigator.clipboard?.writeText) {
+      void navigator.clipboard.writeText(tsv).catch(() => undefined);
+    }
+    showTransientFeedback(`Đã sao chép vùng ${rangeLabel}.`);
+  }, [
+    activeSheet.cellStyles,
+    activeSheet.rows,
+    hiddenColSet,
+    normalizedRange,
+    rangeLabel,
+    showTransientFeedback,
+    visibleRows,
+  ]);
+
+  const handlePasteCells = useCallback(async () => {
+    if (isEditBlocked || anchorOriginalRow === null || anchorCol === null) return;
+    let matrixVals: (string | number)[][] | null = null;
+    let matrixStyles: (CellStyle | undefined)[][] | null = null;
+
+    if (clipboardData && clipboardData.values.length > 0) {
+      matrixVals = clipboardData.values;
+      matrixStyles = clipboardData.styles;
+    } else if (navigator.clipboard?.readText) {
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text) {
+          matrixVals = text
+            .replace(/\r\n/g, '\n')
+            .split('\n')
+            .filter((line, idx, arr) => !(idx === arr.length - 1 && line === ''))
+            .map((line) =>
+              line.split('\t').map((cell) => normalizeCommittedValue(cell))
+            );
+        }
+      } catch {
+        // Clipboard API permission unavailable
+      }
+    }
+
+    if (!matrixVals || matrixVals.length === 0) {
+      showTransientFeedback('Bộ nhớ tạm đang trống — hãy sao chép ô trước khi dán.');
+      return;
+    }
+
+    const startR = anchorOriginalRow;
+    const startC = anchorCol;
+    const pasteVals = matrixVals;
+    const pasteStyles = matrixStyles;
+
+    updateActiveSheet((sheet) => {
+      const neededRows = Math.max(sheet.rows.length, startR + pasteVals.length);
+      const maxPasteW = pasteVals.reduce((m, row) => Math.max(m, row.length), 0);
+      const neededCols = Math.max(sheet.columns.length, startC + maxPasteW);
+      const nextRows = Array.from({ length: neededRows }, (_, r) => {
+        const existing = sheet.rows[r] ?? [];
+        return Array.from({ length: neededCols }, (__, c) => existing[c] ?? '');
+      });
+      const nextStyles: Record<string, CellStyle> = {
+        ...(sheet.cellStyles ?? {}),
+      };
+
+      for (let dr = 0; dr < pasteVals.length; dr += 1) {
+        const targetR = startR + dr;
+        for (let dc = 0; dc < pasteVals[dr].length; dc += 1) {
+          const targetC = startC + dc;
+          if (isCellInLockedRanges(targetR, targetC, sheet.lockedRanges)) {
+            continue;
+          }
+          nextRows[targetR][targetC] = pasteVals[dr][dc];
+          const copiedStyle = pasteStyles?.[dr]?.[dc];
+          if (copiedStyle) {
+            nextStyles[makeCellKey(targetR, targetC)] = { ...copiedStyle };
+          }
+        }
+      }
+
+      return {
+        ...sheet,
+        columns: createLetterColumns(neededCols),
+        rows: nextRows,
+        cellStyles: nextStyles,
+      };
+    });
+  }, [
+    anchorCol,
+    anchorOriginalRow,
+    clipboardData,
+    isEditBlocked,
+    showTransientFeedback,
+    updateActiveSheet,
+  ]);
+
+  const handleToggleFormatPainter = () => {
+    if (isEditBlocked) return;
+    if (formatPainterStyle) {
+      setFormatPainterStyle(null);
+      return;
+    }
+    setFormatPainterStyle({ ...anchorStyle });
+    showTransientFeedback(
+      'Chổi sao chép định dạng đang bật — bấm vào ô đích để áp dụng định dạng.'
+    );
+  };
+
+  const handleFillDirection = (direction: 'down' | 'right') => {
+    setOpenPopover(null);
+    if (isEditBlocked || !normalizedRange || hasActiveTransforms) return;
+    const { minRow, maxRow, minCol, maxCol } = normalizedRange;
+    if (direction === 'down' && maxRow <= minRow) {
+      showTransientFeedback('Chọn ít nhất 2 dòng để Điền xuống (Fill Down).');
+      return;
+    }
+    if (direction === 'right' && maxCol <= minCol) {
+      showTransientFeedback('Chọn ít nhất 2 cột để Điền sang phải (Fill Right).');
+      return;
+    }
+
+    updateActiveSheet((sheet) => {
+      const nextRows = sheet.rows.map((r) => [...r]);
+      if (direction === 'down') {
+        const topOrigR = visibleRows[minRow]?.originalIndex;
+        if (topOrigR === undefined) return sheet;
+        for (let c = minCol; c <= maxCol; c += 1) {
+          const srcVal = sheet.rows[topOrigR]?.[c] ?? '';
+          for (let r = minRow + 1; r <= maxRow; r += 1) {
+            const origR = visibleRows[r]?.originalIndex;
+            if (
+              origR === undefined ||
+              !nextRows[origR] ||
+              isCellInLockedRanges(origR, c, sheet.lockedRanges)
+            ) {
+              continue;
+            }
+            nextRows[origR][c] = computeAutoFillValue(
+              [srcVal],
+              r - minRow,
+              origR - topOrigR,
+              0,
+              0
+            );
+          }
+        }
+      } else {
+        for (let r = minRow; r <= maxRow; r += 1) {
+          const origR = visibleRows[r]?.originalIndex;
+          if (origR === undefined || !nextRows[origR]) continue;
+          const srcVal = sheet.rows[origR]?.[minCol] ?? '';
+          for (let c = minCol + 1; c <= maxCol; c += 1) {
+            if (isCellInLockedRanges(origR, c, sheet.lockedRanges)) continue;
+            nextRows[origR][c] = computeAutoFillValue(
+              [srcVal],
+              c - minCol,
+              0,
+              c - minCol,
+              0
+            );
+          }
+        }
+      }
+      return { ...sheet, rows: nextRows };
+    });
+  };
+
+  const handleClearAction = (mode: 'contents' | 'formats' | 'all') => {
+    setOpenPopover(null);
+    if (isEditBlocked || !normalizedRange) return;
+    updateActiveSheet((sheet) => {
+      const nextRows =
+        mode === 'formats' ? sheet.rows : sheet.rows.map((row) => [...row]);
+      const nextStyles =
+        mode === 'contents'
+          ? sheet.cellStyles
+          : { ...(sheet.cellStyles ?? {}) };
+
+      for (let r = normalizedRange.minRow; r <= normalizedRange.maxRow; r += 1) {
+        const origR = visibleRows[r]?.originalIndex;
+        if (origR === undefined) continue;
+        for (
+          let c = normalizedRange.minCol;
+          c <= normalizedRange.maxCol;
+          c += 1
+        ) {
+          if (
+            hiddenColSet.has(c) ||
+            isCellInLockedRanges(origR, c, sheet.lockedRanges)
+          ) {
+            continue;
+          }
+          if ((mode === 'contents' || mode === 'all') && nextRows[origR]) {
+            nextRows[origR][c] = '';
+          }
+          if ((mode === 'formats' || mode === 'all') && nextStyles) {
+            delete nextStyles[makeCellKey(origR, c)];
+          }
+        }
+      }
+      return {
+        ...sheet,
+        rows: nextRows,
+        cellStyles: nextStyles,
+      };
+    });
+  };
+
+  const handleFormatAsTable = () => {
+    if (isEditBlocked) return;
+    const isSingle =
+      !normalizedRange ||
+      (normalizedRange.minRow === normalizedRange.maxRow &&
+        normalizedRange.minCol === normalizedRange.maxCol);
+
+    const minR = isSingle ? 0 : selectionOriginalBounds.minRow;
+    const maxR = isSingle
+      ? Math.max(0, activeSheet.rows.length - 1)
+      : selectionOriginalBounds.maxRow;
+    const minC = isSingle ? 0 : selectionOriginalBounds.minCol;
+    const maxC = isSingle
+      ? Math.max(0, columnCount - 1)
+      : selectionOriginalBounds.maxCol;
+
+    updateActiveSheet((sheet) => {
+      const nextStyles: Record<string, CellStyle> = {
+        ...(sheet.cellStyles ?? {}),
+      };
+      for (let r = minR; r <= maxR; r += 1) {
+        for (let c = minC; c <= maxC; c += 1) {
+          const key = makeCellKey(r, c);
+          if (r === minR) {
+            nextStyles[key] = {
+              ...(nextStyles[key] ?? {}),
+              bgColor: '#107C41',
+              textColor: '#FFFFFF',
+              bold: true,
+              borderTop: '1px solid #0B5E31',
+              borderBottom: '2px solid #0B5E31',
+              borderLeft: '1px solid #0B5E31',
+              borderRight: '1px solid #0B5E31',
+            };
+          } else {
+            const isZebra = (r - minR) % 2 === 0;
+            nextStyles[key] = {
+              ...(nextStyles[key] ?? {}),
+              bgColor: isZebra ? '#F0FDF4' : '#FFFFFF',
+              borderTop: '1px solid #D1FAE5',
+              borderBottom: '1px solid #D1FAE5',
+              borderLeft: '1px solid #E2E8F0',
+              borderRight: '1px solid #E2E8F0',
+            };
+          }
+        }
+      }
+      return {
+        ...sheet,
+        cellStyles: nextStyles,
+        autoFilterEnabled: true,
+      };
+    });
+    showTransientFeedback('Đã áp dụng định dạng bảng Excel (Header xanh & sọc ngựa vằn + Bộ lọc).');
+  };
+
+  const handleInsertImageFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || isEditBlocked) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') return;
+      const newObj: ExcelFloatingObject = {
+        id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        kind: 'image',
+        x: 80 + ((activeSheet.floatingObjects?.length ?? 0) % 5) * 28,
+        y: 64 + ((activeSheet.floatingObjects?.length ?? 0) % 5) * 24,
+        width: 220,
+        height: 150,
+        src: reader.result,
+        text: file.name,
+      };
+      updateActiveSheet((sheet) => ({
+        ...sheet,
+        floatingObjects: [...(sheet.floatingObjects ?? []), newObj],
+      }));
+      setSelectedFloatingObjId(newObj.id);
+      showTransientFeedback(`Đã chèn ảnh "${file.name}" vào trang tính.`);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleInsertShape = (
+    shapeKind: NonNullable<ExcelFloatingObject['shapeKind']>
+  ) => {
+    setOpenPopover(null);
+    if (isEditBlocked) return;
+    const offset = ((activeSheet.floatingObjects?.length ?? 0) % 6) * 24;
+    const newObj: ExcelFloatingObject = {
+      id: `shape-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      kind: 'shape',
+      shapeKind,
+      x: 96 + offset,
+      y: 72 + offset,
+      width: 150,
+      height: 86,
+      text: shapeKind === 'callout' ? 'Ghi chú nhanh' : '',
+      fillColor: '#ECFDF5',
+      borderColor: '#107C41',
+    };
+    updateActiveSheet((sheet) => ({
+      ...sheet,
+      floatingObjects: [...(sheet.floatingObjects ?? []), newObj],
+    }));
+    setSelectedFloatingObjId(newObj.id);
+  };
+
+  const handleInsertTextBox = () => {
+    if (isEditBlocked) return;
+    const offset = ((activeSheet.floatingObjects?.length ?? 0) % 6) * 24;
+    const newObj: ExcelFloatingObject = {
+      id: `textbox-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      kind: 'textbox',
+      x: 110 + offset,
+      y: 80 + offset,
+      width: 210,
+      height: 88,
+      text: 'Hộp văn bản — bấm đúp để sửa',
+      fillColor: '#FFFFFF',
+      borderColor: '#107C41',
+    };
+    updateActiveSheet((sheet) => ({
+      ...sheet,
+      floatingObjects: [...(sheet.floatingObjects ?? []), newObj],
+    }));
+    setSelectedFloatingObjId(newObj.id);
+  };
+
+  const handleUpdateFloatingObject = (
+    id: string,
+    patch: Partial<ExcelFloatingObject>
+  ) => {
+    updateActiveSheet((sheet) => ({
+      ...sheet,
+      floatingObjects: (sheet.floatingObjects ?? []).map((o) =>
+        o.id === id ? { ...o, ...patch } : o
+      ),
+    }));
+  };
+
+  const handleDeleteFloatingObject = (id: string) => {
+    updateActiveSheet((sheet) => {
+      const next = (sheet.floatingObjects ?? []).filter((o) => o.id !== id);
+      return { ...sheet, floatingObjects: next.length > 0 ? next : undefined };
+    });
+    setSelectedFloatingObjId((prev) => (prev === id ? null : prev));
+  };
+
+  const handleOpenCellMeta = (mode: ExcelCellMetaMode) => {
+    if (isEditBlocked || anchorOriginalRow === null || anchorCol === null) return;
+    setCellMetaModal({ mode, origRow: anchorOriginalRow, colIdx: anchorCol });
+  };
+
+  const handleSaveCellMeta = (value: string) => {
+    if (!cellMetaModal) return;
+    const key = makeCellKey(cellMetaModal.origRow, cellMetaModal.colIdx);
+    if (cellMetaModal.mode === 'comment') {
+      updateActiveSheet((sheet) => ({
+        ...sheet,
+        cellComments: { ...(sheet.cellComments ?? {}), [key]: value },
+      }));
+      showTransientFeedback(
+        `Đã lưu ghi chú cho ô ${formatCellRef(cellMetaModal.origRow, cellMetaModal.colIdx)}.`
+      );
+    } else {
+      const normalizedUrl =
+        /^https?:\/\//i.test(value) ? value : `https://${value}`;
+      updateActiveSheet((sheet) => ({
+        ...sheet,
+        cellStyles: {
+          ...(sheet.cellStyles ?? {}),
+          [key]: {
+            ...(sheet.cellStyles?.[key] ?? {}),
+            hyperlink: normalizedUrl,
+          },
+        },
+      }));
+      showTransientFeedback(
+        `Đã gắn liên kết cho ô ${formatCellRef(cellMetaModal.origRow, cellMetaModal.colIdx)}.`
+      );
+    }
+  };
+
+  const handleRemoveCellMeta = () => {
+    if (!cellMetaModal) return;
+    const key = makeCellKey(cellMetaModal.origRow, cellMetaModal.colIdx);
+    if (cellMetaModal.mode === 'comment') {
+      updateActiveSheet((sheet) => {
+        if (!sheet.cellComments) return sheet;
+        const next = { ...sheet.cellComments };
+        delete next[key];
+        return {
+          ...sheet,
+          cellComments: Object.keys(next).length > 0 ? next : undefined,
+        };
+      });
+    } else {
+      updateActiveSheet((sheet) => {
+        if (!sheet.cellStyles?.[key]) return sheet;
+        const nextStyle = { ...sheet.cellStyles[key] };
+        delete nextStyle.hyperlink;
+        return {
+          ...sheet,
+          cellStyles: { ...sheet.cellStyles, [key]: nextStyle },
+        };
+      });
+    }
+  };
+
+  const handleAddDrawingStroke = (stroke: ExcelDrawingStroke) => {
+    updateActiveSheet((sheet) => ({
+      ...sheet,
+      drawings: [...(sheet.drawings ?? []), stroke],
+    }));
+  };
+
+  const handleEraseDrawingStroke = (strokeId: string) => {
+    updateActiveSheet((sheet) => {
+      const next = (sheet.drawings ?? []).filter((s) => s.id !== strokeId);
+      return { ...sheet, drawings: next.length > 0 ? next : undefined };
+    });
+  };
+
+  const handleClearDrawings = () => {
+    updateActiveSheet((sheet) => ({
+      ...sheet,
+      drawings: undefined,
+    }));
+  };
+
+  const handleUpdatePageSetup = (patch: Partial<ExcelPageSetup>) => {
+    updateActiveSheet((sheet) => ({
+      ...sheet,
+      pageSetup: {
+        ...DEFAULT_PAGE_SETUP,
+        ...(sheet.pageSetup ?? {}),
+        ...patch,
+      },
+    }));
+  };
+
+  const handleRecalculateSheet = () => {
+    setRecalcVersion((v) => v + 1);
+    showTransientFeedback('Đã tính toán lại toàn bộ công thức trên trang tính.');
+  };
+
+  const handleToggleProtectSheet = () => {
+    if (isReadOnly) return;
+    if (viewModeRef.current === 'original') {
+      viewModeRef.current = 'edit';
+      setViewMode('edit');
+    }
+    const nextProtected = !isSheetProtected;
+    if (nextProtected) {
+      setActiveDrawTool(null);
+      if (editingCell) cancelEditing();
+    }
+    updateActiveSheet(
+      (sheet) => ({
+        ...sheet,
+        isProtected: nextProtected,
+      }),
+      undefined,
+      { bypassProtection: true }
+    );
+    showTransientFeedback(
+      nextProtected
+        ? 'Đã bật Bảo vệ trang tính — mọi thao tác sửa đã được khóa.'
+        : 'Đã mở khóa trang tính — bạn có thể tiếp tục chỉnh sửa.'
+    );
+  };
+
+  const handleToggleLockSelectedRange = () => {
+    if (isReadOnly || !normalizedRange || rangeLabel === '—') return;
+    if (viewModeRef.current === 'original') {
+      viewModeRef.current = 'edit';
+      setViewMode('edit');
+    }
+    const existing = activeSheet.lockedRanges ?? [];
+    const alreadyLocked = existing.includes(rangeLabel);
+    updateActiveSheet(
+      (sheet) => {
+        const curr = sheet.lockedRanges ?? [];
+        const next = alreadyLocked
+          ? curr.filter((r) => r !== rangeLabel)
+          : [...curr, rangeLabel];
+        return {
+          ...sheet,
+          lockedRanges: next.length > 0 ? next : undefined,
+        };
+      },
+      undefined,
+      { bypassProtection: true }
+    );
+    showTransientFeedback(
+      alreadyLocked
+        ? `Đã mở khóa vùng ${rangeLabel}.`
+        : `Đã khóa vùng ${rangeLabel} khỏi chỉnh sửa.`
+    );
+  };
+
+  const handleUnlockSpecificRange = (targetRange: string) => {
+    if (isReadOnly) return;
+    updateActiveSheet(
+      (sheet) => {
+        const next = (sheet.lockedRanges ?? []).filter((r) => r !== targetRange);
+        return {
+          ...sheet,
+          lockedRanges: next.length > 0 ? next : undefined,
+        };
+      },
+      undefined,
+      { bypassProtection: true }
+    );
+  };
+
+  const handleToggleShowGridlines = () => {
+    updateActiveSheet((sheet) => ({
+      ...sheet,
+      showGridlines: sheet.showGridlines === false ? true : false,
+    }));
+  };
+
+  const handleNavigateToCell = useCallback(
+    (origRow: number, colIdx: number) => {
+      const clampedRow = Math.max(
+        0,
+        Math.min(activeSheet.rows.length - 1, origRow)
+      );
+      const clampedCol = Math.max(0, Math.min(columnCount - 1, colIdx));
+      let visRow = visibleRows.findIndex((r) => r.originalIndex === clampedRow);
+      if (visRow === -1) {
+        setSearchQuery('');
+        setColumnFilters({});
+        setSortConfig(null);
+        visRow = clampedRow;
+      }
+      setSelection({
+        start: { row: visRow, col: clampedCol },
+        end: { row: visRow, col: clampedCol },
+      });
+      window.requestAnimationFrame(() => {
+        const targetEl = gridContainerRef.current?.querySelector(
+          `[data-excel-cell="${clampedRow}:${clampedCol}"]`
+        );
+        if (targetEl instanceof HTMLElement) {
+          targetEl.scrollIntoView({ block: 'center', inline: 'center' });
+        }
+      });
+    },
+    [activeSheet.rows.length, columnCount, visibleRows]
+  );
+
+  const handleAiInsertFormula = (formula: string) => {
+    if (anchorOriginalRow === null || anchorCol === null) return;
+    if (!ensureEditMode(anchorOriginalRow, anchorCol)) return;
+    if (formula.endsWith('(')) {
+      handleQuickInsertFormula(formula);
+      return;
+    }
+    commitCellValue(anchorOriginalRow, anchorCol, formula);
+    showTransientFeedback(
+      `Đã chèn công thức ${formula} vào ô ${formatCellRef(anchorOriginalRow, anchorCol)}.`
+    );
+  };
+
+  const handleAiCreateSummarySheet = (
+    title: string,
+    summaryRows: (string | number)[][]
+  ) => {
+    if (isReadOnly) return;
+    const colCount = Math.max(
+      2,
+      summaryRows.reduce((m, r) => Math.max(m, r.length), 2)
+    );
+    const paddedRows = summaryRows.map((row) =>
+      Array.from({ length: colCount }, (_, i) => row[i] ?? '')
+    );
+    const styles: Record<string, CellStyle> = {};
+    for (let c = 0; c < colCount; c += 1) {
+      styles[makeCellKey(0, c)] = {
+        bold: true,
+        bgColor: '#107C41',
+        textColor: '#FFFFFF',
+      };
+    }
+    const summarySheet: SpreadsheetSheet = {
+      id: `sheet-ai-${Date.now()}`,
+      name: title.slice(0, 28) || 'Tóm tắt AI',
+      columns: createLetterColumns(colCount),
+      rows: paddedRows,
+      cellStyles: styles,
+      tabColor: '#107C41',
+    };
+    const nextSheets = [...sheetsRef.current, summarySheet];
+    commitSheetsChange(nextSheets, nextSheets.length - 1);
+    showTransientFeedback(`Đã tạo trang tính "${summarySheet.name}".`);
+  };
+
+  const handleHighlightAuditCells = (
+    cells: Array<{ row: number; col: number }>,
+    bgColor: string
+  ) => {
+    if (isEditBlocked || cells.length === 0) return;
+    updateActiveSheet((sheet) => {
+      const nextStyles: Record<string, CellStyle> = {
+        ...(sheet.cellStyles ?? {}),
+      };
+      for (const cell of cells) {
+        const k = makeCellKey(cell.row, cell.col);
+        nextStyles[k] = { ...(nextStyles[k] ?? {}), bgColor };
+      }
+      return { ...sheet, cellStyles: nextStyles };
+    });
+    showTransientFeedback(`Đã tô màu cảnh báo cho ${cells.length} ô.`);
   };
 
   const handleSetNumberFormat = (numFmt: string) => {
@@ -2804,6 +3835,7 @@ export function ExcelWorkspace({
           ...sheet,
           rows: nextRows,
           cellStyles: remapRecordByRowInsert(sheet.cellStyles, safeAt) ?? {},
+          cellComments: remapRecordByRowInsert(sheet.cellComments, safeAt),
           merges: remapMergesAfterRowInsert(sheet.merges, safeAt),
           dataValidations: remapRecordByRowInsert(
             sheet.dataValidations,
@@ -2818,7 +3850,7 @@ export function ExcelWorkspace({
   };
 
   const handleInsertColumnAt = (atCol: number) => {
-    if (isEditingLocked) return;
+    if (isEditBlocked) return;
     if (editingCell) cancelEditing();
     const safeAt = Math.max(0, Math.min(columnCount, atCol));
     updateActiveSheet(
@@ -2840,6 +3872,7 @@ export function ExcelWorkspace({
           columns: createLetterColumns(sheet.columns.length + 1),
           rows: nextRows,
           cellStyles: remapRecordByColInsert(sheet.cellStyles, safeAt) ?? {},
+          cellComments: remapRecordByColInsert(sheet.cellComments, safeAt),
           merges: remapMergesAfterColInsert(sheet.merges, safeAt),
           dataValidations: remapRecordByColInsert(
             sheet.dataValidations,
@@ -2855,7 +3888,7 @@ export function ExcelWorkspace({
 
   const handleDeleteRowIndices = (toDelete: Set<number>) => {
     if (
-      isEditingLocked ||
+      isEditBlocked ||
       toDelete.size === 0 ||
       activeSheet.rows.length - toDelete.size < 1
     ) {
@@ -2869,6 +3902,7 @@ export function ExcelWorkspace({
         ...sheet,
         rows: remainingRows,
         cellStyles: remapRecordAfterRowDelete(sheet.cellStyles, toDelete) ?? {},
+        cellComments: remapRecordAfterRowDelete(sheet.cellComments, toDelete),
         merges: remapMergesAfterRowDelete(sheet.merges, toDelete),
         dataValidations: remapRecordAfterRowDelete(
           sheet.dataValidations,
@@ -2888,7 +3922,7 @@ export function ExcelWorkspace({
   };
 
   const handleDeleteColumnIndex = (colIdx: number) => {
-    if (isEditingLocked || columnCount <= 1) return;
+    if (isEditBlocked || columnCount <= 1) return;
     if (editingCell) cancelEditing();
     const toDelete = new Set<number>([colIdx]);
     updateActiveSheet((sheet) => {
@@ -2901,6 +3935,7 @@ export function ExcelWorkspace({
         columns: createLetterColumns(sheet.columns.length - 1),
         rows: nextRows,
         cellStyles: remapRecordAfterColDelete(sheet.cellStyles, toDelete) ?? {},
+        cellComments: remapRecordAfterColDelete(sheet.cellComments, toDelete),
         merges: remapMergesAfterColDelete(sheet.merges, toDelete),
         dataValidations: remapRecordAfterColDelete(
           sheet.dataValidations,
@@ -3027,6 +4062,8 @@ export function ExcelWorkspace({
       setEditDraft('');
     }
     setActiveSheetIdx(index);
+    setActiveDrawTool(null);
+    setSelectedFloatingObjId(null);
     setSearchQuery('');
     setSortConfig(null);
     setColumnFilters({});
@@ -3096,6 +4133,18 @@ export function ExcelWorkspace({
         categories: [...ch.categories],
         series: ch.series.map((s) => ({ ...s, values: [...s.values] })),
       })),
+      cellComments: source.cellComments ? { ...source.cellComments } : undefined,
+      drawings: source.drawings?.map((d) => ({
+        ...d,
+        id: `draw-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        points: d.points.map((p) => ({ ...p })),
+      })),
+      floatingObjects: source.floatingObjects?.map((o) => ({
+        ...o,
+        id: `obj-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      })),
+      pageSetup: source.pageSetup ? { ...source.pageSetup } : undefined,
+      lockedRanges: source.lockedRanges ? [...source.lockedRanges] : undefined,
     };
     const nextSheets = [
       ...sheetsRef.current.slice(0, idx + 1),
@@ -3314,20 +4363,18 @@ export function ExcelWorkspace({
       setZoomPercent(100);
       return;
     }
-    const availableW = Math.max(240, container.clientWidth - 24);
-    const totalUnscaledW =
-      BASE_ROW_HEADER_WIDTH +
-      visibleColIndices.reduce(
-        (sum, c) => sum + (activeSheet.colWidths?.[c] ?? DEFAULT_COL_WIDTH),
-        0
-      );
-    if (totalUnscaledW <= 0) {
+    const availableW = Math.max(160, container.clientWidth - 20);
+    const naturalW =
+      sheetCanvasRef.current && sheetCanvasRef.current.offsetWidth > 0
+        ? sheetCanvasRef.current.offsetWidth
+        : effectiveNaturalWidth;
+    if (naturalW <= 0) {
       setZoomPercent(100);
       return;
     }
-    const idealPct = Math.round((availableW / totalUnscaledW) * 100);
-    setZoomPercent(Math.max(25, Math.min(200, Math.min(100, idealPct))));
-  }, [activeSheet.colWidths, visibleColIndices]);
+    const fitPct = Math.floor((availableW / naturalW) * 100);
+    setZoomPercent(Math.max(10, Math.min(300, fitPct)));
+  }, [effectiveNaturalWidth]);
 
   // Name Box jump-to-cell
   const handleNameBoxCommit = () => {
@@ -3389,6 +4436,7 @@ export function ExcelWorkspace({
   ) => {
     if (event.button !== 0) return;
     setOpenValidationKey(null);
+    setSelectedFloatingObjId(null);
     const origRow = visibleRows[visRowIdx]?.originalIndex;
     if (
       editingCell &&
@@ -3407,6 +4455,26 @@ export function ExcelWorkspace({
 
     event.preventDefault();
     gridContainerRef.current?.focus({ preventScroll: true });
+
+    // Format Painter: apply copied style to clicked cell immediately
+    if (formatPainterStyle && origRow !== undefined && !isEditBlocked) {
+      const painterCopy = { ...formatPainterStyle };
+      setFormatPainterStyle(null);
+      setSelection({
+        start: { row: visRowIdx, col: colIdx },
+        end: { row: visRowIdx, col: colIdx },
+      });
+      if (!isCellInLockedRanges(origRow, colIdx, activeSheet.lockedRanges)) {
+        updateActiveSheet((sheet) => ({
+          ...sheet,
+          cellStyles: {
+            ...(sheet.cellStyles ?? {}),
+            [makeCellKey(origRow, colIdx)]: painterCopy,
+          },
+        }));
+      }
+      return;
+    }
 
     if (event.shiftKey) {
       setSelection((prev) => ({
@@ -3475,9 +4543,9 @@ export function ExcelWorkspace({
   };
 
   const handleCellDoubleClick = (visRowIdx: number, colIdx: number) => {
-    if (isEditingLocked) return;
     const origRow = visibleRows[visRowIdx]?.originalIndex;
     if (origRow === undefined) return;
+    if (!ensureEditMode(origRow, colIdx)) return;
     setSelection({
       start: { row: visRowIdx, col: colIdx },
       end: { row: visRowIdx, col: colIdx },
@@ -3507,7 +4575,9 @@ export function ExcelWorkspace({
   };
 
   const handleClearSelectedCells = () => {
-    if (isEditingLocked || !normalizedRange) return;
+    if (isReadOnly || viewModeRef.current === 'original' || !normalizedRange) {
+      return;
+    }
     updateActiveSheet((sheet) => {
       const nextRows = sheet.rows.map((row) => [...row]);
       let changed = false;
@@ -3534,31 +4604,70 @@ export function ExcelWorkspace({
     if (isModalOpen || editingCell !== null) return;
     if (visibleRows.length === 0 || columnCount === 0 || !normalizedRange) return;
 
-    if (event.key === 'Enter' || event.key === 'F2') {
-      if (isEditingLocked) return;
-      event.preventDefault();
-      if (anchorOriginalRow !== null && anchorCol !== null) {
-        startCellEditing(anchorOriginalRow, anchorCol, 'cell');
+    if ((event.ctrlKey || event.metaKey) && !event.altKey) {
+      const lowerKey = event.key.toLowerCase();
+      if (lowerKey === 'c') {
+        event.preventDefault();
+        handleCopyCells();
+        return;
       }
+      if (lowerKey === 'x') {
+        event.preventDefault();
+        handleCopyCells();
+        if (ensureEditMode(anchorOriginalRow ?? undefined, anchorCol ?? undefined)) {
+          handleClearSelectedCells();
+        }
+        return;
+      }
+      if (lowerKey === 'v') {
+        event.preventDefault();
+        if (ensureEditMode(anchorOriginalRow ?? undefined, anchorCol ?? undefined)) {
+          void handlePasteCells();
+        }
+        return;
+      }
+    }
+
+    if (event.key === 'Enter' || event.key === 'F2') {
+      if (
+        anchorOriginalRow === null ||
+        anchorCol === null ||
+        !ensureEditMode(anchorOriginalRow, anchorCol)
+      ) {
+        return;
+      }
+      event.preventDefault();
+      startCellEditing(anchorOriginalRow, anchorCol, 'cell');
       return;
     }
 
     if (event.key === 'Backspace' || event.key === 'Delete') {
-      if (isEditingLocked) return;
+      if (
+        !ensureEditMode(
+          anchorOriginalRow ?? undefined,
+          anchorCol ?? undefined
+        )
+      ) {
+        return;
+      }
       event.preventDefault();
       handleClearSelectedCells();
       return;
     }
 
     if (
-      !isEditingLocked &&
+      !isReadOnly &&
       !event.ctrlKey &&
       !event.metaKey &&
       !event.altKey &&
       event.key.length === 1 &&
       event.key !== ' '
     ) {
-      if (anchorOriginalRow !== null && anchorCol !== null) {
+      if (
+        anchorOriginalRow !== null &&
+        anchorCol !== null &&
+        ensureEditMode(anchorOriginalRow, anchorCol)
+      ) {
         event.preventDefault();
         startCellEditing(anchorOriginalRow, anchorCol, 'cell', event.key);
       }
@@ -3631,7 +4740,7 @@ export function ExcelWorkspace({
       return [];
     }
     const prefix = m[1].toUpperCase();
-    return EXCEL_FORMULA_CATALOG.filter((fn) =>
+    return ONLYOFFICE_FORMULA_LIBRARY.filter((fn) =>
       fn.name.startsWith(prefix)
     ).slice(0, 7);
   }, [editDraft, editingCell]);
@@ -3654,7 +4763,11 @@ export function ExcelWorkspace({
   };
 
   const handleFormulaFocus = () => {
-    if (isEditingLocked || anchorOriginalRow === null || anchorCol === null) {
+    if (
+      anchorOriginalRow === null ||
+      anchorCol === null ||
+      !ensureEditMode(anchorOriginalRow, anchorCol)
+    ) {
       return;
     }
     if (
@@ -3676,7 +4789,14 @@ export function ExcelWorkspace({
   };
 
   const handleFormulaChange = (event: ChangeEvent<HTMLInputElement>) => {
-    if (isEditingLocked) return;
+    if (
+      !ensureEditMode(
+        anchorOriginalRow ?? undefined,
+        anchorCol ?? undefined
+      )
+    ) {
+      return;
+    }
     const nextValue = event.target.value;
     if (!editingCell && anchorOriginalRow !== null && anchorCol !== null) {
       startCellEditing(anchorOriginalRow, anchorCol, 'formula', nextValue);
@@ -3799,127 +4919,26 @@ export function ExcelWorkspace({
     return null;
   }, [fillDrag]);
 
-  const topBarToolbar = (
-    <div className="flex items-center gap-1.5 sm:gap-2">
-      {/* Chuyển đổi Xem nguyên bản ↔ Chỉnh sửa nhanh */}
-      <div
-        role="group"
-        aria-label="Chế độ xem bảng tính"
-        className="inline-flex items-center p-0.5 rounded-xl bg-[#EDF3EF] border border-[#D4E2D9] shrink-0"
-      >
-        <button
-          type="button"
-          onClick={() => {
-            if (editingCell) {
-              commitCellValue(editingCell.originalRow, editingCell.col, editDraft);
-              cancelBlurCommitRef.current = true;
-              setEditingCell(null);
-              setEditDraft('');
-            }
-            setViewMode('original');
-          }}
-          title="Xem nguyên bản (Giống Microsoft Excel)"
-          className={`inline-flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded-lg text-[11.5px] font-semibold transition-all whitespace-nowrap ${
-            viewMode === 'original'
-              ? 'bg-white text-[#107C41] shadow-sm'
-              : 'text-slate-600 hover:text-slate-900'
-          }`}
-        >
-          <Eye className="w-3.5 h-3.5 shrink-0" />
-          <span className="hidden lg:inline">Xem nguyên bản</span>
-          <span className="lg:hidden">Gốc</span>
-        </button>
+  const hasOriginalBinary = Boolean(
+    document.rawArrayBuffer ||
+      document.isUploaded ||
+      document.storagePath ||
+      document.r2ObjectKey
+  );
 
-        {!isReadOnly && (
-          <button
-            type="button"
-            onClick={() => setViewMode('edit')}
-            title="Chỉnh sửa nhanh ô, công thức và định dạng"
-            className={`inline-flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded-lg text-[11.5px] font-semibold transition-all whitespace-nowrap ${
-              viewMode === 'edit'
-                ? 'bg-white text-[#107C41] shadow-sm'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <Pencil className="w-3.5 h-3.5 shrink-0" />
-            <span className="hidden lg:inline">Chỉnh sửa nhanh</span>
-            <span className="lg:hidden">Sửa</span>
-          </button>
-        )}
-      </div>
-
-      {hasActiveTransforms && (
-        <button
-          type="button"
-          onClick={handleResetFiltersAndSort}
-          className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200/80 text-xs font-medium transition-colors whitespace-nowrap shrink-0"
-          title="Đặt lại toàn bộ bộ lọc và sắp xếp"
-        >
-          <RotateCcw className="w-3.5 h-3.5 shrink-0" />
-          <span className="hidden md:inline">Đặt lại lọc</span>
-        </button>
-      )}
-
-      {!isReadOnly && (
-        <button
-          type="button"
-          onClick={handleSave}
-          title="Lưu thay đổi (Ctrl+S)"
-          className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all whitespace-nowrap shrink-0 ${
-            justSaved
-              ? 'bg-emerald-50 border-emerald-300 text-[#107C41]'
-              : hasUnsavedChanges
-                ? 'bg-[#107C41] hover:bg-[#0D6535] border-[#107C41] text-white shadow-sm'
-                : 'bg-[#F5F8F6] hover:bg-[#E7F0EA] border-[#D4E2D9] text-slate-700'
-          }`}
-        >
-          {justSaved ? (
-            <>
-              <Check className="w-3.5 h-3.5 shrink-0" />
-              <span>Đã lưu</span>
-            </>
-          ) : (
-            <>
-              <Save className="w-3.5 h-3.5 shrink-0" />
-              <span className="hidden sm:inline">Lưu thay đổi</span>
-              <span className="sm:hidden">Lưu</span>
-              {hasUnsavedChanges && (
-                <span
-                  className="w-1.5 h-1.5 rounded-full bg-amber-300 shrink-0"
-                  aria-hidden="true"
-                />
-              )}
-            </>
-          )}
-        </button>
-      )}
-
-      <button
-        type="button"
-        onClick={() => void handleDownloadOriginalBinary()}
-        disabled={isDownloadingOriginal}
-        title="Tải xuống bản gốc ban đầu 100%"
-        className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl bg-white hover:bg-[#E6F4EC] border border-[#D4E2D9] text-slate-700 hover:text-[#107C41] text-xs font-semibold transition-colors whitespace-nowrap shrink-0 disabled:opacity-50"
-      >
-        {isDownloadingOriginal ? (
-          <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
-        ) : (
-          <Download className="w-3.5 h-3.5 shrink-0" />
-        )}
-        <span className="hidden xl:inline">Tải xuống bản gốc</span>
-        <span className="xl:hidden">Bản gốc</span>
-      </button>
-
-      <button
-        type="button"
-        onClick={handleExportXlsx}
-        title="Xuất bảng tính hiện tại ra tệp .xlsx"
-        className="inline-flex items-center gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-xl bg-[#F6FAF7] hover:bg-[#E6F4EC] border border-[#D4E2D9] text-slate-700 hover:text-[#107C41] text-xs font-semibold transition-colors whitespace-nowrap shrink-0"
-      >
-        <FileSpreadsheet className="w-3.5 h-3.5 shrink-0" />
-        <span className="hidden md:inline">.xlsx</span>
-      </button>
-    </div>
+  const handleSwitchViewMode = useCallback(
+    (nextMode: 'original' | 'edit') => {
+      if (nextMode === 'edit' && isReadOnly) return;
+      if (nextMode === 'original' && editingCell) {
+        commitCellValue(editingCell.originalRow, editingCell.col, editDraft);
+        cancelBlurCommitRef.current = true;
+        setEditingCell(null);
+        setEditDraft('');
+      }
+      viewModeRef.current = nextMode;
+      setViewMode(nextMode);
+    },
+    [commitCellValue, editDraft, editingCell, isReadOnly]
   );
 
   const anchorValidationOptions =
@@ -3948,7 +4967,7 @@ export function ExcelWorkspace({
           : null;
 
   return (
-    <div className="h-[100dvh] w-full flex flex-col bg-[#F3F6F4] text-slate-900 overflow-hidden">
+    <div className="h-[100dvh] w-full flex flex-col bg-[#F3F4F6] text-slate-900 overflow-hidden">
       <WorkspaceTopBar
         document={document}
         theme="light"
@@ -3958,11 +4977,22 @@ export function ExcelWorkspace({
         collaborators={collaborators}
         selfSessionId={selfSessionId}
         collabPermission={collabPermission}
-        toolbar={topBarToolbar}
+        modeSwitch={{
+          visible: hasOriginalBinary,
+          mode: viewMode,
+          onChange: handleSwitchViewMode,
+          editDisabled: isReadOnly,
+          originalTitle: 'Xem nguyên bản (Giống Microsoft Excel)',
+          editTitle: 'Chỉnh sửa nhanh ô, công thức và định dạng',
+        }}
+        onSave={isReadOnly ? undefined : handleSave}
+        isDirty={hasUnsavedChanges}
+        isSaved={justSaved}
+        onDownloadEdited={handleExportXlsx}
       />
 
       {feedbackBanner && (
-        <div className="shrink-0 px-3 sm:px-4 py-1.5 bg-[#E6F4EC] border-b border-[#B7DFC7] text-[#107C41] text-xs font-medium flex items-center justify-between gap-2">
+        <div className="shrink-0 px-3 sm:px-4 py-1.5 bg-[#ECFDF5] border-b border-[#107C41]/20 text-[#107C41] text-xs font-medium flex items-center justify-between gap-2">
           <span className="truncate">{feedbackBanner}</span>
           <button
             type="button"
@@ -3975,25 +5005,28 @@ export function ExcelWorkspace({
         </div>
       )}
 
-      {/* Microsoft Excel #107C41 Ribbon (Tabs + Scrollable Command Strip — Responsive Desktop & Mobile Android) */}
+      {/* Hidden image uploader for Insert -> Image */}
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleInsertImageFile}
+        className="hidden"
+      />
+
+      {/* Microsoft Excel / ONLYOFFICE 11-Tab Fluent Ribbon (#107C41) */}
       <div
         data-excel-popover="true"
-        className="shrink-0 bg-[#F3F6F4] border-b border-[#D8E2DC] relative z-30"
+        className="shrink-0 bg-[#F8FAFC] border-b border-slate-200/80 relative z-30"
       >
-        {/* Tab Strip */}
-        <div className="flex items-center justify-between gap-2 px-2.5 sm:px-4 border-b border-[#E1EAE4]">
+        {/* 11-Tab Strip + Collapse Button */}
+        <div className="flex items-center justify-between gap-2 px-2.5 sm:px-4 pt-1">
           <div
             role="tablist"
-            aria-label="Ribbon Microsoft Excel"
+            aria-label="Thanh công cụ 11 thẻ Excel"
             className="flex items-center gap-0.5 overflow-x-auto no-scrollbar"
           >
-            {(
-              [
-                { id: 'home', label: 'Trang đầu' },
-                { id: 'insert-formula', label: 'Chèn & Công thức' },
-                { id: 'data-view', label: 'Dữ liệu & Xem' },
-              ] as const
-            ).map((tab) => {
+            {ONLYOFFICE_RIBBON_TABS.map((tab) => {
               const isActive = activeRibbonTab === tab.id;
               return (
                 <button
@@ -4006,11 +5039,14 @@ export function ExcelWorkspace({
                     setActiveRibbonTab(tab.id);
                     setIsRibbonCollapsed(false);
                     setOpenPopover(null);
+                    if (tab.id !== 'draw' && activeDrawTool !== null) {
+                      setActiveDrawTool(null);
+                    }
                   }}
-                  className={`px-3 py-1.5 text-xs whitespace-nowrap border-b-2 transition-colors ${
+                  className={`px-2.5 sm:px-3 py-1.5 text-xs whitespace-nowrap border-b-2 transition-colors rounded-t-md ${
                     isActive
-                      ? 'border-[#107C41] text-[#107C41] font-bold bg-white/80 rounded-t-md'
-                      : 'border-transparent text-slate-600 font-medium hover:text-slate-900 hover:bg-white/40'
+                      ? 'border-[#107C41] text-[#107C41] font-semibold bg-white/90'
+                      : 'border-transparent text-slate-600 font-medium hover:text-slate-900 hover:bg-slate-200/50'
                   }`}
                 >
                   {tab.label}
@@ -4019,24 +5055,41 @@ export function ExcelWorkspace({
             })}
           </div>
 
-          <div className="flex items-center gap-1.5 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0 pb-0.5">
+            {isSheetProtected && (
+              <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-[11px] font-semibold">
+                <Lock className="w-3 h-3" />
+                Đang bảo vệ
+              </span>
+            )}
+            {hasActiveTransforms && (
+              <button
+                type="button"
+                onClick={handleResetFiltersAndSort}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 hover:bg-amber-100 border border-amber-200/80 text-amber-800 text-[11px] font-semibold whitespace-nowrap shrink-0 transition-colors"
+                title="Đặt lại toàn bộ bộ lọc và sắp xếp"
+              >
+                <RotateCcw className="w-3 h-3 shrink-0" />
+                <span className="hidden sm:inline">Đặt lại lọc</span>
+              </button>
+            )}
             {isFiltered && (
-              <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#E6F4EC] border border-[#B7DFC7] text-[#107C41] text-[11px] font-semibold">
+              <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#ECFDF5] border border-[#107C41]/25 text-[#107C41] text-[11px] font-semibold">
                 <Filter className="w-3 h-3" />
                 {visibleRows.length}/{activeSheet.rows.length} dòng
               </span>
             )}
             {activeFreezeLabel && (
-              <span className="hidden lg:inline-flex items-center gap-1 px-2 py-0.5 rounded bg-sky-50 border border-sky-200 text-sky-700 text-[11px] font-semibold">
+              <span className="hidden lg:inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-sky-50 border border-sky-200/80 text-sky-700 text-[11px] font-semibold">
                 <Snowflake className="w-3 h-3" />
                 {activeFreezeLabel}
               </span>
             )}
-            {hiddenCount > 0 && !isEditingLocked && (
+            {hiddenCount > 0 && !isEditBlocked && (
               <button
                 type="button"
                 onClick={handleUnhideAll}
-                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-800 text-[11px] font-semibold"
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-800 text-[11px] font-semibold transition-colors"
                 title="Hiện lại toàn bộ dòng và cột đang ẩn"
               >
                 <Eye className="w-3 h-3" />
@@ -4047,497 +5100,1294 @@ export function ExcelWorkspace({
               type="button"
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => setIsRibbonCollapsed((v) => !v)}
-              title={isRibbonCollapsed ? 'Mở thanh công cụ Ribbon' : 'Thu gọn thanh công cụ Ribbon'}
+              title={
+                isRibbonCollapsed
+                  ? 'Mở thanh công cụ Ribbon'
+                  : 'Thu gọn thanh công cụ Ribbon'
+              }
               aria-label={isRibbonCollapsed ? 'Mở Ribbon' : 'Thu gọn Ribbon'}
-              className="p-1 rounded-md text-slate-500 hover:text-slate-800 hover:bg-white/80 transition-colors"
+              className="w-7 h-7 inline-flex items-center justify-center rounded-lg text-slate-500 hover:text-[#107C41] hover:bg-slate-200/70 transition-colors"
             >
               {isRibbonCollapsed ? (
-                <ChevronDown className="w-3.5 h-3.5" />
+                <ChevronDown className="w-4 h-4" />
               ) : (
-                <ChevronUp className="w-3.5 h-3.5" />
+                <ChevronUp className="w-4 h-4" />
               )}
             </button>
           </div>
         </div>
 
-        {/* Scrollable Ribbon Command Row */}
+        {/* Floating Fluent Command Card */}
         {!isRibbonCollapsed && (
-          <div className="bg-white px-2.5 sm:px-3.5 py-1.5 overflow-x-auto no-scrollbar">
-            {activeRibbonTab === 'home' && (
+          <div className="rounded-xl bg-white shadow-[0_1px_3px_rgba(15,23,42,0.06)] border border-slate-200/80 mx-2 my-1.5 px-2.5 py-1.5 overflow-x-auto no-scrollbar">
+            {/* TAB 1: TỆP (FILE) */}
+            {activeRibbonTab === 'file' && (
               <div className="flex items-center gap-1.5 w-max">
-                {/* Font Style: B / I / U / Size / Text Color / Fill Color */}
-                <div className="inline-flex items-center gap-0.5 rounded-lg bg-[#F5F8F6] border border-[#DCE5DF] p-0.5 shrink-0">
-                  <button
-                    type="button"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={handleToggleBold}
-                    disabled={isEditingLocked || !normalizedRange}
-                    aria-pressed={anchorStyle.bold === true}
-                    title="In đậm (Bold)"
-                    className={`w-7 h-7 rounded-md inline-flex items-center justify-center transition-colors disabled:opacity-40 ${
-                      anchorStyle.bold
-                        ? 'bg-[#107C41] text-white'
-                        : 'text-slate-700 hover:bg-white'
-                    }`}
-                  >
-                    <Bold className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={handleToggleItalic}
-                    disabled={isEditingLocked || !normalizedRange}
-                    aria-pressed={anchorStyle.italic === true}
-                    title="In nghiêng (Italic)"
-                    className={`w-7 h-7 rounded-md inline-flex items-center justify-center transition-colors disabled:opacity-40 ${
-                      anchorStyle.italic
-                        ? 'bg-[#107C41] text-white'
-                        : 'text-slate-700 hover:bg-white'
-                    }`}
-                  >
-                    <Italic className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={handleToggleUnderline}
-                    disabled={isEditingLocked || !normalizedRange}
-                    aria-pressed={anchorStyle.underline === true}
-                    title="Gạch chân (Underline)"
-                    className={`w-7 h-7 rounded-md inline-flex items-center justify-center transition-colors disabled:opacity-40 ${
-                      anchorStyle.underline
-                        ? 'bg-[#107C41] text-white'
-                        : 'text-slate-700 hover:bg-white'
-                    }`}
-                  >
-                    <Underline className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-
-                <select
-                  aria-label="Cỡ chữ ô"
-                  title="Cỡ chữ"
-                  disabled={isEditingLocked || !normalizedRange}
-                  value={Math.round(anchorStyle.fontSize ?? 13)}
-                  onChange={(e) => handleSetFontSize(Number(e.target.value))}
-                  className="h-7 px-1.5 rounded-lg border border-[#DCE5DF] bg-white text-xs font-semibold text-slate-700 focus:outline-none focus:border-[#107C41] disabled:opacity-40 shrink-0"
-                >
-                  {FONT_SIZE_OPTIONS.map((sz) => (
-                    <option key={sz} value={sz}>
-                      {sz}
-                    </option>
-                  ))}
-                </select>
-
-                {/* Fill Color Button */}
                 <button
                   type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  disabled={isEditingLocked || !normalizedRange}
-                  onClick={() =>
-                    setOpenPopover((p) => (p === 'fillColor' ? null : 'fillColor'))
-                  }
-                  title="Màu nền ô (Fill Color)"
-                  className={`h-7 px-2 rounded-lg border inline-flex items-center gap-1 text-xs font-medium transition-colors disabled:opacity-40 shrink-0 ${
-                    openPopover === 'fillColor'
-                      ? 'bg-[#E6F4EC] border-[#107C41] text-[#107C41]'
-                      : 'bg-white border-[#DCE5DF] text-slate-700 hover:bg-[#F5F8F6]'
-                  }`}
+                  disabled={isReadOnly}
+                  onClick={handleSave}
+                  className="h-8 px-3 rounded-lg bg-[#107C41] hover:bg-[#0B5E31] text-white text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors"
                 >
-                  <span className="flex flex-col items-center">
-                    <PaintBucket className="w-3.5 h-3.5" />
-                    <span
-                      className="w-3.5 h-1 rounded-full -mt-0.5 border border-black/15"
-                      style={{
-                        backgroundColor: anchorStyle.bgColor ?? '#FEF9C3',
-                      }}
-                    />
-                  </span>
-                  <ChevronDown className="w-3 h-3 text-slate-400" />
+                  <Save className="w-3.5 h-3.5" />
+                  <span>Lưu</span>
                 </button>
-
-                {/* Text Color Button */}
                 <button
                   type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  disabled={isEditingLocked || !normalizedRange}
-                  onClick={() =>
-                    setOpenPopover((p) => (p === 'textColor' ? null : 'textColor'))
-                  }
-                  title="Màu chữ (Font Color)"
-                  className={`h-7 px-2 rounded-lg border inline-flex items-center gap-1 text-xs font-medium transition-colors disabled:opacity-40 shrink-0 ${
-                    openPopover === 'textColor'
-                      ? 'bg-[#E6F4EC] border-[#107C41] text-[#107C41]'
-                      : 'bg-white border-[#DCE5DF] text-slate-700 hover:bg-[#F5F8F6]'
-                  }`}
+                  onClick={handleSaveCopy}
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 transition-colors"
                 >
-                  <span className="flex flex-col items-center">
-                    <Type className="w-3.5 h-3.5" />
-                    <span
-                      className="w-3.5 h-1 rounded-full -mt-0.5"
-                      style={{
-                        backgroundColor: anchorStyle.textColor ?? '#0F172A',
-                      }}
-                    />
-                  </span>
-                  <ChevronDown className="w-3 h-3 text-slate-400" />
+                  <Copy className="w-3.5 h-3.5 text-[#107C41]" />
+                  <span>Lưu bản sao</span>
                 </button>
-
-                {/* Borders Dropdown */}
+                <span className="h-6 w-px bg-slate-200/80 mx-1 shrink-0" />
                 <button
                   type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  disabled={isEditingLocked || !normalizedRange}
-                  onClick={() =>
-                    setOpenPopover((p) => (p === 'borders' ? null : 'borders'))
-                  }
-                  title="Kẻ khung viền ô (Borders)"
-                  className={`h-7 px-2 rounded-lg border inline-flex items-center gap-1 text-xs font-medium transition-colors disabled:opacity-40 shrink-0 ${
-                    openPopover === 'borders'
-                      ? 'bg-[#E6F4EC] border-[#107C41] text-[#107C41]'
-                      : 'bg-white border-[#DCE5DF] text-slate-700 hover:bg-[#F5F8F6]'
-                  }`}
+                  disabled={isDownloadingOriginal}
+                  onClick={() => void handleDownloadOriginalFile()}
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors"
                 >
-                  <Grid3x3 className="w-3.5 h-3.5" />
-                  <span className="hidden xl:inline">Viền</span>
-                  <ChevronDown className="w-3 h-3 text-slate-400" />
-                </button>
-
-                <span className="h-5 w-px bg-[#DCE5DF] mx-0.5 shrink-0" />
-
-                {/* 9-Position Alignment (Horizontal + Vertical) */}
-                <div
-                  role="group"
-                  aria-label="Căn lề ngang"
-                  className="inline-flex items-center gap-0.5 rounded-lg bg-[#F5F8F6] border border-[#DCE5DF] p-0.5 shrink-0"
-                >
-                  {(
-                    [
-                      { id: 'left', icon: AlignLeft, label: 'Căn trái' },
-                      { id: 'center', icon: AlignCenter, label: 'Căn giữa ngang' },
-                      { id: 'right', icon: AlignRight, label: 'Căn phải' },
-                    ] as const
-                  ).map(({ id, icon: Icon, label }) => (
-                    <button
-                      key={id}
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => handleSetAlign(id)}
-                      disabled={isEditingLocked || !normalizedRange}
-                      title={label}
-                      aria-label={label}
-                      className={`w-6 h-6 rounded inline-flex items-center justify-center transition-colors disabled:opacity-40 ${
-                        anchorEffectiveAlign === id
-                          ? 'bg-[#107C41] text-white'
-                          : 'text-slate-600 hover:bg-white'
-                      }`}
-                    >
-                      <Icon className="w-3.5 h-3.5" />
-                    </button>
-                  ))}
-                </div>
-
-                <div
-                  role="group"
-                  aria-label="Căn lề dọc"
-                  className="inline-flex items-center gap-0.5 rounded-lg bg-[#F5F8F6] border border-[#DCE5DF] p-0.5 shrink-0"
-                >
-                  {(
-                    [
-                      {
-                        id: 'top',
-                        icon: AlignVerticalJustifyStart,
-                        label: 'Căn trên',
-                      },
-                      {
-                        id: 'middle',
-                        icon: AlignVerticalJustifyCenter,
-                        label: 'Căn giữa dọc',
-                      },
-                      {
-                        id: 'bottom',
-                        icon: AlignVerticalJustifyEnd,
-                        label: 'Căn dưới',
-                      },
-                    ] as const
-                  ).map(({ id, icon: Icon, label }) => (
-                    <button
-                      key={id}
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => handleSetValign(id)}
-                      disabled={isEditingLocked || !normalizedRange}
-                      title={label}
-                      aria-label={label}
-                      className={`w-6 h-6 rounded inline-flex items-center justify-center transition-colors disabled:opacity-40 ${
-                        anchorEffectiveValign === id
-                          ? 'bg-[#107C41] text-white'
-                          : 'text-slate-600 hover:bg-white'
-                      }`}
-                    >
-                      <Icon className="w-3.5 h-3.5" />
-                    </button>
-                  ))}
-                </div>
-
-                {/* Wrap Text */}
-                <button
-                  type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={handleToggleWrapText}
-                  disabled={isEditingLocked || !normalizedRange}
-                  aria-pressed={anchorStyle.wrapText === true}
-                  title="Tự động xuống dòng trong ô (Wrap Text)"
-                  className={`h-7 px-2 rounded-lg border inline-flex items-center gap-1 text-xs font-medium transition-colors disabled:opacity-40 shrink-0 ${
-                    anchorStyle.wrapText
-                      ? 'bg-[#E6F4EC] border-[#107C41] text-[#107C41] font-semibold'
-                      : 'bg-white border-[#DCE5DF] text-slate-700 hover:bg-[#F5F8F6]'
-                  }`}
-                >
-                  <WrapText className="w-3.5 h-3.5" />
-                  <span className="hidden lg:inline">Xuống dòng</span>
-                </button>
-
-                {/* Merge & Center / Unmerge */}
-                <button
-                  type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={
-                    isSelectionMerged ? handleUnmerge : handleMergeAndCenter
-                  }
-                  disabled={isEditingLocked || !normalizedRange}
-                  title={
-                    isSelectionMerged
-                      ? 'Bỏ gộp các ô đang chọn (Unmerge)'
-                      : 'Gộp và căn giữa vùng chọn (Merge & Center)'
-                  }
-                  className={`h-7 px-2 rounded-lg border inline-flex items-center gap-1 text-xs font-medium transition-colors disabled:opacity-40 shrink-0 ${
-                    isSelectionMerged
-                      ? 'bg-[#E6F4EC] border-[#107C41] text-[#107C41] font-semibold'
-                      : 'bg-white border-[#DCE5DF] text-slate-700 hover:bg-[#F5F8F6]'
-                  }`}
-                >
-                  {isSelectionMerged ? (
-                    <>
-                      <Split className="w-3.5 h-3.5" />
-                      <span>Bỏ gộp</span>
-                    </>
+                  {isDownloadingOriginal ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-[#107C41]" />
                   ) : (
-                    <>
-                      <Merge className="w-3.5 h-3.5" />
-                      <span>Gộp ô</span>
-                    </>
+                    <Download className="w-3.5 h-3.5 text-[#107C41]" />
                   )}
+                  <span>Tải bản gốc .xlsx</span>
                 </button>
-
-                <span className="h-5 w-px bg-[#DCE5DF] mx-0.5 shrink-0" />
-
-                {/* Number Format & Decimals */}
-                <select
-                  aria-label="Định dạng số"
-                  title="Định dạng số (Chung, Số, Tiền tệ VNĐ, Phần trăm, Ngày tháng)"
-                  disabled={isEditingLocked || !normalizedRange}
-                  value={detectFormatPresetValue(anchorStyle.numFmt)}
-                  onChange={(e) => handleSetNumberFormat(e.target.value)}
-                  className="h-7 px-2 rounded-lg border border-[#DCE5DF] bg-white text-xs font-medium text-slate-700 focus:outline-none focus:border-[#107C41] disabled:opacity-40 shrink-0"
-                >
-                  {NUMBER_FORMAT_PRESETS.map((fmt) => (
-                    <option key={fmt.id} value={fmt.numFmt}>
-                      {fmt.label}
-                    </option>
-                  ))}
-                </select>
-
-                <div className="inline-flex items-center rounded-lg border border-[#DCE5DF] bg-white overflow-hidden shrink-0">
-                  <button
-                    type="button"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => handleAdjustDecimals(1)}
-                    disabled={isEditingLocked || !normalizedRange}
-                    title="Tăng chữ số thập phân (.00)"
-                    className="h-7 px-2 text-[11px] font-bold text-slate-700 hover:bg-[#E6F4EC] hover:text-[#107C41] border-r border-[#DCE5DF] disabled:opacity-40"
-                  >
-                    .00
-                  </button>
-                  <button
-                    type="button"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => handleAdjustDecimals(-1)}
-                    disabled={isEditingLocked || !normalizedRange}
-                    title="Giảm chữ số thập phân (.0)"
-                    className="h-7 px-2 text-[11px] font-bold text-slate-700 hover:bg-[#E6F4EC] hover:text-[#107C41] disabled:opacity-40"
-                  >
-                    .0
-                  </button>
-                </div>
-
-                <span className="h-5 w-px bg-[#DCE5DF] mx-0.5 shrink-0" />
-
-                {/* Conditional Formatting */}
                 <button
                   type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => setIsCondFormatModalOpen(true)}
-                  disabled={isEditingLocked || !normalizedRange}
-                  title="Định dạng có điều kiện (Lớn hơn, Nhỏ hơn, Bằng, Trùng lặp)"
-                  className="h-7 px-2.5 rounded-lg border border-[#DCE5DF] bg-white hover:bg-[#E6F4EC] hover:border-[#107C41]/40 text-xs font-medium text-slate-700 hover:text-[#107C41] inline-flex items-center gap-1.5 disabled:opacity-40 shrink-0 transition-colors"
+                  onClick={handleExportXlsx}
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 transition-colors"
                 >
-                  <Sparkles className="w-3.5 h-3.5 text-[#107C41]" />
-                  <span>Định dạng ĐK</span>
-                  {(activeSheet.conditionalFormats?.length ?? 0) > 0 && (
-                    <span className="px-1.5 py-0.2 rounded-full bg-[#107C41] text-white text-[10px] font-bold">
-                      {activeSheet.conditionalFormats?.length}
-                    </span>
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-[#107C41]" />
+                  <span>Tải bản sửa .xlsx</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isExportingPdf}
+                  onClick={() => void handleExportPdf()}
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors"
+                >
+                  {isExportingPdf ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-rose-600" />
+                  ) : (
+                    <FileDown className="w-3.5 h-3.5 text-rose-600" />
                   )}
+                  <span>Xuất PDF</span>
                 </button>
-
-                <span className="h-5 w-px bg-[#DCE5DF] mx-0.5 shrink-0" />
-
-                {/* Cells Structure: Add Row / Add Col / Delete Row / Clear */}
+                <span className="h-6 w-px bg-slate-200/80 mx-1 shrink-0" />
                 <button
                   type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={handleAddRow}
-                  disabled={isEditingLocked}
-                  title="Thêm dòng mới vào cuối bảng"
-                  className="h-7 px-2 rounded-lg border border-[#DCE5DF] bg-white hover:bg-[#E6F4EC] text-xs font-medium text-slate-700 hover:text-[#107C41] inline-flex items-center gap-1 disabled:opacity-40 shrink-0"
+                  onClick={handlePrintSheet}
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 transition-colors"
                 >
-                  <Plus className="w-3.5 h-3.5 text-[#107C41]" />
-                  <span>Dòng</span>
+                  <Printer className="w-3.5 h-3.5 text-slate-600" />
+                  <span>In trang tính</span>
                 </button>
                 <button
                   type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={handleAddColumn}
-                  disabled={isEditingLocked}
-                  title="Thêm cột mới vào cuối bảng"
-                  className="h-7 px-2 rounded-lg border border-[#DCE5DF] bg-white hover:bg-[#E6F4EC] text-xs font-medium text-slate-700 hover:text-[#107C41] inline-flex items-center gap-1 disabled:opacity-40 shrink-0"
+                  onClick={() => setIsFileInfoOpen(true)}
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 transition-colors"
                 >
-                  <Plus className="w-3.5 h-3.5 text-[#107C41]" />
-                  <span>Cột</span>
-                </button>
-                <button
-                  type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={handleDeleteSelectedRows}
-                  disabled={isEditingLocked || !canDeleteSelectedRows}
-                  title="Xóa các dòng đang chọn"
-                  className="h-7 px-2 rounded-lg border border-[#DCE5DF] bg-white hover:bg-rose-50 hover:border-rose-200 text-xs font-medium text-slate-700 hover:text-rose-600 inline-flex items-center gap-1 disabled:opacity-40 shrink-0"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span className="hidden lg:inline">Xóa dòng</span>
-                </button>
-                <button
-                  type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={handleClearSelectedCells}
-                  disabled={isEditingLocked || !normalizedRange}
-                  title="Xóa nội dung các ô đang chọn"
-                  className="h-7 px-2 rounded-lg border border-[#DCE5DF] bg-white hover:bg-slate-100 text-xs font-medium text-slate-600 inline-flex items-center gap-1 disabled:opacity-40 shrink-0"
-                >
-                  <Eraser className="w-3.5 h-3.5" />
+                  <Info className="w-3.5 h-3.5 text-slate-600" />
+                  <span>Thông tin tệp</span>
                 </button>
               </div>
             )}
 
-            {activeRibbonTab === 'insert-formula' && (
-              <div className="flex items-center gap-1.5 w-max">
-                {/* AutoSum (Σ) */}
-                <button
-                  type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  disabled={isEditingLocked || !normalizedRange}
-                  onClick={() =>
-                    setOpenPopover((p) => (p === 'autoSum' ? null : 'autoSum'))
-                  }
-                  className={`h-7 px-2.5 rounded-lg border inline-flex items-center gap-1.5 text-xs font-semibold transition-colors disabled:opacity-40 shrink-0 ${
-                    openPopover === 'autoSum'
-                      ? 'bg-[#107C41] border-[#107C41] text-white'
-                      : 'bg-[#E6F4EC] border-[#B7DFC7] text-[#107C41] hover:bg-[#D5ECDF]'
-                  }`}
-                >
-                  <Sigma className="w-3.5 h-3.5" />
-                  <span>AutoSum (Σ)</span>
-                  <ChevronDown className="w-3 h-3" />
-                </button>
-
-                {/* Formula Library (38+ functions) */}
-                <button
-                  type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  disabled={isEditingLocked || !normalizedRange}
-                  onClick={() =>
-                    setOpenPopover((p) => (p === 'formulas' ? null : 'formulas'))
-                  }
-                  className={`h-7 px-2.5 rounded-lg border inline-flex items-center gap-1.5 text-xs font-semibold transition-colors disabled:opacity-40 shrink-0 ${
-                    openPopover === 'formulas'
-                      ? 'bg-[#E6F4EC] border-[#107C41] text-[#107C41]'
-                      : 'bg-white border-[#DCE5DF] text-slate-700 hover:bg-[#F5F8F6]'
-                  }`}
-                >
-                  <Calculator className="w-3.5 h-3.5 text-[#107C41]" />
-                  <span>Thư viện hàm ({EXCEL_FORMULA_CATALOG.length})</span>
-                  <ChevronDown className="w-3 h-3 text-slate-400" />
-                </button>
-
-                {/* Quick popular formula shortcuts */}
-                {(['SUM', 'AVERAGE', 'IF', 'VLOOKUP', 'COUNTIF'] as const).map(
-                  (fn) => (
+            {/* TAB 2: TRANG CHỦ (HOME — 2-row compact ONLYOFFICE grouped Ribbon) */}
+            {activeRibbonTab === 'home' && (
+              <div className="flex items-stretch gap-2 w-max">
+                {/* Group 1: Clipboard */}
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    disabled={isEditBlocked || !normalizedRange}
+                    onClick={() => void handlePasteCells()}
+                    title="Dán (Ctrl+V)"
+                    className="h-[58px] px-2.5 rounded-lg border border-slate-200/80 bg-slate-50/70 hover:bg-[#ECFDF5] hover:border-[#107C41]/40 text-slate-700 hover:text-[#107C41] flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold disabled:opacity-40 transition-colors"
+                  >
+                    <ClipboardPaste className="w-4 h-4 text-[#107C41]" />
+                    <span>Dán</span>
+                  </button>
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        disabled={!normalizedRange}
+                        onClick={handleCopyCells}
+                        title="Sao chép (Ctrl+C)"
+                        className="h-7 px-2 rounded-md border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-[11px] font-medium text-slate-700 inline-flex items-center gap-1 disabled:opacity-40"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Chép</span>
+                      </button>
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        disabled={isEditBlocked || !normalizedRange}
+                        onClick={() => {
+                          handleCopyCells();
+                          handleClearSelectedCells();
+                        }}
+                        title="Cắt (Ctrl+X)"
+                        className="h-7 px-2 rounded-md border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-[11px] font-medium text-slate-700 inline-flex items-center gap-1 disabled:opacity-40"
+                      >
+                        <Scissors className="w-3.5 h-3.5" />
+                        <span>Cắt</span>
+                      </button>
+                    </div>
                     <button
-                      key={fn}
                       type="button"
                       onMouseDown={(e) => e.preventDefault()}
-                      disabled={isEditingLocked || !normalizedRange}
-                      onClick={() => handleQuickInsertFormula(`=${fn}(`)}
-                      className="h-7 px-2 rounded-lg border border-[#DCE5DF] bg-[#F8FAF8] hover:bg-[#E6F4EC] hover:border-[#107C41]/40 text-[11.5px] font-bold text-[#107C41] disabled:opacity-40 shrink-0"
+                      disabled={isEditBlocked || !normalizedRange}
+                      onClick={handleToggleFormatPainter}
+                      title="Chổi sao chép định dạng (Format Painter)"
+                      className={`h-7 px-2 rounded-md border text-[11px] font-semibold inline-flex items-center justify-center gap-1 disabled:opacity-40 transition-colors ${
+                        formatPainterStyle
+                          ? 'bg-[#107C41] border-[#107C41] text-white'
+                          : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5] hover:text-[#107C41]'
+                      }`}
                     >
-                      ={fn}()
+                      <Paintbrush className="w-3.5 h-3.5" />
+                      <span>Sao chép ĐD</span>
                     </button>
-                  )
-                )}
+                  </div>
+                </div>
 
-                <span className="h-5 w-px bg-[#DCE5DF] mx-1 shrink-0" />
+                <span className="w-px bg-slate-200/80 my-1 shrink-0" />
 
-                {/* Insert Charts: Column / Line / Pie */}
+                {/* Group 2: Font (2 rows) */}
+                <div className="flex flex-col gap-1 shrink-0">
+                  <div className="flex items-center gap-1">
+                    <select
+                      aria-label="Phông chữ"
+                      title="Phông chữ"
+                      disabled={isEditBlocked || !normalizedRange}
+                      value={anchorStyle.fontFamily ?? ''}
+                      onChange={(e) => handleSetFontFamily(e.target.value)}
+                      className="h-7 w-28 px-1.5 rounded-md border border-slate-200/80 bg-white text-xs font-medium text-slate-700 focus:outline-none focus:border-[#107C41] disabled:opacity-40"
+                    >
+                      {FONT_FAMILY_OPTIONS.map((opt) => (
+                        <option key={opt.label} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      aria-label="Cỡ chữ ô"
+                      title="Cỡ chữ"
+                      disabled={isEditBlocked || !normalizedRange}
+                      value={Math.round(anchorStyle.fontSize ?? 13)}
+                      onChange={(e) => handleSetFontSize(Number(e.target.value))}
+                      className="h-7 px-1.5 rounded-md border border-slate-200/80 bg-white text-xs font-semibold text-slate-700 focus:outline-none focus:border-[#107C41] disabled:opacity-40"
+                    >
+                      {FONT_SIZE_OPTIONS.map((sz) => (
+                        <option key={sz} value={sz}>
+                          {sz}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={isEditBlocked || !normalizedRange}
+                      onClick={() => handleStepFontSize(1)}
+                      title="Tăng cỡ chữ (A^)"
+                      className="w-7 h-7 rounded-md border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] inline-flex items-center justify-center text-slate-700 disabled:opacity-40"
+                    >
+                      <AArrowUp className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={isEditBlocked || !normalizedRange}
+                      onClick={() => handleStepFontSize(-1)}
+                      title="Giảm cỡ chữ (Av)"
+                      className="w-7 h-7 rounded-md border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] inline-flex items-center justify-center text-slate-700 disabled:opacity-40"
+                    >
+                      <AArrowDown className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={isEditBlocked || !normalizedRange}
+                      onClick={() =>
+                        setOpenPopover((p) => (p === 'case' ? null : 'case'))
+                      }
+                      title="Đổi kiểu chữ HOA / thường / Đầu từ (Aa)"
+                      className={`h-7 px-1.5 rounded-md border inline-flex items-center gap-0.5 text-xs font-semibold disabled:opacity-40 ${
+                        openPopover === 'case'
+                          ? 'bg-[#ECFDF5] border-[#107C41]/50 text-[#107C41]'
+                          : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5] hover:text-[#107C41]'
+                      }`}
+                    >
+                      <CaseSensitive className="w-3.5 h-3.5" />
+                      <ChevronDown className="w-3 h-3 text-slate-400" />
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-1">
+                    <div className="inline-flex items-center gap-0.5 rounded-md bg-slate-50 border border-slate-200/80 p-0.5">
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={handleToggleBold}
+                        disabled={isEditBlocked || !normalizedRange}
+                        aria-pressed={anchorStyle.bold === true}
+                        title="In đậm (B)"
+                        className={`w-6 h-6 rounded inline-flex items-center justify-center disabled:opacity-40 ${
+                          anchorStyle.bold
+                            ? 'bg-[#ECFDF5] text-[#107C41] font-bold'
+                            : 'text-slate-700 hover:bg-white'
+                        }`}
+                      >
+                        <Bold className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={handleToggleItalic}
+                        disabled={isEditBlocked || !normalizedRange}
+                        aria-pressed={anchorStyle.italic === true}
+                        title="In nghiêng (I)"
+                        className={`w-6 h-6 rounded inline-flex items-center justify-center disabled:opacity-40 ${
+                          anchorStyle.italic
+                            ? 'bg-[#ECFDF5] text-[#107C41]'
+                            : 'text-slate-700 hover:bg-white'
+                        }`}
+                      >
+                        <Italic className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={handleToggleUnderline}
+                        disabled={isEditBlocked || !normalizedRange}
+                        aria-pressed={anchorStyle.underline === true}
+                        title="Gạch chân (U)"
+                        className={`w-6 h-6 rounded inline-flex items-center justify-center disabled:opacity-40 ${
+                          anchorStyle.underline
+                            ? 'bg-[#ECFDF5] text-[#107C41]'
+                            : 'text-slate-700 hover:bg-white'
+                        }`}
+                      >
+                        <Underline className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={handleToggleStrike}
+                        disabled={isEditBlocked || !normalizedRange}
+                        aria-pressed={anchorStyle.strike === true}
+                        title="Gạch ngang chữ (S)"
+                        className={`w-6 h-6 rounded inline-flex items-center justify-center disabled:opacity-40 ${
+                          anchorStyle.strike
+                            ? 'bg-[#ECFDF5] text-[#107C41]'
+                            : 'text-slate-700 hover:bg-white'
+                        }`}
+                      >
+                        <Strikethrough className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={isEditBlocked || !normalizedRange}
+                      onClick={() =>
+                        setOpenPopover((p) =>
+                          p === 'textColor' ? null : 'textColor'
+                        )
+                      }
+                      title="Màu chữ"
+                      className={`h-7 px-1.5 rounded-md border inline-flex items-center gap-0.5 disabled:opacity-40 ${
+                        openPopover === 'textColor'
+                          ? 'bg-[#ECFDF5] border-[#107C41]/50 text-[#107C41]'
+                          : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5]'
+                      }`}
+                    >
+                      <span className="flex flex-col items-center">
+                        <Type className="w-3.5 h-3.5" />
+                        <span
+                          className="w-3.5 h-1 rounded-full -mt-0.5"
+                          style={{
+                            backgroundColor: anchorStyle.textColor ?? '#0F172A',
+                          }}
+                        />
+                      </span>
+                      <ChevronDown className="w-3 h-3 text-slate-400" />
+                    </button>
+
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={isEditBlocked || !normalizedRange}
+                      onClick={() =>
+                        setOpenPopover((p) =>
+                          p === 'fillColor' ? null : 'fillColor'
+                        )
+                      }
+                      title="Màu nền ô"
+                      className={`h-7 px-1.5 rounded-md border inline-flex items-center gap-0.5 disabled:opacity-40 ${
+                        openPopover === 'fillColor'
+                          ? 'bg-[#ECFDF5] border-[#107C41]/50 text-[#107C41]'
+                          : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5]'
+                      }`}
+                    >
+                      <span className="flex flex-col items-center">
+                        <PaintBucket className="w-3.5 h-3.5" />
+                        <span
+                          className="w-3.5 h-1 rounded-full -mt-0.5 border border-black/15"
+                          style={{
+                            backgroundColor: anchorStyle.bgColor ?? '#FEF9C3',
+                          }}
+                        />
+                      </span>
+                      <ChevronDown className="w-3 h-3 text-slate-400" />
+                    </button>
+
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={isEditBlocked || !normalizedRange}
+                      onClick={() =>
+                        setOpenPopover((p) =>
+                          p === 'borders' ? null : 'borders'
+                        )
+                      }
+                      title="Kẻ viền ô (Borders)"
+                      className={`h-7 px-1.5 rounded-md border inline-flex items-center gap-0.5 text-xs font-medium disabled:opacity-40 ${
+                        openPopover === 'borders'
+                          ? 'bg-[#ECFDF5] border-[#107C41]/50 text-[#107C41]'
+                          : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5]'
+                      }`}
+                    >
+                      <Grid3x3 className="w-3.5 h-3.5" />
+                      <ChevronDown className="w-3 h-3 text-slate-400" />
+                    </button>
+                  </div>
+                </div>
+
+                <span className="w-px bg-slate-200/80 my-1 shrink-0" />
+
+                {/* Group 3: Alignment (2 rows) */}
+                <div className="flex flex-col gap-1 shrink-0">
+                  <div className="flex items-center gap-1">
+                    <div
+                      role="group"
+                      aria-label="Căn lề dọc"
+                      className="inline-flex items-center gap-0.5 rounded-md bg-slate-50 border border-slate-200/80 p-0.5"
+                    >
+                      {(
+                        [
+                          {
+                            id: 'top',
+                            icon: AlignVerticalJustifyStart,
+                            label: 'Căn trên',
+                          },
+                          {
+                            id: 'middle',
+                            icon: AlignVerticalJustifyCenter,
+                            label: 'Căn giữa dọc',
+                          },
+                          {
+                            id: 'bottom',
+                            icon: AlignVerticalJustifyEnd,
+                            label: 'Căn dưới',
+                          },
+                        ] as const
+                      ).map(({ id, icon: Icon, label }) => (
+                        <button
+                          key={id}
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => handleSetValign(id)}
+                          disabled={isEditBlocked || !normalizedRange}
+                          title={label}
+                          aria-label={label}
+                          className={`w-6 h-6 rounded inline-flex items-center justify-center disabled:opacity-40 ${
+                            anchorEffectiveValign === id
+                              ? 'bg-[#ECFDF5] text-[#107C41]'
+                              : 'text-slate-600 hover:bg-white'
+                          }`}
+                        >
+                          <Icon className="w-3.5 h-3.5" />
+                        </button>
+                      ))}
+                    </div>
+
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={handleToggleWrapText}
+                      disabled={isEditBlocked || !normalizedRange}
+                      aria-pressed={anchorStyle.wrapText === true}
+                      title="Tự xuống dòng (Wrap Text)"
+                      className={`h-7 px-2 rounded-md border inline-flex items-center gap-1 text-[11px] font-medium disabled:opacity-40 ${
+                        anchorStyle.wrapText
+                          ? 'bg-[#ECFDF5] border-[#107C41]/40 text-[#107C41] font-semibold'
+                          : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5]'
+                      }`}
+                    >
+                      <WrapText className="w-3.5 h-3.5" />
+                      <span>Xuống dòng</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={isEditBlocked || !normalizedRange}
+                      onClick={() =>
+                        setOpenPopover((p) =>
+                          p === 'textDir' ? null : 'textDir'
+                        )
+                      }
+                      title="Hướng chữ trong ô"
+                      className={`h-7 px-1.5 rounded-md border inline-flex items-center gap-0.5 text-[11px] font-semibold disabled:opacity-40 ${
+                        anchorStyle.textRotation || openPopover === 'textDir'
+                          ? 'bg-[#ECFDF5] border-[#107C41]/40 text-[#107C41]'
+                          : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5]'
+                      }`}
+                    >
+                      <span>ab↗</span>
+                      <ChevronDown className="w-3 h-3 text-slate-400" />
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-1">
+                    <div
+                      role="group"
+                      aria-label="Căn lề ngang"
+                      className="inline-flex items-center gap-0.5 rounded-md bg-slate-50 border border-slate-200/80 p-0.5"
+                    >
+                      {(
+                        [
+                          { id: 'left', icon: AlignLeft, label: 'Căn trái' },
+                          { id: 'center', icon: AlignCenter, label: 'Căn giữa' },
+                          { id: 'right', icon: AlignRight, label: 'Căn phải' },
+                          { id: 'justify', icon: AlignJustify, label: 'Căn đều' },
+                        ] as const
+                      ).map(({ id, icon: Icon, label }) => (
+                        <button
+                          key={id}
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => handleSetAlign(id)}
+                          disabled={isEditBlocked || !normalizedRange}
+                          title={label}
+                          aria-label={label}
+                          className={`w-6 h-6 rounded inline-flex items-center justify-center disabled:opacity-40 ${
+                            anchorEffectiveAlign === id
+                              ? 'bg-[#ECFDF5] text-[#107C41]'
+                              : 'text-slate-600 hover:bg-white'
+                          }`}
+                        >
+                          <Icon className="w-3.5 h-3.5" />
+                        </button>
+                      ))}
+                    </div>
+
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={
+                        isSelectionMerged ? handleUnmerge : handleMergeAndCenter
+                      }
+                      disabled={isEditBlocked || !normalizedRange}
+                      title={
+                        isSelectionMerged
+                          ? 'Bỏ gộp ô (Unmerge)'
+                          : 'Gộp & căn giữa (Merge & Center)'
+                      }
+                      className={`h-7 px-2 rounded-md border inline-flex items-center gap-1 text-[11px] font-medium disabled:opacity-40 ${
+                        isSelectionMerged
+                          ? 'bg-[#ECFDF5] border-[#107C41]/40 text-[#107C41] font-semibold'
+                          : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5]'
+                      }`}
+                    >
+                      {isSelectionMerged ? (
+                        <>
+                          <Split className="w-3.5 h-3.5" />
+                          <span>Bỏ gộp</span>
+                        </>
+                      ) : (
+                        <>
+                          <Merge className="w-3.5 h-3.5" />
+                          <span>Gộp &amp; Căn giữa</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                <span className="w-px bg-slate-200/80 my-1 shrink-0" />
+
+                {/* Group 4: Number Format (2 rows) */}
+                <div className="flex flex-col gap-1 shrink-0">
+                  <select
+                    aria-label="Định dạng số"
+                    title="Định dạng số"
+                    disabled={isEditBlocked || !normalizedRange}
+                    value={detectFormatPresetValue(anchorStyle.numFmt)}
+                    onChange={(e) => handleSetNumberFormat(e.target.value)}
+                    className="h-7 px-2 rounded-md border border-slate-200/80 bg-white text-xs font-medium text-slate-700 focus:outline-none focus:border-[#107C41] disabled:opacity-40"
+                  >
+                    {NUMBER_FORMAT_PRESETS.map((fmt) => (
+                      <option key={fmt.id} value={fmt.numFmt}>
+                        {fmt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="flex items-center gap-0.5">
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={isEditBlocked || !normalizedRange}
+                      onClick={() => handleSetNumberFormat('#,##0 "₫"')}
+                      title="Định dạng tiền tệ VNĐ (₫)"
+                      className="h-7 px-2 rounded-md border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-bold text-slate-700 disabled:opacity-40"
+                    >
+                      ₫
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={isEditBlocked || !normalizedRange}
+                      onClick={() => handleSetNumberFormat('0.0%')}
+                      title="Phần trăm (%)"
+                      className="h-7 px-1.5 rounded-md border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-slate-700 inline-flex items-center justify-center disabled:opacity-40"
+                    >
+                      <Percent className="w-3 h-3" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={isEditBlocked || !normalizedRange}
+                      onClick={() => handleSetNumberFormat('#,##0')}
+                      title="Dấu phân cách hàng nghìn (#,##0)"
+                      className="h-7 px-2 rounded-md border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-bold text-slate-700 disabled:opacity-40"
+                    >
+                      ,
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={isEditBlocked || !normalizedRange}
+                      onClick={() => handleAdjustDecimals(1)}
+                      title="Tăng chữ số thập phân (.00)"
+                      className="h-7 px-1.5 rounded-md border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-[11px] font-bold text-slate-700 disabled:opacity-40"
+                    >
+                      .00
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={isEditBlocked || !normalizedRange}
+                      onClick={() => handleAdjustDecimals(-1)}
+                      title="Giảm chữ số thập phân (.0)"
+                      className="h-7 px-1.5 rounded-md border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-[11px] font-bold text-slate-700 disabled:opacity-40"
+                    >
+                      .0
+                    </button>
+                  </div>
+                </div>
+
+                <span className="w-px bg-slate-200/80 my-1 shrink-0" />
+
+                {/* Group 5: Quick Formulas, Fill, Clear & Sort (2 rows) */}
+                <div className="flex flex-col gap-1 shrink-0">
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={isEditBlocked || !normalizedRange}
+                      onClick={() =>
+                        setOpenPopover((p) =>
+                          p === 'autoSum' ? null : 'autoSum'
+                        )
+                      }
+                      className={`h-7 px-2 rounded-md border inline-flex items-center gap-1 text-[11px] font-semibold disabled:opacity-40 ${
+                        openPopover === 'autoSum'
+                          ? 'bg-[#107C41] border-[#107C41] text-white'
+                          : 'bg-[#ECFDF5] border-[#107C41]/30 text-[#107C41] hover:bg-[#D1FAE5]'
+                      }`}
+                    >
+                      <Sigma className="w-3.5 h-3.5" />
+                      <span>AutoSum</span>
+                      <ChevronDown className="w-3 h-3" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={isEditBlocked || !normalizedRange}
+                      onClick={() =>
+                        setOpenPopover((p) => (p === 'fill' ? null : 'fill'))
+                      }
+                      className="h-7 px-2 rounded-md border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-[11px] font-medium text-slate-700 inline-flex items-center gap-1 disabled:opacity-40"
+                    >
+                      <ArrowDownToLine className="w-3 h-3 text-[#107C41]" />
+                      <span>Điền</span>
+                      <ChevronDown className="w-3 h-3 text-slate-400" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={isEditBlocked || !normalizedRange}
+                      onClick={() =>
+                        setOpenPopover((p) => (p === 'clear' ? null : 'clear'))
+                      }
+                      className="h-7 px-2 rounded-md border border-slate-200/80 bg-white hover:bg-rose-50 hover:text-rose-600 text-[11px] font-medium text-slate-700 inline-flex items-center gap-1 disabled:opacity-40"
+                    >
+                      <Eraser className="w-3 h-3" />
+                      <span>Xóa</span>
+                      <ChevronDown className="w-3 h-3 text-slate-400" />
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={anchorCol === null}
+                      onClick={() =>
+                        anchorCol !== null && handleSetSort(anchorCol, 'asc')
+                      }
+                      className={`h-7 px-2 rounded-md border inline-flex items-center gap-1 text-[11px] font-semibold disabled:opacity-40 ${
+                        sortConfig?.colIndex === anchorCol &&
+                        sortConfig?.direction === 'asc'
+                          ? 'bg-[#ECFDF5] border-[#107C41]/40 text-[#107C41]'
+                          : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5]'
+                      }`}
+                    >
+                      <ArrowUp className="w-3 h-3 text-[#107C41]" />
+                      <span>A→Z</span>
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={anchorCol === null}
+                      onClick={() =>
+                        anchorCol !== null && handleSetSort(anchorCol, 'desc')
+                      }
+                      className={`h-7 px-2 rounded-md border inline-flex items-center gap-1 text-[11px] font-semibold disabled:opacity-40 ${
+                        sortConfig?.colIndex === anchorCol &&
+                        sortConfig?.direction === 'desc'
+                          ? 'bg-[#ECFDF5] border-[#107C41]/40 text-[#107C41]'
+                          : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5]'
+                      }`}
+                    >
+                      <ArrowDown className="w-3 h-3 text-[#107C41]" />
+                      <span>Z→A</span>
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={handleToggleAutoFilter}
+                      className={`h-7 px-2 rounded-md border inline-flex items-center gap-1 text-[11px] font-semibold ${
+                        activeSheet.autoFilterEnabled || hasColumnFilters
+                          ? 'bg-[#107C41] border-[#107C41] text-white'
+                          : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5]'
+                      }`}
+                    >
+                      <ListFilter className="w-3 h-3" />
+                      <span>Lọc phễu</span>
+                    </button>
+                  </div>
+                </div>
+
+                <span className="w-px bg-slate-200/80 my-1 shrink-0" />
+
+                {/* Group 6: Cells, Format as Table & Conditional Formatting (2 rows) */}
+                <div className="flex flex-col gap-1 shrink-0">
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={isEditBlocked}
+                      onClick={handleAddRow}
+                      className="h-7 px-2 rounded-md border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-[11px] font-medium text-slate-700 inline-flex items-center gap-1 disabled:opacity-40"
+                    >
+                      <Plus className="w-3 h-3 text-[#107C41]" />
+                      <span>Hàng</span>
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={isEditBlocked}
+                      onClick={handleAddColumn}
+                      className="h-7 px-2 rounded-md border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-[11px] font-medium text-slate-700 inline-flex items-center gap-1 disabled:opacity-40"
+                    >
+                      <Plus className="w-3 h-3 text-[#107C41]" />
+                      <span>Cột</span>
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={isEditBlocked}
+                      onClick={handleFormatAsTable}
+                      title="Định dạng thành bảng (Header xanh #107C41 + sọc ngựa vằn + Bộ lọc)"
+                      className="h-7 px-2 rounded-md border border-[#107C41]/30 bg-[#ECFDF5] hover:bg-[#D1FAE5] text-[11px] font-semibold text-[#107C41] inline-flex items-center gap-1 disabled:opacity-40"
+                    >
+                      <Table className="w-3.5 h-3.5" />
+                      <span>Format as Table</span>
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={isEditBlocked || !canDeleteSelectedRows}
+                      onClick={handleDeleteSelectedRows}
+                      className="h-7 px-2 rounded-md border border-slate-200/80 bg-white hover:bg-rose-50 hover:text-rose-600 text-[11px] font-medium text-slate-700 inline-flex items-center gap-1 disabled:opacity-40"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                      <span>Xóa hàng</span>
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={
+                        isEditBlocked || anchorCol === null || columnCount <= 1
+                      }
+                      onClick={() =>
+                        anchorCol !== null && handleDeleteColumnIndex(anchorCol)
+                      }
+                      className="h-7 px-2 rounded-md border border-slate-200/80 bg-white hover:bg-rose-50 hover:text-rose-600 text-[11px] font-medium text-slate-700 inline-flex items-center gap-1 disabled:opacity-40"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                      <span>Xóa cột</span>
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      disabled={isEditBlocked || !normalizedRange}
+                      onClick={() => setIsCondFormatModalOpen(true)}
+                      className="h-7 px-2 rounded-md border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-[11px] font-medium text-slate-700 inline-flex items-center gap-1 disabled:opacity-40"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-[#107C41]" />
+                      <span>Định dạng ĐK</span>
+                      {(activeSheet.conditionalFormats?.length ?? 0) > 0 && (
+                        <span className="px-1 rounded-full bg-[#107C41] text-white text-[10px] font-bold">
+                          {activeSheet.conditionalFormats?.length}
+                        </span>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 3: CHÈN (INSERT) */}
+            {activeRibbonTab === 'insert' && (
+              <div className="flex items-center gap-1.5 w-max">
                 <button
                   type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  disabled={isEditingLocked}
+                  disabled={isEditBlocked}
+                  onClick={handleFormatAsTable}
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors"
+                >
+                  <Table className="w-3.5 h-3.5 text-[#107C41]" />
+                  <span>Bảng (Table)</span>
+                </button>
+                <span className="h-6 w-px bg-slate-200/80 mx-0.5 shrink-0" />
+                <button
+                  type="button"
+                  disabled={isEditBlocked}
                   onClick={() => setChartModalType('column')}
-                  className="h-7 px-2.5 rounded-lg border border-[#DCE5DF] bg-white hover:bg-[#E6F4EC] hover:border-[#107C41]/40 text-xs font-semibold text-slate-700 hover:text-[#107C41] inline-flex items-center gap-1.5 disabled:opacity-40 shrink-0"
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors"
                 >
                   <BarChart3 className="w-3.5 h-3.5 text-[#107C41]" />
                   <span>Biểu đồ Cột</span>
                 </button>
                 <button
                   type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  disabled={isEditingLocked}
+                  disabled={isEditBlocked}
                   onClick={() => setChartModalType('line')}
-                  className="h-7 px-2.5 rounded-lg border border-[#DCE5DF] bg-white hover:bg-[#E6F4EC] hover:border-[#107C41]/40 text-xs font-semibold text-slate-700 hover:text-[#107C41] inline-flex items-center gap-1.5 disabled:opacity-40 shrink-0"
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors"
                 >
                   <LineChart className="w-3.5 h-3.5 text-[#2563EB]" />
                   <span>Biểu đồ Đường</span>
                 </button>
                 <button
                   type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  disabled={isEditingLocked}
+                  disabled={isEditBlocked}
                   onClick={() => setChartModalType('pie')}
-                  className="h-7 px-2.5 rounded-lg border border-[#DCE5DF] bg-white hover:bg-[#E6F4EC] hover:border-[#107C41]/40 text-xs font-semibold text-slate-700 hover:text-[#107C41] inline-flex items-center gap-1.5 disabled:opacity-40 shrink-0"
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors"
                 >
                   <PieChart className="w-3.5 h-3.5 text-[#D97706]" />
                   <span>Biểu đồ Tròn</span>
                 </button>
+                <span className="h-6 w-px bg-slate-200/80 mx-0.5 shrink-0" />
+                <button
+                  type="button"
+                  disabled={isEditBlocked}
+                  onClick={() => imageInputRef.current?.click()}
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors"
+                >
+                  <ImagePlus className="w-3.5 h-3.5 text-[#107C41]" />
+                  <span>Ảnh</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isEditBlocked}
+                  onClick={() =>
+                    setOpenPopover((p) => (p === 'shapes' ? null : 'shapes'))
+                  }
+                  className={`h-8 px-2.5 rounded-lg border inline-flex items-center gap-1.5 text-xs font-semibold disabled:opacity-40 transition-colors ${
+                    openPopover === 'shapes'
+                      ? 'bg-[#ECFDF5] border-[#107C41]/50 text-[#107C41]'
+                      : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5] hover:text-[#107C41]'
+                  }`}
+                >
+                  <Shapes className="w-3.5 h-3.5 text-[#107C41]" />
+                  <span>Hình khối</span>
+                  <ChevronDown className="w-3 h-3 text-slate-400" />
+                </button>
+                <button
+                  type="button"
+                  disabled={isEditBlocked}
+                  onClick={handleInsertTextBox}
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors"
+                >
+                  <FileText className="w-3.5 h-3.5 text-[#107C41]" />
+                  <span>Hộp văn bản</span>
+                </button>
+                <span className="h-6 w-px bg-slate-200/80 mx-0.5 shrink-0" />
+                <button
+                  type="button"
+                  disabled={isEditBlocked || anchorOriginalRow === null}
+                  onClick={() => handleOpenCellMeta('hyperlink')}
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors"
+                >
+                  <Link2 className="w-3.5 h-3.5 text-[#107C41]" />
+                  <span>Liên kết</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isEditBlocked || anchorOriginalRow === null}
+                  onClick={() => handleOpenCellMeta('comment')}
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors"
+                >
+                  <MessageSquarePlus className="w-3.5 h-3.5 text-rose-500" />
+                  <span>Ghi chú ô</span>
+                </button>
+              </div>
+            )}
+
+            {/* TAB 4: VẼ (DRAW) */}
+            {activeRibbonTab === 'draw' && (
+              <div className="flex items-center gap-1.5 w-max">
+                <button
+                  type="button"
+                  onClick={() => setActiveDrawTool(null)}
+                  className={`h-8 px-2.5 rounded-lg border inline-flex items-center gap-1.5 text-xs font-semibold transition-colors ${
+                    activeDrawTool === null
+                      ? 'bg-[#107C41] border-[#107C41] text-white'
+                      : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5]'
+                  }`}
+                >
+                  <MousePointer2 className="w-3.5 h-3.5" />
+                  <span>Chọn ô (Tắt vẽ)</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isEditBlocked}
+                  onClick={() => setActiveDrawTool('pen')}
+                  className={`h-8 px-2.5 rounded-lg border inline-flex items-center gap-1.5 text-xs font-semibold disabled:opacity-40 transition-colors ${
+                    activeDrawTool === 'pen'
+                      ? 'bg-[#ECFDF5] border-[#107C41] text-[#107C41]'
+                      : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5]'
+                  }`}
+                >
+                  <PenTool className="w-3.5 h-3.5" />
+                  <span>Bút vẽ (Pen)</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isEditBlocked}
+                  onClick={() => setActiveDrawTool('highlighter')}
+                  className={`h-8 px-2.5 rounded-lg border inline-flex items-center gap-1.5 text-xs font-semibold disabled:opacity-40 transition-colors ${
+                    activeDrawTool === 'highlighter'
+                      ? 'bg-[#ECFDF5] border-[#107C41] text-[#107C41]'
+                      : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5]'
+                  }`}
+                >
+                  <Highlighter className="w-3.5 h-3.5" />
+                  <span>Bút tô sáng</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isEditBlocked}
+                  onClick={() => setActiveDrawTool('eraser')}
+                  className={`h-8 px-2.5 rounded-lg border inline-flex items-center gap-1.5 text-xs font-semibold disabled:opacity-40 transition-colors ${
+                    activeDrawTool === 'eraser'
+                      ? 'bg-rose-50 border-rose-400 text-rose-700'
+                      : 'bg-white border-slate-200/80 text-slate-700 hover:bg-rose-50'
+                  }`}
+                >
+                  <Eraser className="w-3.5 h-3.5" />
+                  <span>Cục tẩy</span>
+                </button>
+
+                <span className="h-6 w-px bg-slate-200/80 mx-0.5 shrink-0" />
+
+                <div className="flex items-center gap-1">
+                  {DRAW_COLOR_SWATCHES.map((hex) => (
+                    <button
+                      key={hex}
+                      type="button"
+                      disabled={isEditBlocked}
+                      onClick={() => setDrawColor(hex)}
+                      style={{ backgroundColor: hex }}
+                      title={`Màu mực ${hex}`}
+                      className={`w-5 h-5 rounded-full border transition-transform ${
+                        drawColor === hex
+                          ? 'ring-2 ring-[#107C41] ring-offset-1 scale-110 border-white'
+                          : 'border-black/20 hover:scale-110'
+                      }`}
+                    />
+                  ))}
+                </div>
+
+                <span className="h-6 w-px bg-slate-200/80 mx-0.5 shrink-0" />
+
+                <div className="inline-flex items-center rounded-lg bg-slate-50 border border-slate-200/80 p-0.5">
+                  {(
+                    [
+                      { w: 2, label: 'Mảnh' },
+                      { w: 4, label: 'Vừa' },
+                      { w: 7, label: 'Đậm' },
+                    ] as const
+                  ).map((item) => (
+                    <button
+                      key={item.w}
+                      type="button"
+                      onClick={() => setDrawStrokeWidth(item.w)}
+                      className={`px-2 py-1 rounded text-[11px] font-semibold ${
+                        drawStrokeWidth === item.w
+                          ? 'bg-white text-[#107C41] shadow-sm'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+
+                <span className="h-6 w-px bg-slate-200/80 mx-0.5 shrink-0" />
+
+                <button
+                  type="button"
+                  disabled={
+                    isEditBlocked || (activeSheet.drawings?.length ?? 0) === 0
+                  }
+                  onClick={handleClearDrawings}
+                  className="h-8 px-2.5 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-xs font-semibold text-rose-700 inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Xóa nét vẽ ({activeSheet.drawings?.length ?? 0})</span>
+                </button>
+              </div>
+            )}
+
+            {/* TAB 5: BỐ CỤC (PAGE LAYOUT) */}
+            {activeRibbonTab === 'layout' && (
+              <div className="flex items-center gap-2 w-max">
+                <div className="inline-flex items-center gap-1">
+                  <span className="text-[11px] font-semibold text-slate-500">
+                    Lề in:
+                  </span>
+                  {(
+                    [
+                      { id: 'normal', label: 'Thường' },
+                      { id: 'narrow', label: 'Hẹp' },
+                      { id: 'wide', label: 'Rộng' },
+                    ] as const
+                  ).map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      disabled={isEditBlocked}
+                      onClick={() => handleUpdatePageSetup({ margins: m.id })}
+                      className={`h-7 px-2 rounded-md border text-xs font-semibold disabled:opacity-40 ${
+                        activePageSetup.margins === m.id
+                          ? 'bg-[#ECFDF5] border-[#107C41]/50 text-[#107C41]'
+                          : 'bg-white border-slate-200/80 text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+
+                <span className="h-6 w-px bg-slate-200/80 shrink-0" />
+
+                <div className="inline-flex items-center gap-1">
+                  <span className="text-[11px] font-semibold text-slate-500">
+                    Hướng giấy:
+                  </span>
+                  {(
+                    [
+                      { id: 'portrait', label: 'Dọc' },
+                      { id: 'landscape', label: 'Ngang' },
+                    ] as const
+                  ).map((o) => (
+                    <button
+                      key={o.id}
+                      type="button"
+                      disabled={isEditBlocked}
+                      onClick={() =>
+                        handleUpdatePageSetup({ orientation: o.id })
+                      }
+                      className={`h-7 px-2.5 rounded-md border text-xs font-semibold disabled:opacity-40 ${
+                        activePageSetup.orientation === o.id
+                          ? 'bg-[#ECFDF5] border-[#107C41]/50 text-[#107C41]'
+                          : 'bg-white border-slate-200/80 text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+
+                <span className="h-6 w-px bg-slate-200/80 shrink-0" />
+
+                <div className="inline-flex items-center gap-1">
+                  <span className="text-[11px] font-semibold text-slate-500">
+                    Khổ giấy:
+                  </span>
+                  {(['A4', 'A5', 'Letter'] as const).map((sz) => (
+                    <button
+                      key={sz}
+                      type="button"
+                      disabled={isEditBlocked}
+                      onClick={() => handleUpdatePageSetup({ paperSize: sz })}
+                      className={`h-7 px-2 rounded-md border text-xs font-semibold disabled:opacity-40 ${
+                        activePageSetup.paperSize === sz
+                          ? 'bg-[#ECFDF5] border-[#107C41]/50 text-[#107C41]'
+                          : 'bg-white border-slate-200/80 text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      {sz}
+                    </button>
+                  ))}
+                </div>
+
+                <span className="h-6 w-px bg-slate-200/80 shrink-0" />
+
+                <button
+                  type="button"
+                  disabled={isEditBlocked || !normalizedRange}
+                  onClick={() => {
+                    handleUpdatePageSetup({ printArea: rangeLabel });
+                    showTransientFeedback(`Đã đặt vùng in: ${rangeLabel}.`);
+                  }}
+                  className="h-7 px-2.5 rounded-md border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700 disabled:opacity-40"
+                >
+                  Đặt vùng in ({rangeLabel})
+                </button>
+                {activePageSetup.printArea && (
+                  <button
+                    type="button"
+                    disabled={isEditBlocked}
+                    onClick={() => {
+                      handleUpdatePageSetup({ printArea: undefined });
+                      showTransientFeedback('Đã xóa vùng in tùy chỉnh.');
+                    }}
+                    className="h-7 px-2 rounded-md border border-rose-200 bg-rose-50 text-xs font-semibold text-rose-700 disabled:opacity-40"
+                  >
+                    Xóa vùng in ({activePageSetup.printArea})
+                  </button>
+                )}
+
+                <span className="h-6 w-px bg-slate-200/80 shrink-0" />
+
+                <button
+                  type="button"
+                  disabled={isEditBlocked}
+                  onClick={() =>
+                    handleUpdatePageSetup({
+                      printGridlines: activePageSetup.printGridlines === false,
+                    })
+                  }
+                  className={`h-7 px-2.5 rounded-md border text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-40 ${
+                    activePageSetup.printGridlines !== false
+                      ? 'bg-[#ECFDF5] border-[#107C41]/50 text-[#107C41]'
+                      : 'bg-white border-slate-200/80 text-slate-600'
+                  }`}
+                >
+                  <Grid3x3 className="w-3.5 h-3.5" />
+                  <span>In đường lưới</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handlePrintSheet}
+                  className="h-7 px-2.5 rounded-md bg-[#107C41] hover:bg-[#0B5E31] text-white text-xs font-semibold inline-flex items-center gap-1.5"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  <span>In ngay</span>
+                </button>
+              </div>
+            )}
+
+            {/* TAB 6: CÔNG THỨC (FORMULAS) */}
+            {activeRibbonTab === 'formulas' && (
+              <div className="flex items-center gap-1.5 w-max">
+                <button
+                  type="button"
+                  disabled={isEditBlocked || !normalizedRange}
+                  onClick={() => setFormulaModalCategory('all')}
+                  className="h-8 px-3 rounded-lg bg-[#107C41] hover:bg-[#0B5E31] text-white text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors"
+                >
+                  <Calculator className="w-3.5 h-3.5" />
+                  <span>Chèn hàm (fx)</span>
+                </button>
+
+                <span className="h-6 w-px bg-slate-200/80 mx-0.5 shrink-0" />
+
+                {(
+                  [
+                    { cat: 'autosum', label: 'AutoSum (Σ)' },
+                    { cat: 'financial', label: 'Tài chính (PMT/FV/PV)' },
+                    { cat: 'logic', label: 'Logic' },
+                    { cat: 'text', label: 'Văn bản' },
+                    { cat: 'datetime', label: 'Ngày & Giờ' },
+                    { cat: 'lookup', label: 'Tra cứu' },
+                    { cat: 'math', label: 'Toán học' },
+                  ] as const
+                ).map(({ cat, label }) => (
+                  <button
+                    key={cat}
+                    type="button"
+                    disabled={isEditBlocked || !normalizedRange}
+                    onClick={() => setFormulaModalCategory(cat)}
+                    className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:border-[#107C41]/40 text-xs font-semibold text-slate-700 hover:text-[#107C41] disabled:opacity-40 transition-colors"
+                  >
+                    {label}
+                  </button>
+                ))}
+
+                <span className="h-6 w-px bg-slate-200/80 mx-0.5 shrink-0" />
+
+                <button
+                  type="button"
+                  onClick={handleRecalculateSheet}
+                  className="h-8 px-2.5 rounded-lg border border-[#107C41]/30 bg-[#ECFDF5] hover:bg-[#D1FAE5] text-xs font-semibold text-[#107C41] inline-flex items-center gap-1.5 transition-colors"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Tính toán lại trang tính</span>
+                </button>
+              </div>
+            )}
+
+            {/* TAB 7: DỮ LIỆU (DATA) */}
+            {activeRibbonTab === 'data' && (
+              <div className="flex items-center gap-1.5 w-max">
+                <button
+                  type="button"
+                  disabled={anchorCol === null}
+                  onClick={() =>
+                    anchorCol !== null && handleSetSort(anchorCol, 'asc')
+                  }
+                  className={`h-8 px-2.5 rounded-lg border inline-flex items-center gap-1 text-xs font-semibold disabled:opacity-40 ${
+                    sortConfig?.colIndex === anchorCol &&
+                    sortConfig?.direction === 'asc'
+                      ? 'bg-[#ECFDF5] border-[#107C41]/50 text-[#107C41]'
+                      : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5]'
+                  }`}
+                >
+                  <ArrowUp className="w-3.5 h-3.5 text-[#107C41]" />
+                  <span>A → Z</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={anchorCol === null}
+                  onClick={() =>
+                    anchorCol !== null && handleSetSort(anchorCol, 'desc')
+                  }
+                  className={`h-8 px-2.5 rounded-lg border inline-flex items-center gap-1 text-xs font-semibold disabled:opacity-40 ${
+                    sortConfig?.colIndex === anchorCol &&
+                    sortConfig?.direction === 'desc'
+                      ? 'bg-[#ECFDF5] border-[#107C41]/50 text-[#107C41]'
+                      : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5]'
+                  }`}
+                >
+                  <ArrowDown className="w-3.5 h-3.5 text-[#107C41]" />
+                  <span>Z → A</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCustomSortColIdx(anchorCol ?? 0);
+                    setOpenPopover((p) =>
+                      p === 'customSort' ? null : 'customSort'
+                    );
+                  }}
+                  className={`h-8 px-2.5 rounded-lg border inline-flex items-center gap-1.5 text-xs font-semibold ${
+                    openPopover === 'customSort'
+                      ? 'bg-[#ECFDF5] border-[#107C41]/50 text-[#107C41]'
+                      : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5]'
+                  }`}
+                >
+                  <span>Sắp xếp tùy chỉnh</span>
+                  <ChevronDown className="w-3 h-3 text-slate-400" />
+                </button>
+
+                <span className="h-6 w-px bg-slate-200/80 mx-0.5 shrink-0" />
+
+                <button
+                  type="button"
+                  onClick={handleToggleAutoFilter}
+                  className={`h-8 px-2.5 rounded-lg border inline-flex items-center gap-1.5 text-xs font-semibold transition-colors ${
+                    activeSheet.autoFilterEnabled || hasColumnFilters
+                      ? 'bg-[#107C41] hover:bg-[#0B5E31] border-[#107C41] text-white'
+                      : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5]'
+                  }`}
+                >
+                  <ListFilter className="w-3.5 h-3.5" />
+                  <span>Bộ lọc tự động</span>
+                </button>
+
+                <span className="h-6 w-px bg-slate-200/80 mx-0.5 shrink-0" />
+
+                <button
+                  type="button"
+                  disabled={isEditBlocked}
+                  onClick={handleRemoveDuplicates}
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 disabled:opacity-40"
+                >
+                  <Rows3 className="w-3.5 h-3.5 text-[#107C41]" />
+                  <span>Xóa trùng lặp</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isEditBlocked || anchorCol === null}
+                  onClick={() => setIsTextToColsModalOpen(true)}
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 disabled:opacity-40"
+                >
+                  <Columns3 className="w-3.5 h-3.5 text-[#107C41]" />
+                  <span>Tách cột</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isEditBlocked || !normalizedRange}
+                  onClick={() => setIsValidationModalOpen(true)}
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 disabled:opacity-40"
+                >
+                  <ListChecks className="w-3.5 h-3.5 text-[#107C41]" />
+                  <span>Xác thực dữ liệu</span>
+                </button>
 
                 {numericColumnIndices.length > 0 && visibleRows.length > 0 && (
                   <>
-                    <span className="h-5 w-px bg-[#DCE5DF] mx-1 shrink-0" />
+                    <span className="h-6 w-px bg-slate-200/80 mx-0.5 shrink-0" />
                     <button
                       type="button"
-                      onMouseDown={(e) => e.preventDefault()}
                       onClick={handleQuickSelectNumericColumn}
-                      className="h-7 px-2.5 rounded-lg bg-[#107C41]/10 hover:bg-[#107C41]/15 border border-[#107C41]/25 text-[#107C41] text-xs font-semibold inline-flex items-center gap-1 shrink-0"
+                      className="h-8 px-2.5 rounded-lg bg-[#ECFDF5] hover:bg-[#D1FAE5] border border-[#107C41]/25 text-[#107C41] text-xs font-semibold inline-flex items-center gap-1"
                     >
                       <Sigma className="w-3.5 h-3.5" />
                       <span>Chọn cột số</span>
@@ -4547,136 +6397,302 @@ export function ExcelWorkspace({
               </div>
             )}
 
-            {activeRibbonTab === 'data-view' && (
-              <div className="flex items-center gap-1.5 w-max">
-                {/* Freeze Panes */}
+            {/* TAB 8: CỘNG TÁC (COLLABORATION) */}
+            {activeRibbonTab === 'collab' && (
+              <div className="flex items-center gap-2 w-max">
                 <button
                   type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  disabled={isEditingLocked}
+                  onClick={() => onOpenModal('share', buildLiveDocument(sheets))}
+                  className="h-8 px-3 rounded-lg bg-[#107C41] hover:bg-[#0B5E31] text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors"
+                >
+                  <Share2 className="w-3.5 h-3.5" />
+                  <span>Chia sẻ tài liệu</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!workspaceSync.onOpenVersionHistory}
+                  onClick={() => workspaceSync.onOpenVersionHistory?.()}
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors"
+                >
+                  <History className="w-3.5 h-3.5 text-[#107C41]" />
+                  <span>Lịch sử phiên bản</span>
+                </button>
+
+                <span className="h-6 w-px bg-slate-200/80 shrink-0" />
+
+                <button
+                  type="button"
+                  disabled={isEditBlocked || anchorOriginalRow === null}
+                  onClick={() => handleOpenCellMeta('comment')}
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 disabled:opacity-40"
+                >
+                  <MessageSquarePlus className="w-3.5 h-3.5 text-rose-500" />
+                  <span>Ghi chú ô ({rangeLabel})</span>
+                </button>
+                <button
+                  type="button"
                   onClick={() =>
-                    setOpenPopover((p) => (p === 'freeze' ? null : 'freeze'))
+                    setOpenPopover((p) =>
+                      p === 'commentsList' ? null : 'commentsList'
+                    )
                   }
-                  className={`h-7 px-2.5 rounded-lg border inline-flex items-center gap-1.5 text-xs font-semibold transition-colors disabled:opacity-40 shrink-0 ${
-                    activeFreezeLabel || openPopover === 'freeze'
-                      ? 'bg-[#E6F4EC] border-[#107C41] text-[#107C41]'
-                      : 'bg-white border-[#DCE5DF] text-slate-700 hover:bg-[#F5F8F6]'
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-slate-50 hover:bg-[#ECFDF5] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5"
+                >
+                  <span>
+                    Danh sách ghi chú (
+                    {Object.keys(activeSheet.cellComments ?? {}).length})
+                  </span>
+                  <ChevronDown className="w-3 h-3 text-slate-400" />
+                </button>
+
+                <span className="h-6 w-px bg-slate-200/80 shrink-0" />
+
+                <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-lg bg-slate-50 border border-slate-200/80 text-xs text-slate-600">
+                  <Users className="w-3.5 h-3.5 text-[#107C41]" />
+                  <span className="font-semibold">
+                    {collaborators && collaborators.length > 0
+                      ? `${collaborators.length} người trực tuyến`
+                      : 'Chỉ mình bạn trực tuyến'}
+                  </span>
+                  {collaborators && collaborators.length > 0 && (
+                    <div className="flex items-center -space-x-1.5">
+                      {collaborators.slice(0, 4).map((peer) => (
+                        <span
+                          key={peer.sessionId}
+                          style={{ backgroundColor: peer.color }}
+                          title={`${peer.displayName}${peer.cellCoord ? ` (${peer.cellCoord})` : ''}`}
+                          className="w-5 h-5 rounded-full text-[10px] font-bold text-white inline-flex items-center justify-center ring-2 ring-white"
+                        >
+                          {peer.displayName.slice(0, 1).toUpperCase()}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* TAB 9: BẢO VỆ (PROTECT) */}
+            {activeRibbonTab === 'protect' && (
+              <div className="flex items-center gap-2 w-max">
+                <button
+                  type="button"
+                  disabled={isReadOnly}
+                  onClick={handleToggleProtectSheet}
+                  className={`h-8 px-3 rounded-lg border text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors ${
+                    isSheetProtected
+                      ? 'bg-amber-500 hover:bg-amber-600 border-amber-500 text-white'
+                      : 'bg-[#107C41] hover:bg-[#0B5E31] border-[#107C41] text-white'
+                  }`}
+                >
+                  {isSheetProtected ? (
+                    <>
+                      <ShieldOff className="w-3.5 h-3.5" />
+                      <span>Mở khóa trang tính</span>
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      <span>Bảo vệ trang tính (Protect Sheet)</span>
+                    </>
+                  )}
+                </button>
+
+                <span className="h-6 w-px bg-slate-200/80 shrink-0" />
+
+                <button
+                  type="button"
+                  disabled={isReadOnly || !normalizedRange}
+                  onClick={handleToggleLockSelectedRange}
+                  className={`h-8 px-2.5 rounded-lg border text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-40 transition-colors ${
+                    activeSheet.lockedRanges?.includes(rangeLabel)
+                      ? 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100'
+                      : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5] hover:text-[#107C41]'
+                  }`}
+                >
+                  {activeSheet.lockedRanges?.includes(rangeLabel) ? (
+                    <>
+                      <Unlock className="w-3.5 h-3.5" />
+                      <span>Mở khóa vùng {rangeLabel}</span>
+                    </>
+                  ) : (
+                    <>
+                      <Lock className="w-3.5 h-3.5 text-[#107C41]" />
+                      <span>Khóa vùng chọn ({rangeLabel})</span>
+                    </>
+                  )}
+                </button>
+
+                {activeSheet.lockedRanges &&
+                  activeSheet.lockedRanges.length > 0 && (
+                    <div className="flex items-center gap-1">
+                      <span className="text-[11px] font-semibold text-slate-500">
+                        Vùng đã khóa:
+                      </span>
+                      {activeSheet.lockedRanges.map((rStr) => (
+                        <span
+                          key={rStr}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-[11px] font-semibold"
+                        >
+                          <Shield className="w-3 h-3" />
+                          <span>{rStr}</span>
+                          {!isReadOnly && (
+                            <button
+                              type="button"
+                              onClick={() => handleUnlockSpecificRange(rStr)}
+                              title={`Mở khóa ${rStr}`}
+                              className="hover:text-rose-600"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          )}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+              </div>
+            )}
+
+            {/* TAB 10: XEM (VIEW) */}
+            {activeRibbonTab === 'view' && (
+              <div className="flex items-center gap-1.5 w-max">
+                <button
+                  type="button"
+                  disabled={isEditBlocked}
+                  onClick={() =>
+                    handleSetFreezePanes(1, activeSheet.frozenCols ?? 0)
+                  }
+                  className={`h-8 px-2.5 rounded-lg border text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-40 ${
+                    (activeSheet.frozenRows ?? 0) > 0
+                      ? 'bg-[#ECFDF5] border-[#107C41]/50 text-[#107C41]'
+                      : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5]'
                   }`}
                 >
                   <Snowflake className="w-3.5 h-3.5" />
-                  <span>Cố định khung</span>
-                  <ChevronDown className="w-3 h-3" />
+                  <span>Cố định dòng đầu</span>
                 </button>
-
-                <span className="h-5 w-px bg-[#DCE5DF] mx-0.5 shrink-0" />
-
-                {/* Sort & AutoFilter */}
                 <button
                   type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  disabled={anchorCol === null}
+                  disabled={isEditBlocked}
                   onClick={() =>
-                    anchorCol !== null && handleSetSort(anchorCol, 'asc')
+                    handleSetFreezePanes(activeSheet.frozenRows ?? 0, 1)
                   }
-                  title="Sắp xếp cột hiện tại tăng dần (A → Z)"
-                  className={`h-7 px-2.5 rounded-lg border inline-flex items-center gap-1 text-xs font-semibold disabled:opacity-40 shrink-0 ${
-                    sortConfig?.colIndex === anchorCol &&
-                    sortConfig?.direction === 'asc'
-                      ? 'bg-[#E6F4EC] border-[#107C41] text-[#107C41]'
-                      : 'bg-white border-[#DCE5DF] text-slate-700 hover:bg-[#F5F8F6]'
+                  className={`h-8 px-2.5 rounded-lg border text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-40 ${
+                    (activeSheet.frozenCols ?? 0) > 0
+                      ? 'bg-[#ECFDF5] border-[#107C41]/50 text-[#107C41]'
+                      : 'bg-white border-slate-200/80 text-slate-700 hover:bg-[#ECFDF5]'
                   }`}
                 >
-                  <ArrowUp className="w-3.5 h-3.5 text-[#107C41]" />
-                  <span>A → Z</span>
+                  <Snowflake className="w-3.5 h-3.5" />
+                  <span>Cố định cột đầu</span>
                 </button>
+                <button
+                  type="button"
+                  disabled={isEditBlocked || !activeFreezeLabel}
+                  onClick={() => handleSetFreezePanes(0, 0)}
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-rose-50 hover:text-rose-600 text-xs font-semibold text-slate-700 disabled:opacity-40"
+                >
+                  Bỏ cố định
+                </button>
+
+                <span className="h-6 w-px bg-slate-200/80 mx-0.5 shrink-0" />
 
                 <button
                   type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  disabled={anchorCol === null}
+                  disabled={isEditBlocked}
+                  onClick={handleToggleShowGridlines}
+                  className={`h-8 px-2.5 rounded-lg border text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-40 ${
+                    showGridlines
+                      ? 'bg-[#ECFDF5] border-[#107C41]/50 text-[#107C41]'
+                      : 'bg-white border-slate-200/80 text-slate-600'
+                  }`}
+                >
+                  <Grid3x3 className="w-3.5 h-3.5" />
+                  <span>Đường lưới</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowFormulaBar((v) => !v)}
+                  className={`h-8 px-2.5 rounded-lg border text-xs font-semibold inline-flex items-center gap-1.5 ${
+                    showFormulaBar
+                      ? 'bg-[#ECFDF5] border-[#107C41]/50 text-[#107C41]'
+                      : 'bg-white border-slate-200/80 text-slate-600'
+                  }`}
+                >
+                  <span className="font-serif italic font-bold">fx</span>
+                  <span>Thanh công thức</span>
+                </button>
+
+                <span className="h-6 w-px bg-slate-200/80 mx-0.5 shrink-0" />
+
+                <button
+                  type="button"
                   onClick={() =>
-                    anchorCol !== null && handleSetSort(anchorCol, 'desc')
+                    setZoomPercent((z) => Math.max(10, z - 10))
                   }
-                  title="Sắp xếp cột hiện tại giảm dần (Z → A)"
-                  className={`h-7 px-2.5 rounded-lg border inline-flex items-center gap-1 text-xs font-semibold disabled:opacity-40 shrink-0 ${
-                    sortConfig?.colIndex === anchorCol &&
-                    sortConfig?.direction === 'desc'
-                      ? 'bg-[#E6F4EC] border-[#107C41] text-[#107C41]'
-                      : 'bg-white border-[#DCE5DF] text-slate-700 hover:bg-[#F5F8F6]'
-                  }`}
+                  title="Thu nhỏ (-10%)"
+                  className="h-8 px-2 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-slate-700 inline-flex items-center"
                 >
-                  <ArrowDown className="w-3.5 h-3.5 text-[#107C41]" />
-                  <span>Z → A</span>
+                  <ZoomOut className="w-3.5 h-3.5" />
                 </button>
-
+                <span className="px-2 text-xs font-bold text-[#107C41] tabular-nums">
+                  {zoomPercent}%
+                </span>
                 <button
                   type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={handleToggleAutoFilter}
-                  title="Bật/tắt phễu lọc trực tiếp trên tiêu đề cột"
-                  className={`h-7 px-2.5 rounded-lg border inline-flex items-center gap-1.5 text-xs font-semibold transition-colors shrink-0 ${
-                    activeSheet.autoFilterEnabled || hasColumnFilters
-                      ? 'bg-[#107C41] border-[#107C41] text-white'
-                      : 'bg-white border-[#DCE5DF] text-slate-700 hover:bg-[#F5F8F6]'
-                  }`}
+                  onClick={() =>
+                    setZoomPercent((z) => Math.min(300, z + 10))
+                  }
+                  title="Phóng to (+10%)"
+                  className="h-8 px-2 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-slate-700 inline-flex items-center"
                 >
-                  <ListFilter className="w-3.5 h-3.5" />
-                  <span>Bộ lọc cột</span>
+                  <ZoomIn className="w-3.5 h-3.5" />
                 </button>
-
-                <span className="h-5 w-px bg-[#DCE5DF] mx-0.5 shrink-0" />
-
-                {/* Data Tools */}
                 <button
                   type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  disabled={isEditingLocked}
-                  onClick={handleRemoveDuplicates}
-                  title="Xóa các dòng có giá trị trùng lặp"
-                  className="h-7 px-2.5 rounded-lg border border-[#DCE5DF] bg-white hover:bg-[#E6F4EC] hover:border-[#107C41]/40 text-xs font-semibold text-slate-700 hover:text-[#107C41] inline-flex items-center gap-1.5 disabled:opacity-40 shrink-0"
+                  onClick={() => setZoomPercent(100)}
+                  className="h-8 px-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-[#ECFDF5] hover:text-[#107C41] text-xs font-semibold text-slate-700"
                 >
-                  <Rows3 className="w-3.5 h-3.5 text-[#107C41]" />
-                  <span>Xóa trùng lặp</span>
+                  100%
                 </button>
-
                 <button
                   type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  disabled={isEditingLocked || anchorCol === null}
-                  onClick={() => setIsTextToColsModalOpen(true)}
-                  title="Tách dữ liệu văn bản trong cột hiện tại sang nhiều cột"
-                  className="h-7 px-2.5 rounded-lg border border-[#DCE5DF] bg-white hover:bg-[#E6F4EC] hover:border-[#107C41]/40 text-xs font-semibold text-slate-700 hover:text-[#107C41] inline-flex items-center gap-1.5 disabled:opacity-40 shrink-0"
+                  onClick={handleFitToWidth}
+                  className="h-8 px-2.5 rounded-lg border border-[#107C41]/35 bg-[#ECFDF5] hover:bg-[#D1FAE5] text-xs font-semibold text-[#107C41] inline-flex items-center gap-1"
                 >
-                  <Columns3 className="w-3.5 h-3.5 text-[#107C41]" />
-                  <span>Tách cột (Text to Columns)</span>
+                  <Maximize2 className="w-3.5 h-3.5" />
+                  <span>Vừa màn hình (Fit)</span>
                 </button>
+              </div>
+            )}
 
+            {/* TAB 11: AI TOOLS */}
+            {activeRibbonTab === 'ai' && (
+              <div className="flex items-center gap-2 w-max">
                 <button
                   type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  disabled={isEditingLocked || !normalizedRange}
-                  onClick={() => setIsValidationModalOpen(true)}
-                  title="Tạo danh sách thả xuống chọn nhanh trong ô (Data Validation)"
-                  className="h-7 px-2.5 rounded-lg border border-[#DCE5DF] bg-white hover:bg-[#E6F4EC] hover:border-[#107C41]/40 text-xs font-semibold text-slate-700 hover:text-[#107C41] inline-flex items-center gap-1.5 disabled:opacity-40 shrink-0"
+                  onClick={() => setAiModalTab('summary')}
+                  className="h-8 px-3 rounded-lg bg-[#107C41] hover:bg-[#0B5E31] text-white text-xs font-semibold inline-flex items-center gap-1.5 shadow-sm transition-colors"
                 >
-                  <ListChecks className="w-3.5 h-3.5 text-[#107C41]" />
-                  <span>Xác thực dữ liệu</span>
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Tóm tắt số liệu</span>
                 </button>
-
-                {hiddenCount > 0 && !isEditingLocked && (
-                  <>
-                    <span className="h-5 w-px bg-[#DCE5DF] mx-0.5 shrink-0" />
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={handleUnhideAll}
-                      className="h-7 px-2.5 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-xs font-semibold text-amber-800 inline-flex items-center gap-1.5 shrink-0"
-                    >
-                      <Eye className="w-3.5 h-3.5" />
-                      <span>Hiện tất cả dòng/cột ẩn ({hiddenCount})</span>
-                    </button>
-                  </>
-                )}
+                <button
+                  type="button"
+                  onClick={() => setAiModalTab('formula')}
+                  className="h-8 px-3 rounded-lg border border-[#107C41]/35 bg-[#ECFDF5] hover:bg-[#D1FAE5] text-[#107C41] text-xs font-semibold inline-flex items-center gap-1.5 transition-colors"
+                >
+                  <Wand2 className="w-3.5 h-3.5" />
+                  <span>Tạo công thức từ tiếng Việt</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAiModalTab('audit')}
+                  className="h-8 px-3 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors"
+                >
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  <span>Phát hiện ô lỗi / trùng lặp</span>
+                </button>
               </div>
             )}
           </div>
@@ -4746,6 +6762,7 @@ export function ExcelWorkspace({
             {(
               [
                 { id: 'all', label: 'Tất cả viền (All Borders)' },
+                { id: 'outside', label: 'Viền ngoài (Outside Borders)' },
                 { id: 'thick-box', label: 'Khung ngoài đậm (Thick Box)' },
                 { id: 'bottom', label: 'Viền dưới (Bottom Border)' },
                 { id: 'none', label: 'Không viền (No Border)' },
@@ -4756,7 +6773,59 @@ export function ExcelWorkspace({
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => handleApplyBorderPreset(item.id)}
-                className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-slate-700 hover:bg-[#E6F4EC] hover:text-[#107C41] transition-colors"
+                className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-slate-700 hover:bg-[#ECFDF5] hover:text-[#107C41] transition-colors"
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {openPopover === 'case' && (
+          <div className="absolute left-32 top-full mt-1 z-50 bg-white rounded-xl shadow-xl border border-slate-200 p-1.5 w-52">
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => handleTransformTextCase('upper')}
+              className="w-full text-left px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 hover:bg-[#ECFDF5] hover:text-[#107C41]"
+            >
+              CHỮ IN HOA (UPPER)
+            </button>
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => handleTransformTextCase('lower')}
+              className="w-full text-left px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 hover:bg-[#ECFDF5] hover:text-[#107C41]"
+            >
+              chữ thường (lower)
+            </button>
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => handleTransformTextCase('proper')}
+              className="w-full text-left px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 hover:bg-[#ECFDF5] hover:text-[#107C41]"
+            >
+              Viết Hoa Đầu Từ (Proper)
+            </button>
+          </div>
+        )}
+
+        {openPopover === 'textDir' && (
+          <div className="absolute left-52 top-full mt-1 z-50 bg-white rounded-xl shadow-xl border border-slate-200 p-1.5 w-52">
+            {(
+              [
+                { id: 'horizontal', label: 'Ngang (Mặc định)' },
+                { id: 'vertical', label: 'Chữ dọc (Vertical)' },
+                { id: 'up45', label: 'Nghiêng lên 45°' },
+                { id: 'down45', label: 'Nghiêng xuống 45°' },
+              ] as const
+            ).map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => handleSetTextRotation(item.id)}
+                className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-slate-700 hover:bg-[#ECFDF5] hover:text-[#107C41]"
               >
                 {item.label}
               </button>
@@ -4765,7 +6834,7 @@ export function ExcelWorkspace({
         )}
 
         {openPopover === 'autoSum' && (
-          <div className="absolute left-3 top-full mt-1 z-50 bg-white rounded-xl shadow-xl border border-slate-200 p-1.5 w-52">
+          <div className="absolute left-64 top-full mt-1 z-50 bg-white rounded-xl shadow-xl border border-slate-200 p-1.5 w-52">
             {(
               [
                 { fn: 'SUM', label: 'Tổng (SUM)' },
@@ -4780,7 +6849,7 @@ export function ExcelWorkspace({
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => handleAutoSum(fn)}
-                className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 hover:bg-[#E6F4EC] hover:text-[#107C41] transition-colors"
+                className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 hover:bg-[#ECFDF5] hover:text-[#107C41] transition-colors"
               >
                 <span>{label}</span>
                 <span className="text-[10px] font-mono text-slate-400">
@@ -4791,54 +6860,179 @@ export function ExcelWorkspace({
           </div>
         )}
 
-        {openPopover === 'formulas' && (
-          <div className="absolute left-3 sm:left-24 top-full mt-1 z-50 bg-white rounded-xl shadow-2xl border border-slate-200 w-[min(92vw,440px)] overflow-hidden">
-            <div className="flex items-center gap-1 p-2 border-b border-slate-100 bg-slate-50 overflow-x-auto no-scrollbar">
-              {(
-                Object.keys(
-                  EXCEL_FORMULA_CATEGORY_LABELS
-                ) as ExcelFormulaCategory[]
-              ).map((cat) => (
-                <button
-                  key={cat}
-                  type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => setFormulaBrowserCategory(cat)}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold whitespace-nowrap transition-colors ${
-                    formulaBrowserCategory === cat
-                      ? 'bg-[#107C41] text-white'
-                      : 'text-slate-600 hover:bg-white'
-                  }`}
-                >
-                  {EXCEL_FORMULA_CATEGORY_LABELS[cat]}
-                </button>
-              ))}
+        {openPopover === 'fill' && (
+          <div className="absolute left-72 top-full mt-1 z-50 bg-white rounded-xl shadow-xl border border-slate-200 p-1.5 w-52">
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => handleFillDirection('down')}
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 hover:bg-[#ECFDF5] hover:text-[#107C41]"
+            >
+              <ArrowDownToLine className="w-3.5 h-3.5 text-[#107C41]" />
+              <span>Điền xuống dưới (Fill Down)</span>
+            </button>
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => handleFillDirection('right')}
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 hover:bg-[#ECFDF5] hover:text-[#107C41]"
+            >
+              <ArrowRightToLine className="w-3.5 h-3.5 text-[#107C41]" />
+              <span>Điền sang phải (Fill Right)</span>
+            </button>
+          </div>
+        )}
+
+        {openPopover === 'clear' && (
+          <div className="absolute left-80 top-full mt-1 z-50 bg-white rounded-xl shadow-xl border border-slate-200 p-1.5 w-48">
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => handleClearAction('contents')}
+              className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-slate-700 hover:bg-[#ECFDF5] hover:text-[#107C41]"
+            >
+              Xóa nội dung
+            </button>
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => handleClearAction('formats')}
+              className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-slate-700 hover:bg-[#ECFDF5] hover:text-[#107C41]"
+            >
+              Xóa định dạng
+            </button>
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => handleClearAction('all')}
+              className="w-full text-left px-3 py-2 rounded-lg text-xs font-semibold text-rose-600 hover:bg-rose-50"
+            >
+              Xóa tất cả
+            </button>
+          </div>
+        )}
+
+        {openPopover === 'shapes' && (
+          <div className="absolute left-40 top-full mt-1 z-50 bg-white rounded-xl shadow-xl border border-slate-200 p-2 w-60 grid grid-cols-2 gap-1.5">
+            {(
+              [
+                { kind: 'rect', label: 'Hình chữ nhật' },
+                { kind: 'roundRect', label: 'Bo góc' },
+                { kind: 'ellipse', label: 'Hình tròn / Elip' },
+                { kind: 'arrowRight', label: 'Mũi tên phải' },
+                { kind: 'star', label: 'Ngôi sao' },
+                { kind: 'callout', label: 'Hộp thoại' },
+              ] as const
+            ).map(({ kind, label }) => (
+              <button
+                key={kind}
+                type="button"
+                onClick={() => handleInsertShape(kind)}
+                className="px-2.5 py-2 rounded-lg border border-slate-200/80 bg-slate-50 hover:bg-[#ECFDF5] hover:border-[#107C41]/40 hover:text-[#107C41] text-xs font-semibold text-slate-700 text-left transition-colors"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {openPopover === 'customSort' && (
+          <div className="absolute left-24 top-full mt-1 z-50 bg-white rounded-xl shadow-xl border border-slate-200 p-3 w-64 space-y-2.5">
+            <p className="text-xs font-bold text-slate-800">
+              Sắp xếp tùy chỉnh
+            </p>
+            <label className="block space-y-1">
+              <span className="text-[11px] font-semibold text-slate-500">
+                Chọn cột sắp xếp
+              </span>
+              <select
+                value={customSortColIdx}
+                onChange={(e) => setCustomSortColIdx(Number(e.target.value))}
+                className="w-full h-8 px-2 rounded-lg border border-slate-200 text-xs font-medium"
+              >
+                {activeSheet.columns.map((_, idx) => (
+                  <option key={idx} value={idx}>
+                    Cột {columnIndexToLetter(idx)}
+                    {hasHeaderRow && activeSheet.rows[0]?.[idx]
+                      ? ` — ${String(activeSheet.rows[0][idx]).slice(0, 18)}`
+                      : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setCustomSortDir('asc')}
+                className={`flex-1 py-1.5 rounded-lg border text-xs font-semibold ${
+                  customSortDir === 'asc'
+                    ? 'bg-[#ECFDF5] border-[#107C41] text-[#107C41]'
+                    : 'bg-white border-slate-200 text-slate-600'
+                }`}
+              >
+                Tăng dần (A→Z)
+              </button>
+              <button
+                type="button"
+                onClick={() => setCustomSortDir('desc')}
+                className={`flex-1 py-1.5 rounded-lg border text-xs font-semibold ${
+                  customSortDir === 'desc'
+                    ? 'bg-[#ECFDF5] border-[#107C41] text-[#107C41]'
+                    : 'bg-white border-slate-200 text-slate-600'
+                }`}
+              >
+                Giảm dần (Z→A)
+              </button>
             </div>
-            <div className="max-h-64 overflow-y-auto p-1.5 divide-y divide-slate-100">
-              {EXCEL_FORMULA_CATALOG.filter(
-                (f) => f.category === formulaBrowserCategory
-              ).map((item) => (
-                <button
-                  key={item.name}
-                  type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => handleQuickInsertFormula(`=${item.name}(`)}
-                  className="w-full text-left px-2.5 py-2 hover:bg-[#E6F4EC] rounded-lg transition-colors"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-bold text-[#107C41] font-mono">
-                      {item.name}
-                    </span>
-                    <span className="text-[10.5px] font-mono text-slate-400 truncate">
-                      {item.syntax}
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-slate-600 mt-0.5">
-                    {item.description}
-                  </p>
-                </button>
-              ))}
-            </div>
+            <button
+              type="button"
+              onClick={() => {
+                handleSetSort(customSortColIdx, customSortDir);
+                setOpenPopover(null);
+              }}
+              className="w-full py-1.5 rounded-lg bg-[#107C41] hover:bg-[#0B5E31] text-white text-xs font-semibold"
+            >
+              Áp dụng sắp xếp
+            </button>
+          </div>
+        )}
+
+        {openPopover === 'commentsList' && (
+          <div className="absolute left-40 top-full mt-1 z-50 bg-white rounded-xl shadow-2xl border border-slate-200 p-2.5 w-72 max-h-64 overflow-y-auto space-y-1.5">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400 px-1">
+              Ghi chú trên &ldquo;{activeSheet.name}&rdquo;
+            </p>
+            {Object.entries(activeSheet.cellComments ?? {}).length === 0 ? (
+              <p className="text-xs text-slate-400 px-1 py-3 text-center">
+                Chưa có ghi chú ô nào trên trang tính này.
+              </p>
+            ) : (
+              Object.entries(activeSheet.cellComments ?? {}).map(
+                ([cellKey, commentText]) => {
+                  const [rStr, cStr] = cellKey.split(':');
+                  const r = Number(rStr);
+                  const c = Number(cStr);
+                  return (
+                    <button
+                      key={cellKey}
+                      type="button"
+                      onClick={() => {
+                        handleNavigateToCell(r, c);
+                        setOpenPopover(null);
+                      }}
+                      className="w-full text-left p-2 rounded-lg border border-slate-100 hover:bg-[#ECFDF5] transition-colors"
+                    >
+                      <span className="text-[11px] font-mono font-bold text-rose-600">
+                        {formatCellRef(r, c)}
+                      </span>
+                      <p className="text-xs text-slate-700 line-clamp-2 mt-0.5">
+                        {commentText}
+                      </p>
+                    </button>
+                  );
+                }
+              )
+            )}
           </div>
         )}
 
@@ -4848,7 +7042,7 @@ export function ExcelWorkspace({
               type="button"
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => handleSetFreezePanes(1, activeSheet.frozenCols ?? 0)}
-              className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-slate-700 hover:bg-[#E6F4EC] hover:text-[#107C41]"
+              className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-slate-700 hover:bg-[#ECFDF5] hover:text-[#107C41]"
             >
               Cố định dòng đầu tiên (Freeze Top Row)
             </button>
@@ -4856,7 +7050,7 @@ export function ExcelWorkspace({
               type="button"
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => handleSetFreezePanes(activeSheet.frozenRows ?? 0, 1)}
-              className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-slate-700 hover:bg-[#E6F4EC] hover:text-[#107C41]"
+              className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-slate-700 hover:bg-[#ECFDF5] hover:text-[#107C41]"
             >
               Cố định cột đầu tiên (Freeze First Column)
             </button>
@@ -4864,7 +7058,7 @@ export function ExcelWorkspace({
               type="button"
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => handleSetFreezePanes(1, 1)}
-              className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-slate-700 hover:bg-[#E6F4EC] hover:text-[#107C41]"
+              className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-slate-700 hover:bg-[#ECFDF5] hover:text-[#107C41]"
             >
               Cố định cả dòng đầu &amp; cột đầu
             </button>
@@ -4881,8 +7075,54 @@ export function ExcelWorkspace({
         )}
       </div>
 
+      {/* Protected Sheet Warning Banner */}
+      {isSheetProtected && (
+        <div className="shrink-0 px-3 sm:px-4 py-1.5 bg-amber-50 border-b border-amber-200 text-amber-900 text-xs flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <ShieldCheck className="w-4 h-4 text-amber-600 shrink-0" />
+            <span className="truncate font-medium">
+              Trang tính &ldquo;{activeSheet.name}&rdquo; đang được bảo vệ — mọi thao tác sửa ô đã bị khóa.
+            </span>
+          </div>
+          {!isReadOnly && (
+            <button
+              type="button"
+              onClick={handleToggleProtectSheet}
+              className="px-2.5 py-1 rounded-md bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-semibold whitespace-nowrap shrink-0"
+            >
+              Mở khóa ngay
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Active Drawing Mode Helper Banner */}
+      {activeDrawTool !== null && !isEditBlocked && (
+        <div className="shrink-0 px-3 sm:px-4 py-1 bg-[#ECFDF5] border-b border-[#107C41]/20 text-[#107C41] text-xs flex items-center justify-between gap-2">
+          <span className="font-medium truncate">
+            Đang bật công cụ{' '}
+            <strong>
+              {activeDrawTool === 'pen'
+                ? 'Bút vẽ'
+                : activeDrawTool === 'highlighter'
+                  ? 'Bút tô sáng'
+                  : 'Cục tẩy nét vẽ'}
+            </strong>{' '}
+            — vẽ trực tiếp lên bảng tính.
+          </span>
+          <button
+            type="button"
+            onClick={() => setActiveDrawTool(null)}
+            className="px-2.5 py-0.5 rounded-md bg-[#107C41] hover:bg-[#0B5E31] text-white text-[11px] font-semibold whitespace-nowrap shrink-0"
+          >
+            Tắt vẽ &amp; Chọn ô
+          </button>
+        </div>
+      )}
+
       {/* Name Box (A1) + Formula Bar (fx) + Search Bar */}
-      <div className="shrink-0 bg-white border-b border-[#DCE5DF] px-2.5 sm:px-4 py-1.5 relative z-20">
+      {showFormulaBar && (
+      <div className="shrink-0 bg-white border-b border-slate-200/80 px-2.5 sm:px-4 py-1.5 relative z-20">
         <div className="flex flex-wrap sm:flex-nowrap items-center gap-2">
           {/* Editable Name Box */}
           <input
@@ -4908,14 +7148,14 @@ export function ExcelWorkspace({
             }}
             aria-label="Hộp tên ô (Name Box)"
             title="Nhập tọa độ ô (vd: C12 hoặc B2:D8) và nhấn Enter để nhảy nhanh"
-            className="w-[78px] sm:w-[92px] px-2 py-1 rounded-lg bg-[#F4F8F5] border border-[#D4E2D9] focus:bg-white focus:border-[#107C41] focus:ring-2 focus:ring-[#107C41]/15 focus:outline-none text-xs font-bold text-[#107C41] text-center tabular-nums shrink-0 transition-all"
+            className="w-[78px] sm:w-[92px] px-2 py-1 rounded-lg bg-slate-50 border border-slate-200 focus:bg-white focus:border-[#107C41] focus:ring-2 focus:ring-[#107C41]/15 focus:outline-none text-xs font-semibold text-[#107C41] text-center tabular-nums shrink-0 transition-all"
           />
 
           {/* Formula Bar (fx) + Autocomplete Dropdown */}
           <div className="relative flex-1 min-w-[180px]">
-            <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#FAFBF9] border border-[#DCE5DF] focus-within:bg-white focus-within:border-[#107C41] focus-within:ring-2 focus-within:ring-[#107C41]/15 transition-all">
+            <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-slate-50 border border-slate-200 focus-within:bg-white focus-within:border-[#107C41] focus-within:ring-2 focus-within:ring-[#107C41]/15 transition-all">
               <span
-                className="font-serif italic font-bold text-[#107C41]/70 select-none shrink-0 pr-2 border-r border-[#DCE5DF] text-sm"
+                className="font-serif italic font-bold text-[#107C41]/75 select-none shrink-0 pr-2 border-r border-slate-200 text-sm"
                 aria-hidden="true"
               >
                 fx
@@ -4924,7 +7164,7 @@ export function ExcelWorkspace({
                 ref={formulaInputRef}
                 type="text"
                 value={formulaInputValue}
-                readOnly={isEditingLocked}
+                readOnly={isReadOnly}
                 disabled={anchorOriginalRow === null || anchorCol === null}
                 onFocus={handleFormulaFocus}
                 onChange={handleFormulaChange}
@@ -4934,14 +7174,14 @@ export function ExcelWorkspace({
                   isReadOnly
                     ? 'Chế độ chỉ xem — chọn ô để xem giá trị hoặc công thức'
                     : viewMode === 'original'
-                      ? 'Chế độ Xem nguyên bản — bấm "Chỉnh sửa nhanh" để sửa ô hoặc công thức'
+                      ? 'Đang xem bản gốc — bấm vào đây hoặc bấm đúp ô để chỉnh sửa ngay...'
                       : 'Nhập giá trị hoặc gõ = để gợi ý 40 hàm Excel (SUM, IF, VLOOKUP, INDEX...)...'
                 }
                 aria-label="Thanh công thức fx"
                 className="w-full py-0.5 bg-transparent text-xs sm:text-[13px] font-medium text-slate-800 placeholder:text-slate-400 focus:outline-none disabled:opacity-50"
               />
               {isFormulaText(anchorRawValue) && (
-                <span className="hidden md:inline-flex items-center px-2 py-0.5 rounded bg-[#E6F4EC] border border-[#B7DFC7] text-[11px] font-semibold text-[#107C41] tabular-nums shrink-0 whitespace-nowrap">
+                <span className="hidden md:inline-flex items-center px-2 py-0.5 rounded-md bg-[#ECFDF5] border border-[#107C41]/25 text-[11px] font-semibold text-[#107C41] tabular-nums shrink-0 whitespace-nowrap">
                   = {formatCellDisplay(anchorEvaluatedValue, anchorStyle.numFmt)}
                 </span>
               )}
@@ -4949,8 +7189,8 @@ export function ExcelWorkspace({
 
             {/* Live Formula Autocomplete Popover */}
             {formulaSuggestions.length > 0 && (
-              <div className="absolute left-0 right-0 sm:right-auto sm:min-w-[360px] top-full mt-1 z-50 bg-white rounded-xl shadow-2xl border border-[#C6DFCF] py-1 overflow-hidden">
-                <div className="px-2.5 py-1 bg-[#F3F8F5] border-b border-slate-100 flex items-center justify-between text-[10.5px] font-semibold text-slate-500">
+              <div className="absolute left-0 right-0 sm:right-auto sm:min-w-[360px] top-full mt-1 z-50 bg-white rounded-xl shadow-2xl border border-slate-200 py-1 overflow-hidden">
+                <div className="px-2.5 py-1 bg-[#F8FAFC] border-b border-slate-100 flex items-center justify-between text-[10.5px] font-semibold text-slate-500">
                   <span>Gợi ý hàm Excel (nhấn Tab hoặc chọn)</span>
                   <span className="text-[#107C41]">
                     {formulaSuggestions.length} kết quả
@@ -4964,8 +7204,8 @@ export function ExcelWorkspace({
                       e.preventDefault();
                       handleApplyFormulaSuggestion(item.name);
                     }}
-                    className={`w-full text-left px-3 py-1.5 flex flex-col hover:bg-[#E6F4EC] transition-colors ${
-                      idx === 0 ? 'bg-[#F4FAF6]' : ''
+                    className={`w-full text-left px-3 py-1.5 flex flex-col hover:bg-[#ECFDF5] transition-colors ${
+                      idx === 0 ? 'bg-[#ECFDF5]/60' : ''
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2">
@@ -4994,7 +7234,7 @@ export function ExcelWorkspace({
               onChange={(event) => setSearchQuery(event.target.value)}
               placeholder="Tìm & lọc nhanh..."
               aria-label="Lọc dữ liệu trong bảng tính"
-              className="w-full pl-8 pr-7 py-1 rounded-lg bg-[#F5F8F6] border border-[#DCE5DF] text-xs sm:text-[13px] text-slate-800 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-[#107C41] focus:ring-2 focus:ring-[#107C41]/15 transition-all"
+              className="w-full pl-8 pr-7 py-1 rounded-lg bg-slate-50 border border-slate-200 text-xs sm:text-[13px] text-slate-800 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-[#107C41] focus:ring-2 focus:ring-[#107C41]/15 transition-all"
             />
             {searchQuery.length > 0 && (
               <button
@@ -5009,8 +7249,9 @@ export function ExcelWorkspace({
           </div>
         </div>
       </div>
+      )}
 
-      {/* Main Grid Viewport (Zoomed 25%-200% via pinch / StatusBar, with CustomVerticalScrollbar) */}
+      {/* Main Grid Viewport (Zoomed 10%-300% via CSS transform scale + sizer, with CustomVerticalScrollbar) */}
       <div className="relative flex-1 min-h-0 flex overflow-hidden">
         <div
           ref={gridContainerRef}
@@ -5018,708 +7259,854 @@ export function ExcelWorkspace({
           onKeyDown={handleGridKeyDown}
           className="w-full h-full overflow-auto scrollbar-none pr-4 bg-white select-none focus:outline-none"
         >
-          <table
-            style={{
-              fontSize: `${Math.max(8, Math.round(13 * zoomScale * 10) / 10)}px`,
-            }}
-            className="w-max min-w-full border-separate border-spacing-0"
+          <div
+            style={
+              scaledCanvasWidth !== undefined || scaledCanvasHeight !== undefined
+                ? {
+                    width:
+                      scaledCanvasWidth !== undefined
+                        ? `${scaledCanvasWidth}px`
+                        : undefined,
+                    height:
+                      scaledCanvasHeight !== undefined
+                        ? `${scaledCanvasHeight}px`
+                        : undefined,
+                    position: 'relative',
+                  }
+                : { width: 'max-content', minWidth: '100%' }
+            }
           >
-            <colgroup>
-              <col
+            <div
+              ref={sheetCanvasRef}
+              className="relative"
+              style={{
+                width: 'max-content',
+                ...(zoomScale === 1
+                  ? {}
+                  : {
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      transform: `scale(${zoomScale})`,
+                      transformOrigin: 'top left',
+                    }),
+              }}
+            >
+              <table
                 style={{
-                  width: `${rowHeaderWidthPx}px`,
-                  minWidth: `${rowHeaderWidthPx}px`,
+                  fontSize: '13px',
                 }}
-              />
-              {visibleColIndices.map((colIdx) => {
-                const rawW = activeSheet.colWidths?.[colIdx] ?? DEFAULT_COL_WIDTH;
-                const scaledW = Math.max(48, Math.round(rawW * zoomScale));
-                return (
+                className="w-max border-separate border-spacing-0"
+              >
+                <colgroup>
                   <col
-                    key={`colgroup-${colIdx}`}
                     style={{
-                      width: `${scaledW}px`,
-                      minWidth: `${scaledW}px`,
+                      width: `${rowHeaderWidthPx}px`,
+                      minWidth: `${rowHeaderWidthPx}px`,
                     }}
                   />
-                );
-              })}
-            </colgroup>
+                  {visibleColIndices.map((colIdx) => {
+                    const colW = Math.round(
+                      activeSheet.colWidths?.[colIdx] ?? DEFAULT_COL_WIDTH
+                    );
+                    return (
+                      <col
+                        key={`colgroup-${colIdx}`}
+                        style={{
+                          width: `${colW}px`,
+                          minWidth: `${colW}px`,
+                        }}
+                      />
+                    );
+                  })}
+                </colgroup>
 
-            <thead>
-              <tr style={{ height: `${headerHeightPx}px` }}>
-                <th
-                  scope="col"
-                  style={{
-                    width: `${rowHeaderWidthPx}px`,
-                    minWidth: `${rowHeaderWidthPx}px`,
-                    height: `${headerHeightPx}px`,
-                  }}
-                  className="sticky left-0 top-0 z-30 p-0 bg-[#EBF1ED] border-b border-r border-[#D0DCD4]"
-                >
-                  <button
-                    type="button"
-                    onClick={handleSelectAllVisible}
-                    title="Chọn toàn bộ bảng tính đang hiển thị"
-                    aria-label="Chọn toàn bộ bảng tính"
-                    className="w-full h-full flex items-center justify-center text-slate-400 hover:text-[#107C41] hover:bg-[#DFECE4] transition-colors"
-                  >
-                    <Table2 className="w-3.5 h-3.5" />
-                  </button>
-                </th>
-
-                {visibleColIndices.map((colIdx, visibleColPos) => {
-                  const letter = columnIndexToLetter(colIdx);
-                  const rawW =
-                    activeSheet.colWidths?.[colIdx] ?? DEFAULT_COL_WIDTH;
-                  const scaledW = Math.max(48, Math.round(rawW * zoomScale));
-                  const isColSelected =
-                    normalizedRange !== null &&
-                    colIdx >= normalizedRange.minCol &&
-                    colIdx <= normalizedRange.maxCol;
-                  const isSortedCol = sortConfig?.colIndex === colIdx;
-                  const sortDir = isSortedCol ? sortConfig.direction : null;
-                  const isColFiltered =
-                    (columnFilters[colIdx]?.size ?? 0) > 0;
-                  const isFrozenCol = visibleColPos < frozenColsCount;
-                  const isLastFrozenCol =
-                    frozenColsCount > 0 &&
-                    visibleColPos === frozenColsCount - 1;
-                  const frozenLeft = frozenColLeftOffsets.get(colIdx);
-
-                  const thStyle: CSSProperties = {
-                    width: `${scaledW}px`,
-                    minWidth: `${scaledW}px`,
-                    height: `${headerHeightPx}px`,
-                    ...(isFrozenCol && frozenLeft !== undefined
-                      ? {
-                          left: `${frozenLeft}px`,
-                          zIndex: 26,
-                        }
-                      : {}),
-                    ...(isLastFrozenCol
-                      ? { boxShadow: '2px 0 0 0 rgba(16,124,65,0.35)' }
-                      : {}),
-                  };
-
-                  return (
+                <thead>
+                  <tr style={{ height: `${headerHeightPx}px` }}>
                     <th
-                      key={`col-${colIdx}`}
                       scope="col"
-                      style={thStyle}
-                      onContextMenu={(e) =>
-                        handleOpenContextMenu(e, 'col', 0, 0, colIdx)
-                      }
-                      aria-sort={
-                        sortDir === 'asc'
-                          ? 'ascending'
-                          : sortDir === 'desc'
-                            ? 'descending'
-                            : 'none'
-                      }
-                      className={`sticky top-0 z-20 p-0 border-b border-r border-[#D0DCD4] transition-colors ${
-                        isColSelected
-                          ? 'bg-[#D6EFE0] text-[#107C41]'
-                          : isSortedCol || isColFiltered
-                            ? 'bg-[#E6F4EC] text-[#0E6234]'
-                            : 'bg-[#F0F5F2] text-slate-600 hover:bg-[#E4EEE8]'
-                      }`}
+                      style={{
+                        width: `${rowHeaderWidthPx}px`,
+                        minWidth: `${rowHeaderWidthPx}px`,
+                        height: `${headerHeightPx}px`,
+                      }}
+                      className="sticky left-0 top-0 z-30 p-0 bg-[#F8FAFC] border-b border-r border-[#E2E8F0]"
                     >
-                      <div
-                        className={`w-full h-full flex items-center justify-between pl-2 pr-1 ${
-                          isColSelected ? 'border-b-2 border-b-[#107C41]' : ''
-                        }`}
-                      >
-                        <button
-                          type="button"
-                          onClick={(event) =>
-                            handleSelectColumn(colIdx, event.shiftKey)
-                          }
-                          title={`Bấm để chọn cả cột ${letter} (nhấn chuột phải để chèn/xóa/ẩn cột)`}
-                          className="flex-1 h-full text-center text-[11.5px] font-bold tracking-wider focus:outline-none truncate"
-                        >
-                          {letter}
-                        </button>
-
-                        <button
-                          type="button"
-                          data-excel-popover="true"
-                          onMouseDown={(e) => e.stopPropagation()}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            const rect =
-                              event.currentTarget.getBoundingClientRect();
-                            setFilterSearchText('');
-                            setFilterPopover((prev) =>
-                              prev?.colIdx === colIdx
-                                ? null
-                                : {
-                                    colIdx,
-                                    x: Math.max(
-                                      8,
-                                      Math.min(
-                                        rect.left - 180,
-                                        window.innerWidth - 256
-                                      )
-                                    ),
-                                    y: Math.min(
-                                      rect.bottom + 4,
-                                      window.innerHeight - 330
-                                    ),
-                                  }
-                            );
-                          }}
-                          aria-label={`Sắp xếp & lọc cột ${letter}`}
-                          title={`Sắp xếp & lọc giá trị cột ${letter}`}
-                          className={`p-1 rounded transition-colors shrink-0 ${
-                            isColFiltered || isSortedCol
-                              ? 'text-[#107C41] bg-white shadow-sm'
-                              : activeSheet.autoFilterEnabled
-                                ? 'text-[#107C41]/80 bg-white/70 hover:bg-white'
-                                : 'text-slate-400 hover:text-slate-700 hover:bg-white/60'
-                          }`}
-                        >
-                          {isColFiltered ? (
-                            <Filter className="w-3 h-3" />
-                          ) : sortDir === 'asc' ? (
-                            <ArrowUp className="w-3 h-3" />
-                          ) : sortDir === 'desc' ? (
-                            <ArrowDown className="w-3 h-3" />
-                          ) : (
-                            <ChevronDown className="w-3 h-3" />
-                          )}
-                        </button>
-                      </div>
-                    </th>
-                  );
-                })}
-              </tr>
-            </thead>
-
-            <tbody>
-              {visibleRows.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan={visibleColIndices.length + 1}
-                    className="py-16 px-4 text-center bg-white"
-                  >
-                    <div className="max-w-sm mx-auto flex flex-col items-center gap-2.5">
-                      <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-400">
-                        <Search className="w-5 h-5" />
-                      </div>
-                      <p className="text-sm font-semibold text-slate-700">
-                        Không tìm thấy dòng dữ liệu nào phù hợp
-                      </p>
                       <button
                         type="button"
-                        onClick={handleResetFiltersAndSort}
-                        className="mt-1 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#107C41] hover:bg-[#0D6535] text-white text-xs font-semibold transition-colors"
+                        onClick={handleSelectAllVisible}
+                        title="Chọn toàn bộ bảng tính đang hiển thị"
+                        aria-label="Chọn toàn bộ bảng tính"
+                        className="w-full h-full flex items-center justify-center text-slate-400 hover:text-[#107C41] hover:bg-[#ECFDF5] transition-colors"
                       >
-                        <RotateCcw className="w-3.5 h-3.5" />
-                        Đặt lại bộ lọc
+                        <Table2 className="w-3.5 h-3.5" />
                       </button>
-                    </div>
-                  </td>
-                </tr>
-              ) : (
-                visibleRows.map((rowItem, visRowIdx) => {
-                  const origRowIdx = rowItem.originalIndex;
-                  const isRowSelected =
-                    normalizedRange !== null &&
-                    visRowIdx >= normalizedRange.minRow &&
-                    visRowIdx <= normalizedRange.maxRow;
-                  const isPinnedHeaderVisual = hasHeaderRow && origRowIdx === 0;
+                    </th>
 
-                  const rawRowH = activeSheet.rowHeights?.[origRowIdx];
-                  const scaledRowH = Math.max(
-                    22,
-                    Math.round(
-                      (rawRowH && rawRowH > 16 ? rawRowH : DEFAULT_ROW_HEIGHT) *
-                        zoomScale
-                    )
-                  );
-                  const isFrozenRow = visRowIdx < frozenRowsCount;
-                  const isLastFrozenRow =
-                    frozenRowsCount > 0 && visRowIdx === frozenRowsCount - 1;
-                  const frozenTop = frozenRowTopOffsets.get(visRowIdx);
+                    {visibleColIndices.map((colIdx, visibleColPos) => {
+                      const letter = columnIndexToLetter(colIdx);
+                      const colW = Math.round(
+                        activeSheet.colWidths?.[colIdx] ?? DEFAULT_COL_WIDTH
+                      );
+                      const isColSelected =
+                        normalizedRange !== null &&
+                        colIdx >= normalizedRange.minCol &&
+                        colIdx <= normalizedRange.maxCol;
+                      const isSortedCol = sortConfig?.colIndex === colIdx;
+                      const sortDir = isSortedCol ? sortConfig.direction : null;
+                      const isColFiltered =
+                        (columnFilters[colIdx]?.size ?? 0) > 0;
+                      const isFrozenCol = visibleColPos < frozenColsCount;
+                      const isLastFrozenCol =
+                        frozenColsCount > 0 &&
+                        visibleColPos === frozenColsCount - 1;
+                      const frozenLeft = frozenColLeftOffsets.get(colIdx);
 
-                  return (
-                    <tr
-                      key={`${activeSheet.id}-orig-row-${origRowIdx}`}
-                      style={{ height: `${scaledRowH}px` }}
-                      className="group transition-colors"
-                    >
-                      <td
-                        onClick={(event) =>
-                          handleSelectRow(visRowIdx, event.shiftKey)
-                        }
-                        onContextMenu={(e) =>
-                          handleOpenContextMenu(
-                            e,
-                            'row',
-                            origRowIdx,
-                            visRowIdx,
-                            0
-                          )
-                        }
-                        style={{
-                          width: `${rowHeaderWidthPx}px`,
-                          minWidth: `${rowHeaderWidthPx}px`,
-                          ...(isFrozenRow && frozenTop !== undefined
-                            ? {
-                                position: 'sticky',
-                                top: `${frozenTop}px`,
-                                zIndex: 24,
+                      const thStyle: CSSProperties = {
+                        width: `${colW}px`,
+                        minWidth: `${colW}px`,
+                        height: `${headerHeightPx}px`,
+                        ...(isFrozenCol && frozenLeft !== undefined
+                          ? {
+                              left: `${frozenLeft}px`,
+                              zIndex: 26,
+                            }
+                          : {}),
+                        ...(isLastFrozenCol
+                          ? { boxShadow: '2px 0 0 0 rgba(16,124,65,0.35)' }
+                          : {}),
+                      };
+
+                      return (
+                        <th
+                          key={`col-${colIdx}`}
+                          scope="col"
+                          style={thStyle}
+                          onContextMenu={(e) =>
+                            handleOpenContextMenu(e, 'col', 0, 0, colIdx)
+                          }
+                          aria-sort={
+                            sortDir === 'asc'
+                              ? 'ascending'
+                              : sortDir === 'desc'
+                                ? 'descending'
+                                : 'none'
+                          }
+                          className={`sticky top-0 z-20 p-0 border-b border-r border-[#E2E8F0] transition-colors ${
+                            isColSelected
+                              ? 'bg-[#ECFDF5] text-[#107C41]'
+                              : isSortedCol || isColFiltered
+                                ? 'bg-[#ECFDF5]/80 text-[#0B5E31]'
+                                : 'bg-[#F8FAFC] text-slate-600 hover:bg-slate-100'
+                          }`}
+                        >
+                          <div
+                            className={`w-full h-full flex items-center justify-between pl-2 pr-1 ${
+                              isColSelected ? 'border-b-2 border-b-[#107C41]' : ''
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={(event) =>
+                                handleSelectColumn(colIdx, event.shiftKey)
                               }
-                            : {}),
-                          ...(isLastFrozenRow
-                            ? { boxShadow: '0 2px 0 0 rgba(16,124,65,0.35)' }
-                            : {}),
-                        }}
-                        title={`Dòng ${origRowIdx + 1} — bấm chọn cả dòng (chuột phải để chèn/xóa/ẩn dòng)`}
-                        className={`sticky left-0 z-10 px-1.5 border-b border-r border-[#D6E0D9] text-center text-xs tabular-nums cursor-pointer transition-colors ${
-                          isRowSelected
-                            ? 'bg-[#D6EFE0] text-[#107C41] font-bold'
-                            : isPinnedHeaderVisual
-                              ? 'bg-[#EAF1EC] text-slate-600 font-semibold'
-                              : 'bg-[#F5F8F6] text-slate-500 font-medium group-hover:bg-[#EBF2ED]'
-                        }`}
+                              title={`Bấm để chọn cả cột ${letter} (nhấn chuột phải để chèn/xóa/ẩn cột)`}
+                              className="flex-1 h-full text-center text-[11.5px] font-semibold tracking-wider focus:outline-none truncate"
+                            >
+                              {letter}
+                            </button>
+
+                            <button
+                              type="button"
+                              data-excel-popover="true"
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                const rect =
+                                  event.currentTarget.getBoundingClientRect();
+                                setFilterSearchText('');
+                                setFilterPopover((prev) =>
+                                  prev?.colIdx === colIdx
+                                    ? null
+                                    : {
+                                        colIdx,
+                                        x: Math.max(
+                                          8,
+                                          Math.min(
+                                            rect.left - 180,
+                                            window.innerWidth - 256
+                                          )
+                                        ),
+                                        y: Math.min(
+                                          rect.bottom + 4,
+                                          window.innerHeight - 330
+                                        ),
+                                      }
+                                );
+                              }}
+                              aria-label={`Sắp xếp & lọc cột ${letter}`}
+                              title={`Sắp xếp & lọc giá trị cột ${letter}`}
+                              className={`p-1 rounded transition-colors shrink-0 ${
+                                isColFiltered || isSortedCol
+                                  ? 'text-[#107C41] bg-white shadow-sm'
+                                  : activeSheet.autoFilterEnabled
+                                    ? 'text-[#107C41]/80 bg-white/70 hover:bg-white'
+                                    : 'text-slate-400 hover:text-slate-700 hover:bg-white/60'
+                              }`}
+                            >
+                              {isColFiltered ? (
+                                <Filter className="w-3 h-3" />
+                              ) : sortDir === 'asc' ? (
+                                <ArrowUp className="w-3 h-3" />
+                              ) : sortDir === 'desc' ? (
+                                <ArrowDown className="w-3 h-3" />
+                              ) : (
+                                <ChevronDown className="w-3 h-3" />
+                              )}
+                            </button>
+                          </div>
+                        </th>
+                      );
+                    })}
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {visibleRows.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={visibleColIndices.length + 1}
+                        className="py-16 px-4 text-center bg-white"
                       >
-                        {origRowIdx + 1}
+                        <div className="max-w-sm mx-auto flex flex-col items-center gap-2.5">
+                          <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-400">
+                            <Search className="w-5 h-5" />
+                          </div>
+                          <p className="text-sm font-semibold text-slate-700">
+                            Không tìm thấy dòng dữ liệu nào phù hợp
+                          </p>
+                          <button
+                            type="button"
+                            onClick={handleResetFiltersAndSort}
+                            className="mt-1 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#107C41] hover:bg-[#0D6535] text-white text-xs font-semibold transition-colors"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            Đặt lại bộ lọc
+                          </button>
+                        </div>
                       </td>
+                    </tr>
+                  ) : (
+                    visibleRows.map((rowItem, visRowIdx) => {
+                      const origRowIdx = rowItem.originalIndex;
+                      const isRowSelected =
+                        normalizedRange !== null &&
+                        visRowIdx >= normalizedRange.minRow &&
+                        visRowIdx <= normalizedRange.maxRow;
+                      const isPinnedHeaderVisual =
+                        hasHeaderRow && origRowIdx === 0;
 
-                      {visibleColIndices.map((colIdx, visibleColPos) => {
-                        const cellKey = makeCellKey(origRowIdx, colIdx);
-                        if (mergeCoveredSet.has(cellKey)) {
-                          return null;
-                        }
-                        const mergeSpan = mergeOriginMap.get(cellKey);
+                      const rawRowH = activeSheet.rowHeights?.[origRowIdx];
+                      const rowH =
+                        rawRowH && rawRowH > 16
+                          ? Math.round(rawRowH)
+                          : DEFAULT_ROW_HEIGHT;
+                      const isFrozenRow = visRowIdx < frozenRowsCount;
+                      const isLastFrozenRow =
+                        frozenRowsCount > 0 &&
+                        visRowIdx === frozenRowsCount - 1;
+                      const frozenTop = frozenRowTopOffsets.get(visRowIdx);
 
-                        const rawValue = rowItem.rawCells[colIdx];
-                        const evaluatedValue = rowItem.evaluatedCells[colIdx];
-                        const numericVal = parseNumericValue(evaluatedValue);
-                        const isNumeric = numericVal !== null;
-                        const isFormula = isFormulaText(rawValue);
-                        const isError = isFormulaError(evaluatedValue);
-
-                        const style = activeSheet.cellStyles?.[cellKey];
-                        const condStyle = conditionalStyleMap.get(cellKey);
-                        const validationOpts =
-                          activeSheet.dataValidations?.[cellKey];
-                        const hasValidation = Boolean(
-                          validationOpts && validationOpts.length > 0
-                        );
-
-                        const displayValue = formatCellDisplay(
-                          evaluatedValue,
-                          style?.numFmt
-                        );
-
-                        const effectiveAlign =
-                          style?.align ?? (isNumeric ? 'right' : 'left');
-                        const alignClass =
-                          effectiveAlign === 'center'
-                            ? 'text-center'
-                            : effectiveAlign === 'right'
-                              ? 'text-right'
-                              : 'text-left';
-
-                        const isSelected =
-                          normalizedRange !== null &&
-                          visRowIdx >= normalizedRange.minRow &&
-                          visRowIdx <= normalizedRange.maxRow &&
-                          colIdx >= normalizedRange.minCol &&
-                          colIdx <= normalizedRange.maxCol;
-
-                        const isSingleSelection =
-                          normalizedRange !== null &&
-                          normalizedRange.minRow === normalizedRange.maxRow &&
-                          normalizedRange.minCol === normalizedRange.maxCol;
-
-                        const isAnchor =
-                          normalizedRange !== null &&
-                          visRowIdx === normalizedRange.anchorRow &&
-                          colIdx === normalizedRange.anchorCol;
-
-                        const isFillHandleCorner =
-                          !isEditingLocked &&
-                          !hasActiveTransforms &&
-                          !editingCell &&
-                          normalizedRange !== null &&
-                          visRowIdx === normalizedRange.maxRow &&
-                          colIdx === normalizedRange.maxCol;
-
-                        const isInFillPreview =
-                          fillPreviewBounds !== null &&
-                          visRowIdx >= fillPreviewBounds.minRow &&
-                          visRowIdx <= fillPreviewBounds.maxRow &&
-                          colIdx >= fillPreviewBounds.minCol &&
-                          colIdx <= fillPreviewBounds.maxCol;
-
-                        const isEditingThisCell =
-                          editingCell !== null &&
-                          editingCell.source === 'cell' &&
-                          editingCell.originalRow === origRowIdx &&
-                          editingCell.col === colIdx;
-
-                        const cellCoord = formatCellRef(origRowIdx, colIdx);
-                        const cellPeers = peerPresenceByCellCoord.get(cellCoord);
-                        const primaryPeer = cellPeers?.[0];
-                        const peerBadgeText = primaryPeer
-                          ? cellPeers && cellPeers.length > 1
-                            ? `${primaryPeer.displayName} +${cellPeers.length - 1}`
-                            : primaryPeer.displayName
-                          : null;
-                        const peerBadgePositionClass =
-                          visRowIdx === 0
-                            ? visibleRows.length > 1
-                              ? 'top-full left-0'
-                              : 'top-0 right-0'
-                            : 'bottom-full left-0';
-
-                        const shadows: string[] = [];
-                        if (
-                          isSelected &&
-                          !isSingleSelection &&
-                          !isEditingThisCell &&
-                          normalizedRange
-                        ) {
-                          if (visRowIdx === normalizedRange.minRow) {
-                            shadows.push('inset 0 2px 0 0 #107C41');
-                          }
-                          if (visRowIdx === normalizedRange.maxRow) {
-                            shadows.push('inset 0 -2px 0 0 #107C41');
-                          }
-                          if (colIdx === normalizedRange.minCol) {
-                            shadows.push('inset 2px 0 0 0 #107C41');
-                          }
-                          if (colIdx === normalizedRange.maxCol) {
-                            shadows.push('inset -2px 0 0 0 #107C41');
-                          }
-                        }
-
-                        const isFrozenCol = visibleColPos < frozenColsCount;
-                        const isLastFrozenCol =
-                          frozenColsCount > 0 &&
-                          visibleColPos === frozenColsCount - 1;
-                        const frozenLeft = frozenColLeftOffsets.get(colIdx);
-
-                        if (isLastFrozenRow) {
-                          shadows.push('0 2px 0 0 rgba(16,124,65,0.35)');
-                        }
-                        if (isLastFrozenCol) {
-                          shadows.push('2px 0 0 0 rgba(16,124,65,0.35)');
-                        }
-
-                        const effectiveBg =
-                          condStyle?.bgColor ?? style?.bgColor;
-                        const effectiveTextColor =
-                          condStyle?.textColor ?? style?.textColor;
-                        const hasCustomBg = Boolean(effectiveBg);
-
-                        const cellInlineStyle: CSSProperties = {};
-                        if (shadows.length > 0) {
-                          cellInlineStyle.boxShadow = shadows.join(', ');
-                        }
-                        if (!isEditingThisCell && effectiveBg) {
-                          cellInlineStyle.backgroundColor = effectiveBg;
-                        }
-                        if (!isError && effectiveTextColor) {
-                          cellInlineStyle.color = effectiveTextColor;
-                        }
-                        if (
-                          typeof style?.fontSize === 'number' &&
-                          Number.isFinite(style.fontSize) &&
-                          style.fontSize > 0
-                        ) {
-                          cellInlineStyle.fontSize = `${Math.max(
-                            8,
-                            Math.min(
-                              64,
-                              Math.round(style.fontSize * zoomScale * 10) / 10
-                            )
-                          )}px`;
-                        }
-                        if (style?.fontFamily) {
-                          cellInlineStyle.fontFamily = style.fontFamily;
-                        }
-                        if (style?.italic) {
-                          cellInlineStyle.fontStyle = 'italic';
-                        }
-                        if (style?.underline) {
-                          cellInlineStyle.textDecoration = 'underline';
-                        }
-                        cellInlineStyle.verticalAlign =
-                          style?.valign ?? 'middle';
-                        if (style?.borderTop) {
-                          cellInlineStyle.borderTop = style.borderTop;
-                        }
-                        if (style?.borderRight) {
-                          cellInlineStyle.borderRight = style.borderRight;
-                        }
-                        if (style?.borderBottom) {
-                          cellInlineStyle.borderBottom = style.borderBottom;
-                        }
-                        if (style?.borderLeft) {
-                          cellInlineStyle.borderLeft = style.borderLeft;
-                        }
-
-                        const rawW =
-                          activeSheet.colWidths?.[colIdx] ?? DEFAULT_COL_WIDTH;
-                        const scaledW = Math.max(
-                          48,
-                          Math.round(rawW * zoomScale)
-                        );
-                        if (!mergeSpan) {
-                          cellInlineStyle.width = `${scaledW}px`;
-                          cellInlineStyle.maxWidth = `${scaledW}px`;
-                        }
-
-                        if (isFrozenRow || isFrozenCol) {
-                          cellInlineStyle.position = 'sticky';
-                          if (isFrozenRow && frozenTop !== undefined) {
-                            cellInlineStyle.top = `${frozenTop}px`;
-                          }
-                          if (isFrozenCol && frozenLeft !== undefined) {
-                            cellInlineStyle.left = `${frozenLeft}px`;
-                          }
-                          cellInlineStyle.zIndex =
-                            isFrozenRow && isFrozenCol
-                              ? 22
-                              : isFrozenRow
-                                ? 15
-                                : 12;
-                        }
-
-                        return (
+                      return (
+                        <tr
+                          key={`${activeSheet.id}-orig-row-${origRowIdx}`}
+                          style={{ height: `${rowH}px` }}
+                          className="group transition-colors"
+                        >
                           <td
-                            key={`${origRowIdx}-${colIdx}`}
-                            data-excel-cell={cellKey}
-                            rowSpan={mergeSpan?.rowSpan}
-                            colSpan={mergeSpan?.colSpan}
-                            onMouseDown={(event) =>
-                              handleCellMouseDown(event, visRowIdx, colIdx)
-                            }
-                            onMouseEnter={() =>
-                              handleCellMouseEnter(visRowIdx, colIdx)
-                            }
-                            onDoubleClick={() =>
-                              handleCellDoubleClick(visRowIdx, colIdx)
+                            onClick={(event) =>
+                              handleSelectRow(visRowIdx, event.shiftKey)
                             }
                             onContextMenu={(e) =>
                               handleOpenContextMenu(
                                 e,
-                                'cell',
+                                'row',
                                 origRowIdx,
                                 visRowIdx,
-                                colIdx
+                                0
                               )
                             }
-                            title={
-                              isFormula
-                                ? `Công thức: ${String(rawValue)}`
-                                : undefined
-                            }
-                            style={cellInlineStyle}
-                            className={`relative border-b border-r border-[#E4EBE6] transition-colors ${
-                              style?.wrapText
-                                ? 'whitespace-pre-wrap break-words py-1 leading-snug'
-                                : 'whitespace-nowrap overflow-visible'
-                            } ${
-                              isEditingThisCell
-                                ? 'p-0 bg-white'
-                                : 'px-2.5 cursor-cell'
-                            } ${alignClass} ${
-                              isError
-                                ? 'text-rose-600 font-semibold'
-                                : isNumeric
-                                  ? 'tabular-nums text-slate-900'
-                                  : 'text-slate-700'
-                            } ${
-                              style?.bold
-                                ? 'font-bold'
-                                : isNumeric
-                                  ? 'font-medium'
-                                  : 'font-normal'
-                            } ${
-                              isEditingThisCell
-                                ? 'ring-2 ring-inset ring-[#107C41] z-20'
-                                : isSelected
-                                  ? isSingleSelection || isAnchor
-                                    ? hasCustomBg
-                                      ? 'ring-2 ring-inset ring-[#107C41]'
-                                      : 'bg-[#E6F4EC] ring-2 ring-inset ring-[#107C41]'
-                                    : hasCustomBg
-                                      ? ''
-                                      : 'bg-[#E6F4EC]/85'
-                                  : isInFillPreview
-                                    ? 'bg-[#107C41]/10 outline outline-1 outline-dashed outline-[#107C41]'
-                                    : hasCustomBg
-                                      ? ''
-                                      : isPinnedHeaderVisual
-                                        ? 'bg-[#F3F8F5] group-hover:bg-[#EBF3EE]'
-                                        : 'bg-white group-hover:bg-[#F9FCFA]'
+                            style={{
+                              width: `${rowHeaderWidthPx}px`,
+                              minWidth: `${rowHeaderWidthPx}px`,
+                              ...(isFrozenRow && frozenTop !== undefined
+                                ? {
+                                    position: 'sticky',
+                                    top: `${frozenTop}px`,
+                                    zIndex: 24,
+                                  }
+                                : {}),
+                              ...(isLastFrozenRow
+                                ? { boxShadow: '0 2px 0 0 rgba(16,124,65,0.35)' }
+                                : {}),
+                            }}
+                            title={`Dòng ${origRowIdx + 1} — bấm chọn cả dòng (chuột phải để chèn/xóa/ẩn dòng)`}
+                            className={`sticky left-0 z-10 px-1.5 border-b border-r border-[#E2E8F0] text-center text-xs tabular-nums cursor-pointer transition-colors ${
+                              isRowSelected
+                                ? 'bg-[#ECFDF5] text-[#107C41] font-bold'
+                                : isPinnedHeaderVisual
+                                  ? 'bg-[#F8FAFC] text-slate-700 font-semibold'
+                                  : 'bg-[#F8FAFC] text-slate-600 font-semibold group-hover:bg-slate-100'
                             }`}
                           >
-                            {isSelected && hasCustomBg && !isEditingThisCell && (
-                              <span
-                                aria-hidden="true"
-                                className="absolute inset-0 bg-[#107C41]/15 pointer-events-none"
-                              />
-                            )}
+                            {origRowIdx + 1}
+                          </td>
 
-                            {primaryPeer && (
-                              <>
-                                <span
-                                  aria-hidden="true"
-                                  style={{
-                                    boxShadow: `inset 0 0 0 2px ${primaryPeer.color}`,
-                                  }}
-                                  className="absolute inset-0 pointer-events-none z-10"
-                                />
-                                {peerBadgeText && (
-                                  <span
-                                    style={{
-                                      backgroundColor: primaryPeer.color,
-                                    }}
-                                    className={`absolute ${peerBadgePositionClass} z-20 pointer-events-none px-1.5 py-0.5 rounded-sm shadow-sm text-[10px] font-semibold leading-none text-white whitespace-nowrap max-w-[140px] truncate`}
-                                  >
-                                    {peerBadgeText}
-                                    {primaryPeer.isTyping ? '…' : ''}
-                                  </span>
-                                )}
-                              </>
-                            )}
+                          {visibleColIndices.map((colIdx, visibleColPos) => {
+                            const cellKey = makeCellKey(origRowIdx, colIdx);
+                            if (mergeCoveredSet.has(cellKey)) {
+                              return null;
+                            }
+                            const mergeSpan = mergeOriginMap.get(cellKey);
 
-                            {isEditingThisCell ? (
-                              <input
-                                ref={cellInputRef}
-                                type="text"
-                                value={editDraft}
-                                onChange={(event) =>
-                                  setEditDraft(event.target.value)
+                            const rawValue = rowItem.rawCells[colIdx];
+                            const evaluatedValue =
+                              rowItem.evaluatedCells[colIdx];
+                            const numericVal = parseNumericValue(evaluatedValue);
+                            const isNumeric = numericVal !== null;
+                            const isFormula = isFormulaText(rawValue);
+                            const isError = isFormulaError(evaluatedValue);
+
+                            const style = activeSheet.cellStyles?.[cellKey];
+                            const condStyle = conditionalStyleMap.get(cellKey);
+                            const validationOpts =
+                              activeSheet.dataValidations?.[cellKey];
+                            const hasValidation = Boolean(
+                              validationOpts && validationOpts.length > 0
+                            );
+
+                            const displayValue = formatCellDisplay(
+                              evaluatedValue,
+                              style?.numFmt
+                            );
+
+                            const effectiveAlign =
+                              style?.align ?? (isNumeric ? 'right' : 'left');
+                            const alignClass =
+                              effectiveAlign === 'center'
+                                ? 'text-center'
+                                : effectiveAlign === 'right'
+                                  ? 'text-right'
+                                  : effectiveAlign === 'justify'
+                                    ? 'text-justify'
+                                    : 'text-left';
+
+                            const cellComment =
+                              activeSheet.cellComments?.[cellKey];
+                            const cellHyperlink = isSafeHttpUrl(style?.hyperlink)
+                              ? style?.hyperlink?.trim()
+                              : undefined;
+                            const isThisCellLocked = isCellInLockedRanges(
+                              origRowIdx,
+                              colIdx,
+                              activeSheet.lockedRanges
+                            );
+
+                            const isSelected =
+                              normalizedRange !== null &&
+                              visRowIdx >= normalizedRange.minRow &&
+                              visRowIdx <= normalizedRange.maxRow &&
+                              colIdx >= normalizedRange.minCol &&
+                              colIdx <= normalizedRange.maxCol;
+
+                            const isSingleSelection =
+                              normalizedRange !== null &&
+                              normalizedRange.minRow === normalizedRange.maxRow &&
+                              normalizedRange.minCol === normalizedRange.maxCol;
+
+                            const isAnchor =
+                              normalizedRange !== null &&
+                              visRowIdx === normalizedRange.anchorRow &&
+                              colIdx === normalizedRange.anchorCol;
+
+                            const isFillHandleCorner =
+                              !isEditBlocked &&
+                              !hasActiveTransforms &&
+                              !editingCell &&
+                              normalizedRange !== null &&
+                              visRowIdx === normalizedRange.maxRow &&
+                              colIdx === normalizedRange.maxCol;
+
+                            const isInFillPreview =
+                              fillPreviewBounds !== null &&
+                              visRowIdx >= fillPreviewBounds.minRow &&
+                              visRowIdx <= fillPreviewBounds.maxRow &&
+                              colIdx >= fillPreviewBounds.minCol &&
+                              colIdx <= fillPreviewBounds.maxCol;
+
+                            const isEditingThisCell =
+                              editingCell !== null &&
+                              editingCell.source === 'cell' &&
+                              editingCell.originalRow === origRowIdx &&
+                              editingCell.col === colIdx;
+
+                            const cellCoord = formatCellRef(origRowIdx, colIdx);
+                            const cellPeers =
+                              peerPresenceByCellCoord.get(cellCoord);
+                            const primaryPeer = cellPeers?.[0];
+                            const peerBadgeText = primaryPeer
+                              ? cellPeers && cellPeers.length > 1
+                                ? `${primaryPeer.displayName} +${cellPeers.length - 1}`
+                                : primaryPeer.displayName
+                              : null;
+                            const peerBadgePositionClass =
+                              visRowIdx === 0
+                                ? visibleRows.length > 1
+                                  ? 'top-full left-0'
+                                  : 'top-0 right-0'
+                                : 'bottom-full left-0';
+
+                            const shadows: string[] = [];
+                            if (
+                              isSelected &&
+                              !isSingleSelection &&
+                              !isEditingThisCell &&
+                              normalizedRange
+                            ) {
+                              if (visRowIdx === normalizedRange.minRow) {
+                                shadows.push('inset 0 2px 0 0 #107C41');
+                              }
+                              if (visRowIdx === normalizedRange.maxRow) {
+                                shadows.push('inset 0 -2px 0 0 #107C41');
+                              }
+                              if (colIdx === normalizedRange.minCol) {
+                                shadows.push('inset 2px 0 0 0 #107C41');
+                              }
+                              if (colIdx === normalizedRange.maxCol) {
+                                shadows.push('inset -2px 0 0 0 #107C41');
+                              }
+                            }
+
+                            const isFrozenCol = visibleColPos < frozenColsCount;
+                            const isLastFrozenCol =
+                              frozenColsCount > 0 &&
+                              visibleColPos === frozenColsCount - 1;
+                            const frozenLeft = frozenColLeftOffsets.get(colIdx);
+
+                            if (isLastFrozenRow) {
+                              shadows.push('0 2px 0 0 rgba(16,124,65,0.35)');
+                            }
+                            if (isLastFrozenCol) {
+                              shadows.push('2px 0 0 0 rgba(16,124,65,0.35)');
+                            }
+
+                            const effectiveBg =
+                              condStyle?.bgColor ?? style?.bgColor;
+                            const effectiveTextColor =
+                              condStyle?.textColor ?? style?.textColor;
+                            const hasCustomBg = Boolean(effectiveBg);
+
+                            const cellInlineStyle: CSSProperties = {};
+                            if (shadows.length > 0) {
+                              cellInlineStyle.boxShadow = shadows.join(', ');
+                            }
+                            if (!isEditingThisCell && effectiveBg) {
+                              cellInlineStyle.backgroundColor = effectiveBg;
+                            }
+                            if (!isError && effectiveTextColor) {
+                              cellInlineStyle.color = effectiveTextColor;
+                            }
+                            if (
+                              typeof style?.fontSize === 'number' &&
+                              Number.isFinite(style.fontSize) &&
+                              style.fontSize > 0
+                            ) {
+                              cellInlineStyle.fontSize = `${Math.max(
+                                9,
+                                Math.min(48, Math.round(style.fontSize))
+                              )}px`;
+                            }
+                            if (style?.fontFamily) {
+                              cellInlineStyle.fontFamily = style.fontFamily;
+                            }
+                            if (style?.italic) {
+                              cellInlineStyle.fontStyle = 'italic';
+                            }
+                            if (style?.underline && style?.strike) {
+                              cellInlineStyle.textDecoration =
+                                'underline line-through';
+                            } else if (style?.underline) {
+                              cellInlineStyle.textDecoration = 'underline';
+                            } else if (style?.strike) {
+                              cellInlineStyle.textDecoration = 'line-through';
+                            }
+                            cellInlineStyle.verticalAlign =
+                              style?.valign ?? 'middle';
+                            if (style?.borderTop) {
+                              cellInlineStyle.borderTop = style.borderTop;
+                            }
+                            if (style?.borderRight) {
+                              cellInlineStyle.borderRight = style.borderRight;
+                            }
+                            if (style?.borderBottom) {
+                              cellInlineStyle.borderBottom = style.borderBottom;
+                            }
+                            if (style?.borderLeft) {
+                              cellInlineStyle.borderLeft = style.borderLeft;
+                            }
+
+                            const colW = Math.round(
+                              activeSheet.colWidths?.[colIdx] ?? DEFAULT_COL_WIDTH
+                            );
+                            if (!mergeSpan) {
+                              cellInlineStyle.width = `${colW}px`;
+                              cellInlineStyle.maxWidth = `${colW}px`;
+                            }
+
+                            if (isFrozenRow || isFrozenCol) {
+                              cellInlineStyle.position = 'sticky';
+                              if (isFrozenRow && frozenTop !== undefined) {
+                                cellInlineStyle.top = `${frozenTop}px`;
+                              }
+                              if (isFrozenCol && frozenLeft !== undefined) {
+                                cellInlineStyle.left = `${frozenLeft}px`;
+                              }
+                              cellInlineStyle.zIndex =
+                                isFrozenRow && isFrozenCol
+                                  ? 22
+                                  : isFrozenRow
+                                    ? 15
+                                    : 12;
+                            }
+
+                            return (
+                              <td
+                                key={`${origRowIdx}-${colIdx}`}
+                                data-excel-cell={cellKey}
+                                rowSpan={mergeSpan?.rowSpan}
+                                colSpan={mergeSpan?.colSpan}
+                                onMouseDown={(event) =>
+                                  handleCellMouseDown(event, visRowIdx, colIdx)
                                 }
-                                onKeyDown={handleInlineInputKeyDown}
-                                onBlur={handleInlineInputBlur}
-                                aria-label={`Chỉnh sửa ô ${cellCoord}`}
-                                style={{ height: `${scaledRowH}px` }}
-                                className={`w-full px-2.5 bg-white text-slate-900 focus:outline-none select-text ${alignClass} ${
-                                  style?.bold ? 'font-bold' : 'font-normal'
+                                onMouseEnter={() =>
+                                  handleCellMouseEnter(visRowIdx, colIdx)
+                                }
+                                onDoubleClick={() =>
+                                  handleCellDoubleClick(visRowIdx, colIdx)
+                                }
+                                onContextMenu={(e) =>
+                                  handleOpenContextMenu(
+                                    e,
+                                    'cell',
+                                    origRowIdx,
+                                    visRowIdx,
+                                    colIdx
+                                  )
+                                }
+                                title={
+                                  [
+                                    isFormula
+                                      ? `Công thức: ${String(rawValue)}`
+                                      : null,
+                                    cellComment
+                                      ? `Ghi chú: ${cellComment}`
+                                      : null,
+                                    cellHyperlink
+                                      ? `Liên kết: ${cellHyperlink}`
+                                      : null,
+                                    isThisCellLocked
+                                      ? 'Ô nằm trong vùng đã khóa'
+                                      : null,
+                                  ]
+                                    .filter(Boolean)
+                                    .join('\n') || undefined
+                                }
+                                style={cellInlineStyle}
+                                className={`relative border-b border-r ${
+                                  showGridlines
+                                    ? 'border-[#E2E8F0]'
+                                    : 'border-transparent'
+                                } transition-colors ${
+                                  style?.wrapText
+                                    ? 'whitespace-pre-wrap break-words py-1 leading-snug'
+                                    : 'whitespace-nowrap overflow-visible'
+                                } ${
+                                  isEditingThisCell
+                                    ? 'p-0 bg-white'
+                                    : 'px-2.5 cursor-cell'
+                                } ${alignClass} ${
+                                  isError
+                                    ? 'text-rose-600 font-semibold'
+                                    : isNumeric
+                                      ? 'tabular-nums text-slate-900'
+                                      : 'text-slate-700'
+                                } ${
+                                  style?.bold
+                                    ? 'font-bold'
+                                    : isNumeric
+                                      ? 'font-medium'
+                                      : 'font-normal'
+                                } ${
+                                  isEditingThisCell
+                                    ? 'ring-2 ring-inset ring-[#107C41] z-20'
+                                    : isSelected
+                                      ? isSingleSelection || isAnchor
+                                        ? hasCustomBg
+                                          ? 'ring-2 ring-inset ring-[#107C41]'
+                                          : 'bg-[#ECFDF5] ring-2 ring-inset ring-[#107C41]'
+                                        : hasCustomBg
+                                          ? ''
+                                          : 'bg-[#ECFDF5]/75'
+                                      : isInFillPreview
+                                        ? 'bg-[#107C41]/10 outline outline-1 outline-dashed outline-[#107C41]'
+                                        : hasCustomBg
+                                          ? ''
+                                          : isPinnedHeaderVisual
+                                            ? 'bg-[#F8FAFC] group-hover:bg-slate-100/70'
+                                            : 'bg-white group-hover:bg-slate-50/60'
                                 }`}
-                              />
-                            ) : (
-                              <div className="flex items-center justify-between gap-1 w-full min-w-0">
-                                <span
-                                  className={`flex-1 min-w-0 ${
-                                    style?.wrapText ? '' : 'truncate'
-                                  }`}
-                                >
-                                  {displayValue}
-                                </span>
-
-                                {/* Data Validation In-Cell Dropdown Trigger */}
-                                {hasValidation &&
-                                  isAnchor &&
-                                  !isEditingLocked && (
-                                    <button
-                                      type="button"
-                                      data-excel-popover="true"
-                                      onMouseDown={(e) => e.stopPropagation()}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setOpenValidationKey((prev) =>
-                                          prev === cellKey ? null : cellKey
-                                        );
-                                      }}
-                                      aria-label="Chọn giá trị từ danh sách"
-                                      title="Chọn giá trị hợp lệ"
-                                      className="w-5 h-5 rounded bg-[#107C41] text-white inline-flex items-center justify-center shrink-0 hover:bg-[#0D6535] shadow-sm"
-                                    >
-                                      <ChevronDown className="w-3 h-3" />
-                                    </button>
+                              >
+                                {isSelected &&
+                                  hasCustomBg &&
+                                  !isEditingThisCell && (
+                                    <span
+                                      aria-hidden="true"
+                                      className="absolute inset-0 bg-[#107C41]/15 pointer-events-none"
+                                    />
                                   )}
-                              </div>
-                            )}
 
-                            {/* Data Validation Popover List */}
-                            {hasValidation &&
-                              openValidationKey === cellKey &&
-                              !isEditingLocked && (
-                                <div
-                                  data-excel-popover="true"
-                                  onMouseDown={(e) => e.stopPropagation()}
-                                  className="absolute left-0 top-full mt-0.5 z-50 min-w-full w-48 max-h-44 overflow-y-auto bg-white rounded-lg shadow-xl border border-[#B7DFC7] py-1 text-left"
-                                >
-                                  {validationOpts?.map((opt) => (
-                                    <button
-                                      key={opt}
-                                      type="button"
-                                      onClick={() => {
-                                        commitCellValue(origRowIdx, colIdx, opt);
-                                        setOpenValidationKey(null);
+                                {primaryPeer && (
+                                  <>
+                                    <span
+                                      aria-hidden="true"
+                                      style={{
+                                        boxShadow: `inset 0 0 0 2px ${primaryPeer.color}`,
                                       }}
-                                      className={`w-full text-left px-3 py-1.5 text-xs hover:bg-[#E6F4EC] hover:text-[#107C41] transition-colors ${
-                                        String(evaluatedValue ?? '') === opt
-                                          ? 'bg-[#F0F9F3] text-[#107C41] font-bold'
-                                          : 'text-slate-700'
+                                      className="absolute inset-0 pointer-events-none z-10"
+                                    />
+                                    {peerBadgeText && (
+                                      <span
+                                        style={{
+                                          backgroundColor: primaryPeer.color,
+                                        }}
+                                        className={`absolute ${peerBadgePositionClass} z-20 pointer-events-none px-1.5 py-0.5 rounded-sm shadow-sm text-[10px] font-semibold leading-none text-white whitespace-nowrap max-w-[140px] truncate`}
+                                      >
+                                        {peerBadgeText}
+                                        {primaryPeer.isTyping ? '…' : ''}
+                                      </span>
+                                    )}
+                                  </>
+                                )}
+
+                                {isEditingThisCell ? (
+                                  <input
+                                    ref={cellInputRef}
+                                    type="text"
+                                    value={editDraft}
+                                    onChange={(event) =>
+                                      setEditDraft(event.target.value)
+                                    }
+                                    onKeyDown={handleInlineInputKeyDown}
+                                    onBlur={handleInlineInputBlur}
+                                    aria-label={`Chỉnh sửa ô ${cellCoord}`}
+                                    style={{ height: `${rowH}px` }}
+                                    className={`w-full px-2.5 bg-white text-slate-900 focus:outline-none select-text ${alignClass} ${
+                                      style?.bold ? 'font-bold' : 'font-normal'
+                                    }`}
+                                  />
+                                ) : (
+                                  <div className="flex items-center justify-between gap-1 w-full min-w-0">
+                                    <span
+                                      style={
+                                        style?.textRotation === 'vertical'
+                                          ? { writingMode: 'vertical-rl' }
+                                          : style?.textRotation === 'up45'
+                                            ? {
+                                                display: 'inline-block',
+                                                transform: 'rotate(-35deg)',
+                                                transformOrigin: 'center',
+                                              }
+                                            : style?.textRotation === 'down45'
+                                              ? {
+                                                  display: 'inline-block',
+                                                  transform: 'rotate(35deg)',
+                                                  transformOrigin: 'center',
+                                                }
+                                              : undefined
+                                      }
+                                      className={`flex-1 min-w-0 ${
+                                        style?.wrapText ? '' : 'truncate'
+                                      } ${
+                                        cellHyperlink
+                                          ? 'text-[#107C41] underline decoration-[#107C41]/60'
+                                          : ''
                                       }`}
                                     >
-                                      {opt}
-                                    </button>
-                                  ))}
-                                </div>
-                              )}
+                                      {displayValue}
+                                    </span>
 
-                            {/* Formula corner triangle */}
-                            {isFormula && !isEditingThisCell && (
-                              <span
-                                aria-hidden="true"
-                                className="absolute top-0 right-0 w-0 h-0 border-t-[6px] border-t-[#107C41] border-l-[6px] border-l-transparent pointer-events-none"
-                              />
-                            )}
+                                    {cellHyperlink && (
+                                      <a
+                                        href={cellHyperlink}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        onMouseDown={(e) => e.stopPropagation()}
+                                        onClick={(e) => e.stopPropagation()}
+                                        title={`Mở liên kết: ${cellHyperlink}`}
+                                        className="text-[#107C41] hover:text-[#0B5E31] shrink-0"
+                                      >
+                                        <ExternalLink className="w-3 h-3" />
+                                      </a>
+                                    )}
 
-                            {/* Fill Handle (Bottom-Right Square on Selection) */}
-                            {isFillHandleCorner && (
-                              <span
-                                role="presentation"
-                                title="Kéo để tự động điền chuỗi số hoặc công thức"
-                                onMouseDown={(e) => {
-                                  e.stopPropagation();
-                                  e.preventDefault();
-                                  if (!normalizedRange) return;
-                                  const initial: FillDragState = {
-                                    source: normalizedRange,
-                                    targetEnd: {
-                                      row: normalizedRange.maxRow,
-                                      col: normalizedRange.maxCol,
-                                    },
-                                    axis: null,
-                                  };
-                                  fillDragRef.current = initial;
-                                  setFillDrag(initial);
-                                }}
-                                className="absolute -bottom-[4px] -right-[4px] w-2.5 h-2.5 bg-[#107C41] border border-white cursor-crosshair z-20 shadow-sm hover:scale-125 transition-transform"
-                              />
-                            )}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  );
-                })
+                                    {/* Data Validation In-Cell Dropdown Trigger */}
+                                    {hasValidation &&
+                                      isAnchor &&
+                                      !isEditBlocked && (
+                                        <button
+                                          type="button"
+                                          data-excel-popover="true"
+                                          onMouseDown={(e) => e.stopPropagation()}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setOpenValidationKey((prev) =>
+                                              prev === cellKey ? null : cellKey
+                                            );
+                                          }}
+                                          aria-label="Chọn giá trị từ danh sách"
+                                          title="Chọn giá trị hợp lệ"
+                                          className="w-5 h-5 rounded bg-[#107C41] text-white inline-flex items-center justify-center shrink-0 hover:bg-[#0B5E31] shadow-sm"
+                                        >
+                                          <ChevronDown className="w-3 h-3" />
+                                        </button>
+                                      )}
+                                  </div>
+                                )}
+
+                                {/* Data Validation Popover List */}
+                                {hasValidation &&
+                                  openValidationKey === cellKey &&
+                                  !isEditBlocked && (
+                                    <div
+                                      data-excel-popover="true"
+                                      onMouseDown={(e) => e.stopPropagation()}
+                                      className="absolute left-0 top-full mt-0.5 z-50 min-w-full w-48 max-h-44 overflow-y-auto bg-white rounded-lg shadow-xl border border-[#B7DFC7] py-1 text-left"
+                                    >
+                                      {validationOpts?.map((opt) => (
+                                        <button
+                                          key={opt}
+                                          type="button"
+                                          onClick={() => {
+                                            commitCellValue(
+                                              origRowIdx,
+                                              colIdx,
+                                              opt
+                                            );
+                                            setOpenValidationKey(null);
+                                          }}
+                                          className={`w-full text-left px-3 py-1.5 text-xs hover:bg-[#ECFDF5] hover:text-[#107C41] transition-colors ${
+                                            String(evaluatedValue ?? '') === opt
+                                              ? 'bg-[#ECFDF5] text-[#107C41] font-bold'
+                                              : 'text-slate-700'
+                                          }`}
+                                        >
+                                          {opt}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                {/* Comment red corner triangle (takes visual priority) or Formula emerald corner triangle */}
+                                {cellComment && !isEditingThisCell ? (
+                                  <span
+                                    aria-hidden="true"
+                                    title={`Ghi chú: ${cellComment}`}
+                                    className="absolute top-0 right-0 w-0 h-0 border-t-[7px] border-t-rose-500 border-l-[7px] border-l-transparent pointer-events-none"
+                                  />
+                                ) : (
+                                  isFormula &&
+                                  !isEditingThisCell && (
+                                    <span
+                                      aria-hidden="true"
+                                      className="absolute top-0 right-0 w-0 h-0 border-t-[6px] border-t-[#107C41] border-l-[6px] border-l-transparent pointer-events-none"
+                                    />
+                                  )
+                                )}
+
+                                {isThisCellLocked && !isEditingThisCell && (
+                                  <span
+                                    aria-hidden="true"
+                                    className="absolute bottom-0.5 left-0.5 w-1.5 h-1.5 rounded-full bg-amber-400/90 pointer-events-none"
+                                  />
+                                )}
+
+                                {/* Fill Handle (Bottom-Right Square on Selection) */}
+                                {isFillHandleCorner && (
+                                  <span
+                                    role="presentation"
+                                    title="Kéo để tự động điền chuỗi số hoặc công thức"
+                                    onMouseDown={(e) => {
+                                      e.stopPropagation();
+                                      e.preventDefault();
+                                      if (!normalizedRange) return;
+                                      const initial: FillDragState = {
+                                        source: normalizedRange,
+                                        targetEnd: {
+                                          row: normalizedRange.maxRow,
+                                          col: normalizedRange.maxCol,
+                                        },
+                                        axis: null,
+                                      };
+                                      fillDragRef.current = initial;
+                                      setFillDrag(initial);
+                                    }}
+                                    className="absolute -bottom-[5px] -right-[5px] w-3 h-3 bg-[#107C41] border-2 border-white rounded-[2px] cursor-crosshair z-20 shadow-sm hover:scale-125 transition-transform"
+                                  />
+                                )}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+
+              {/* Embedded Interactive SVG Charts */}
+              {activeSheet.charts && activeSheet.charts.length > 0 && (
+                <ExcelChartsPanel
+                  charts={activeSheet.charts}
+                  isEditingLocked={isEditBlocked}
+                  onChangeChartType={handleChangeChartType}
+                  onDeleteChart={handleDeleteChart}
+                />
               )}
-            </tbody>
-          </table>
 
-          {/* Embedded Interactive SVG Charts */}
-          {activeSheet.charts && activeSheet.charts.length > 0 && (
-            <ExcelChartsPanel
-              charts={activeSheet.charts}
-              isEditingLocked={isEditingLocked}
-              onChangeChartType={handleChangeChartType}
-              onDeleteChart={handleDeleteChart}
-            />
-          )}
+              {/* Floating Images, Shapes & Text Boxes */}
+              <ExcelFloatingObjectsLayer
+                objects={activeSheet.floatingObjects ?? []}
+                selectedObjectId={selectedFloatingObjId}
+                isProtected={isSheetProtected}
+                isReadOnly={isEditingLocked}
+                zoomScale={zoomScale}
+                onSelectObject={setSelectedFloatingObjId}
+                onUpdateObject={handleUpdateFloatingObject}
+                onDeleteObject={handleDeleteFloatingObject}
+              />
+
+              {/* Freehand Drawing Overlay (pointer-events-none when activeTool === null!) */}
+              <ExcelDrawingOverlay
+                strokes={activeSheet.drawings ?? []}
+                activeTool={isEditBlocked ? null : activeDrawTool}
+                activeColor={drawColor}
+                strokeWidth={drawStrokeWidth}
+                zoomScale={zoomScale}
+                onAddStroke={handleAddDrawingStroke}
+                onEraseStroke={handleEraseDrawingStroke}
+              />
+            </div>
+          </div>
         </div>
 
         <CustomVerticalScrollbar
@@ -5729,9 +8116,9 @@ export function ExcelWorkspace({
         />
       </div>
 
-      {/* Sheet Tabs Bar: Add (+), Rename, Duplicate, Color, Drag-Reorder, Delete */}
-      <div className="shrink-0 border-t border-[#D6E0D9] bg-[#EFF4F1] px-2.5 sm:px-3.5 py-1.5 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1 overflow-x-auto no-scrollbar min-w-0">
+      {/* Sheet Tabs Bar (Fluent Office 365): Add (+), Rename, Duplicate, Color, Drag-Reorder, Delete */}
+      <div className="shrink-0 border-t border-slate-200/80 bg-[#F3F4F6] px-2.5 sm:px-3.5 pt-1.5 pb-1 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar min-w-0">
           <div
             role="tablist"
             aria-label="Danh sách trang tính"
@@ -5740,7 +8127,6 @@ export function ExcelWorkspace({
             {sheets.map((sheet, idx) => {
               const isActive = idx === safeSheetIdx;
               const isRenaming = renamingSheetIdx === idx;
-              const accentColor = sheet.tabColor ?? (isActive ? '#107C41' : undefined);
 
               return (
                 <div
@@ -5769,14 +8155,17 @@ export function ExcelWorkspace({
                     });
                   }}
                   style={
-                    accentColor
-                      ? { borderBottomColor: accentColor, borderBottomWidth: '3px' }
+                    sheet.tabColor
+                      ? {
+                          borderBottomColor: sheet.tabColor,
+                          borderBottomWidth: '2px',
+                        }
                       : undefined
                   }
-                  className={`inline-flex items-center gap-1 rounded-t-lg rounded-b-sm text-xs whitespace-nowrap shrink-0 transition-all border ${
+                  className={`inline-flex items-center gap-1 rounded-t-lg text-xs whitespace-nowrap shrink-0 transition-all ${
                     isActive
-                      ? 'bg-white text-[#107C41] font-bold border-[#C7D8CD] shadow-sm'
-                      : 'bg-[#E5ECE8]/70 text-slate-600 font-medium border-transparent hover:bg-white/80 hover:text-slate-900'
+                      ? 'bg-white text-[#107C41] font-semibold border-t border-x border-slate-200/80 border-b-2 border-b-[#107C41] shadow-[0_1px_2px_rgba(15,23,42,0.06)]'
+                      : 'bg-transparent text-slate-600 font-medium border border-transparent hover:bg-white/75 hover:text-slate-900'
                   }`}
                 >
                   {isRenaming ? (
@@ -5852,7 +8241,7 @@ export function ExcelWorkspace({
             disabled={isEditingLocked}
             title="Thêm trang tính mới (+)"
             aria-label="Thêm trang tính mới"
-            className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-white/80 hover:bg-white border border-dashed border-[#AEC3B5] hover:border-[#107C41] text-[#107C41] disabled:opacity-40 shrink-0 transition-colors"
+            className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-white hover:bg-[#ECFDF5] border border-slate-200/90 hover:border-[#107C41]/40 text-slate-600 hover:text-[#107C41] shadow-[0_1px_2px_rgba(15,23,42,0.04)] disabled:opacity-40 shrink-0 transition-all"
           >
             <Plus className="w-4 h-4" />
           </button>
@@ -5863,7 +8252,7 @@ export function ExcelWorkspace({
         </span>
       </div>
 
-      {/* Bottom Edge: OfficeStatusBar (variant="excel") with Average / Count / Sum & 25%-200% Zoom */}
+      {/* Bottom Edge: OfficeStatusBar (variant="excel") with Average / Count / Sum & 10%-300% Zoom */}
       <OfficeStatusBar
         variant="excel"
         theme="light"
@@ -6330,6 +8719,155 @@ export function ExcelWorkspace({
           onClose={() => setIsTextToColsModalOpen(false)}
           onSplit={handleApplyTextToColumns}
         />
+      )}
+
+      {/* ONLYOFFICE Formula Library Modal (43 hàm gồm PMT/FV/PV) */}
+      <ExcelFormulaLibraryModal
+        isOpen={formulaModalCategory !== null}
+        initialCategory={formulaModalCategory ?? 'all'}
+        activeCellRef={rangeLabel}
+        onClose={() => setFormulaModalCategory(null)}
+        onInsertFormula={(snippet) => {
+          if (snippet.endsWith('()')) {
+            handleAiInsertFormula(snippet);
+          } else {
+            handleQuickInsertFormula(snippet);
+          }
+        }}
+      />
+
+      {/* ONLYOFFICE AI Tools Modal (Tóm tắt / Công thức tiếng Việt / Kiểm tra lỗi & trùng lặp) */}
+      <ExcelAiToolsModal
+        isOpen={aiModalTab !== null}
+        initialTab={aiModalTab ?? 'summary'}
+        sheetName={activeSheet.name}
+        rows={activeSheet.rows}
+        evaluatedMatrix={evaluatedMatrix}
+        activeCellRef={rangeLabel}
+        isProtected={isSheetProtected}
+        onClose={() => setAiModalTab(null)}
+        onInsertFormula={handleAiInsertFormula}
+        onCreateSummarySheet={handleAiCreateSummarySheet}
+        onNavigateToCell={handleNavigateToCell}
+        onHighlightAuditCells={handleHighlightAuditCells}
+      />
+
+      {/* ONLYOFFICE Cell Comment / Hyperlink Modal */}
+      <ExcelCellMetaModal
+        isOpen={cellMetaModal !== null}
+        mode={cellMetaModal?.mode ?? 'comment'}
+        cellRef={
+          cellMetaModal
+            ? formatCellRef(cellMetaModal.origRow, cellMetaModal.colIdx)
+            : rangeLabel
+        }
+        initialValue={
+          cellMetaModal
+            ? cellMetaModal.mode === 'comment'
+              ? (activeSheet.cellComments?.[
+                  makeCellKey(cellMetaModal.origRow, cellMetaModal.colIdx)
+                ] ?? '')
+              : (activeSheet.cellStyles?.[
+                  makeCellKey(cellMetaModal.origRow, cellMetaModal.colIdx)
+                ]?.hyperlink ?? '')
+            : ''
+        }
+        onClose={() => setCellMetaModal(null)}
+        onSave={handleSaveCellMeta}
+        onRemove={handleRemoveCellMeta}
+      />
+
+      {/* File Info Modal (Tab Tệp -> Thông tin tệp) */}
+      {isFileInfoOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setIsFileInfoOpen(false)}
+          className="fixed inset-0 z-50 bg-slate-950/50 backdrop-blur-[1px] flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-2xl bg-white border border-slate-200 shadow-2xl overflow-hidden"
+          >
+            <div className="px-4 py-3 bg-[#F8FAFC] border-b border-slate-200 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="w-8 h-8 rounded-lg bg-[#ECFDF5] text-[#107C41] inline-flex items-center justify-center">
+                  <FileSpreadsheet className="w-4 h-4" />
+                </span>
+                <h3 className="text-sm font-bold text-slate-900">
+                  Thông tin tệp bảng tính
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsFileInfoOpen(false)}
+                aria-label="Đóng thông tin tệp"
+                className="p-1 rounded-lg text-slate-400 hover:bg-slate-200/70 hover:text-slate-700"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 space-y-2.5 text-xs">
+              <div className="flex justify-between gap-3 py-1 border-b border-slate-100">
+                <span className="text-slate-500">Tên tệp</span>
+                <span className="font-semibold text-slate-900 truncate">
+                  {document.title}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3 py-1 border-b border-slate-100">
+                <span className="text-slate-500">Định dạng</span>
+                <span className="font-semibold uppercase text-[#107C41]">
+                  .{document.type}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3 py-1 border-b border-slate-100">
+                <span className="text-slate-500">Số trang tính</span>
+                <span className="font-semibold text-slate-900">
+                  {sheets.length} sheet
+                </span>
+              </div>
+              <div className="flex justify-between gap-3 py-1 border-b border-slate-100">
+                <span className="text-slate-500">Kích thước trang hiện tại</span>
+                <span className="font-semibold text-slate-900">
+                  {activeSheet.rows.length} dòng × {columnCount} cột
+                </span>
+              </div>
+              <div className="flex justify-between gap-3 py-1 border-b border-slate-100">
+                <span className="text-slate-500">Dung lượng</span>
+                <span className="font-semibold text-slate-900">
+                  {document.fileSize || 'Đang tính'}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3 py-1 border-b border-slate-100">
+                <span className="text-slate-500">Cập nhật gần nhất</span>
+                <span className="font-semibold text-slate-900">
+                  {document.updatedAt || 'Vừa mở'}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3 py-1">
+                <span className="text-slate-500">Trạng thái bảo vệ</span>
+                <span
+                  className={`font-semibold ${
+                    isSheetProtected ? 'text-amber-700' : 'text-[#107C41]'
+                  }`}
+                >
+                  {isSheetProtected
+                    ? 'Đang khóa trang tính'
+                    : 'Đang mở chỉnh sửa'}
+                </span>
+              </div>
+            </div>
+            <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setIsFileInfoOpen(false)}
+                className="px-4 py-1.5 rounded-lg bg-[#107C41] hover:bg-[#0B5E31] text-white text-xs font-semibold"
+              >
+                Đóng
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -31,7 +31,7 @@ export interface OfficeStatusBarProps {
   onStartSlideshow?: () => void;
 }
 
-const ZOOM_PRESETS = [50, 75, 100, 125, 150, 200] as const;
+const ZOOM_PRESETS = [25, 50, 75, 100, 125, 150, 200, 300] as const;
 
 const VARIANT_ACCENTS: Record<
   OfficeStatusBarVariant,
@@ -69,7 +69,7 @@ function clampZoomPercent(pct: number): number {
   if (!Number.isFinite(pct)) {
     return 100;
   }
-  return Math.max(25, Math.min(200, Math.round(pct)));
+  return Math.max(10, Math.min(300, Math.round(pct)));
 }
 
 export function OfficeStatusBar({
@@ -136,10 +136,10 @@ export function OfficeStatusBar({
   return (
     <footer
       aria-label={`Thanh trạng thái ${accent.label}`}
-      className={`shrink-0 h-9 px-2.5 sm:px-4 border-t flex items-center justify-between gap-2 text-[11px] select-none z-20 ${
+      className={`shrink-0 h-9 px-2.5 sm:px-4 border-t flex items-center justify-between gap-2 text-[11px] select-none z-20 transition-colors ${
         isDark
           ? 'bg-[#111622] border-white/10 text-slate-300'
-          : 'bg-[#F3F4F6] border-slate-200/90 text-slate-600'
+          : 'bg-[#F8FAFC] border-slate-200/80 text-slate-600'
       }`}
     >
       {/* Left: Format-specific stats & view mode controls */}
@@ -147,10 +147,10 @@ export function OfficeStatusBar({
         {variant === 'word' && (
           <>
             <span
-              className={`inline-flex items-center px-2 py-0.5 rounded-md font-semibold whitespace-nowrap shrink-0 tabular-nums border ${
+              className={`inline-flex items-center px-2 py-0.5 rounded-lg font-semibold whitespace-nowrap shrink-0 tabular-nums border ${
                 isDark
                   ? 'bg-white/5 border-white/10 text-slate-200'
-                  : 'bg-white border-slate-200/80 text-slate-700'
+                  : 'bg-white border-slate-200/80 text-slate-700 shadow-[0_1px_1px_rgba(15,23,42,0.03)]'
               }`}
             >
               Trang {safePageCurrent} / {safePageTotal}
@@ -161,7 +161,7 @@ export function OfficeStatusBar({
                 type="button"
                 onClick={onOpenWordStats}
                 title="Xem thống kê chi tiết tài liệu"
-                className={`inline-flex items-center gap-2 px-2 py-0.5 rounded-md font-medium whitespace-nowrap shrink-0 tabular-nums transition-colors ${
+                className={`inline-flex items-center gap-2 px-2 py-0.5 rounded-lg font-medium whitespace-nowrap shrink-0 tabular-nums transition-colors ${
                   isDark
                     ? 'hover:bg-white/10 text-slate-300 hover:text-white'
                     : 'hover:bg-white text-slate-600 hover:text-[#185ABD]'
@@ -213,10 +213,10 @@ export function OfficeStatusBar({
               <div className="flex items-center gap-1.5 sm:gap-2.5 whitespace-nowrap shrink-0 tabular-nums">
                 {excelStats.average !== null && (
                   <span
-                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border ${
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border ${
                       isDark
                         ? 'bg-white/5 border-white/10 text-slate-200'
-                        : 'bg-white border-slate-200 text-slate-700'
+                        : 'bg-white border-slate-200/80 text-slate-700 shadow-[0_1px_1px_rgba(15,23,42,0.03)]'
                     }`}
                   >
                     <span className="opacity-70">Trung bình:</span>
@@ -227,10 +227,10 @@ export function OfficeStatusBar({
                 )}
 
                 <span
-                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border ${
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border ${
                     isDark
                       ? 'bg-white/5 border-white/10 text-slate-200'
-                      : 'bg-white border-slate-200 text-slate-700'
+                      : 'bg-white border-slate-200/80 text-slate-700 shadow-[0_1px_1px_rgba(15,23,42,0.03)]'
                   }`}
                 >
                   <span className="opacity-70">Số lượng:</span>
@@ -239,7 +239,7 @@ export function OfficeStatusBar({
 
                 {excelStats.sum !== null && (
                   <span
-                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-semibold ${
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border font-semibold ${
                       isDark ? accent.activeBgDark : accent.activeBgLight
                     }`}
                   >
@@ -255,10 +255,10 @@ export function OfficeStatusBar({
         {variant === 'powerpoint' && (
           <>
             <span
-              className={`inline-flex items-center px-2 py-0.5 rounded-md font-semibold whitespace-nowrap shrink-0 tabular-nums border ${
+              className={`inline-flex items-center px-2 py-0.5 rounded-lg font-semibold whitespace-nowrap shrink-0 tabular-nums border ${
                 isDark
                   ? 'bg-white/5 border-white/10 text-slate-200'
-                  : 'bg-white border-slate-200 text-slate-700'
+                  : 'bg-white border-slate-200/80 text-slate-700 shadow-[0_1px_1px_rgba(15,23,42,0.03)]'
               }`}
             >
               Trang chiếu {safePageCurrent} / {safePageTotal}
@@ -272,7 +272,7 @@ export function OfficeStatusBar({
                     onClick={() => onChangePptViewMode('normal')}
                     aria-pressed={pptViewMode === 'normal'}
                     title="Chế độ thiết kế bình thường"
-                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-medium whitespace-nowrap transition-colors border ${
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg font-medium whitespace-nowrap transition-colors border ${
                       pptViewMode === 'normal'
                         ? isDark
                           ? accent.activeBgDark
@@ -291,7 +291,7 @@ export function OfficeStatusBar({
                     onClick={() => onChangePptViewMode('sorter')}
                     aria-pressed={pptViewMode === 'sorter'}
                     title="Sắp xếp trang chiếu (Slide Sorter)"
-                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-medium whitespace-nowrap transition-colors border ${
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg font-medium whitespace-nowrap transition-colors border ${
                       pptViewMode === 'sorter'
                         ? isDark
                           ? accent.activeBgDark
@@ -313,11 +313,7 @@ export function OfficeStatusBar({
                   type="button"
                   onClick={onStartSlideshow}
                   title="Trình chiếu toàn màn hình (F5)"
-                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-semibold whitespace-nowrap transition-colors ${
-                    isDark
-                      ? 'bg-[#C43E1C] hover:bg-[#AD3517] text-white'
-                      : 'bg-[#C43E1C] hover:bg-[#AD3517] text-white'
-                  }`}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg font-semibold whitespace-nowrap transition-colors bg-[#C43E1C] hover:bg-[#9E3014] text-white"
                 >
                   <MonitorPlay className="w-3 h-3 shrink-0" />
                   <span className="hidden sm:inline">Trình chiếu F5</span>
@@ -329,34 +325,18 @@ export function OfficeStatusBar({
         )}
       </div>
 
-      {/* Right: Zoom slider (25% - 200%) + Fit to width + Presets popover */}
+      {/* Right: Zoom slider (10% - 300%) + % presets popover + Fit button */}
       <div
         ref={zoomPopoverRef}
         className="shrink-0 flex items-center gap-1 sm:gap-1.5 relative"
       >
-        {onFitToWidth && (
-          <button
-            type="button"
-            onClick={onFitToWidth}
-            title="Vừa chiều rộng trang / Fit to Screen"
-            aria-label="Vừa chiều rộng trang"
-            className={`hidden sm:inline-flex items-center justify-center w-6 h-6 rounded-md transition-colors ${
-              isDark
-                ? 'hover:bg-white/10 text-slate-300 hover:text-white'
-                : 'hover:bg-white text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <Maximize2 className="w-3 h-3" />
-          </button>
-        )}
-
         <button
           type="button"
           onClick={() => handleStepZoom(-10)}
-          disabled={clampedZoom <= 25}
+          disabled={clampedZoom <= 10}
           aria-label="Thu nhỏ tài liệu"
           title="Thu nhỏ (-10%)"
-          className={`inline-flex items-center justify-center w-6 h-6 rounded-md transition-colors disabled:opacity-35 ${
+          className={`inline-flex items-center justify-center w-6 h-6 rounded-lg transition-colors disabled:opacity-35 ${
             isDark
               ? 'hover:bg-white/10 text-slate-300 hover:text-white'
               : 'hover:bg-white text-slate-600 hover:text-slate-900'
@@ -367,8 +347,8 @@ export function OfficeStatusBar({
 
         <input
           type="range"
-          min={25}
-          max={200}
+          min={10}
+          max={300}
           step={5}
           value={clampedZoom}
           onChange={(event) => onZoomChange(clampZoomPercent(Number(event.target.value)))}
@@ -380,10 +360,10 @@ export function OfficeStatusBar({
         <button
           type="button"
           onClick={() => handleStepZoom(10)}
-          disabled={clampedZoom >= 200}
+          disabled={clampedZoom >= 300}
           aria-label="Phóng to tài liệu"
           title="Phóng to (+10%)"
-          className={`inline-flex items-center justify-center w-6 h-6 rounded-md transition-colors disabled:opacity-35 ${
+          className={`inline-flex items-center justify-center w-6 h-6 rounded-lg transition-colors disabled:opacity-35 ${
             isDark
               ? 'hover:bg-white/10 text-slate-300 hover:text-white'
               : 'hover:bg-white text-slate-600 hover:text-slate-900'
@@ -398,26 +378,43 @@ export function OfficeStatusBar({
           aria-expanded={isZoomMenuOpen}
           aria-haspopup="menu"
           title="Chọn nhanh mức thu phóng"
-          className={`min-w-[44px] h-6 px-1.5 rounded-md font-semibold tabular-nums text-center transition-colors border ${
+          className={`min-w-[42px] h-6 px-2 rounded-lg font-semibold tabular-nums text-center transition-colors border ${
             isDark
               ? 'bg-white/5 border-white/10 text-slate-100 hover:bg-white/10'
-              : 'bg-white border-slate-200/80 text-slate-800 hover:border-slate-300'
+              : 'bg-white border-slate-200/80 text-slate-800 hover:border-slate-300 shadow-[0_1px_1px_rgba(15,23,42,0.03)]'
           }`}
         >
           {clampedZoom}%
         </button>
 
+        {onFitToWidth && (
+          <button
+            type="button"
+            onClick={onFitToWidth}
+            title="Vừa màn hình (Fit)"
+            aria-label="Vừa màn hình"
+            className={`inline-flex items-center gap-1 h-6 px-2 rounded-lg font-semibold text-[11px] whitespace-nowrap shrink-0 transition-colors border ${
+              isDark
+                ? 'bg-white/5 border-white/10 text-slate-200 hover:bg-white/15 hover:text-white'
+                : 'bg-white border-slate-200/80 text-slate-700 hover:bg-slate-50 hover:text-slate-950 shadow-[0_1px_1px_rgba(15,23,42,0.03)]'
+            }`}
+          >
+            <Maximize2 className="w-3 h-3 shrink-0" />
+            <span>Fit</span>
+          </button>
+        )}
+
         {isZoomMenuOpen && (
           <div
             role="menu"
             aria-label="Mức thu phóng nhanh"
-            className={`absolute bottom-full right-0 mb-1.5 w-48 rounded-xl border shadow-xl p-1.5 z-50 ${
+            className={`absolute bottom-full right-0 mb-1.5 w-56 rounded-xl border shadow-xl p-1.5 z-50 ${
               isDark
                 ? 'bg-[#1B2230] border-white/15 text-slate-100'
                 : 'bg-white border-slate-200 text-slate-800'
             }`}
           >
-            <div className="grid grid-cols-3 gap-1">
+            <div className="grid grid-cols-4 gap-1">
               {ZOOM_PRESETS.map((preset) => {
                 const isSelected = clampedZoom === preset;
                 return (
@@ -429,7 +426,7 @@ export function OfficeStatusBar({
                       onZoomChange(preset);
                       setIsZoomMenuOpen(false);
                     }}
-                    className={`px-2 py-1.5 rounded-lg text-[11px] font-semibold tabular-nums transition-colors ${
+                    className={`px-1.5 py-1.5 rounded-lg text-[11px] font-semibold tabular-nums transition-colors ${
                       isSelected
                         ? 'text-white'
                         : isDark
@@ -461,7 +458,7 @@ export function OfficeStatusBar({
                 }`}
               >
                 <Maximize2 className="w-3 h-3" />
-                <span>Vừa chiều rộng trang</span>
+                <span>Vừa màn hình (Fit)</span>
               </button>
             )}
           </div>

@@ -3,6 +3,7 @@ import type { ChangeEvent } from 'react';
 import {
   ArrowDown,
   ArrowLeft,
+  ArrowLeftRight,
   ArrowRight,
   ArrowUp,
   BarChart3,
@@ -12,6 +13,7 @@ import {
   Minus,
   Music,
   PieChart,
+  Plus,
   Square,
   Star,
   Triangle,
@@ -30,6 +32,8 @@ export type PptShapeKind =
   | 'arrowLeft'
   | 'arrowUp'
   | 'arrowDown'
+  | 'plus'
+  | 'arrowDouble'
   | 'star'
   | 'callout'
   | 'line';
@@ -403,9 +407,28 @@ export const PPT_SHAPE_OPTIONS: ReadonlyArray<{
   { kind: 'arrowLeft', label: 'Mũi tên trái', Icon: ArrowLeft },
   { kind: 'arrowUp', label: 'Mũi tên lên', Icon: ArrowUp },
   { kind: 'arrowDown', label: 'Mũi tên xuống', Icon: ArrowDown },
+  { kind: 'plus', label: 'Dấu cộng', Icon: Plus },
+  { kind: 'arrowDouble', label: 'Mũi tên 2 chiều', Icon: ArrowLeftRight },
   { kind: 'star', label: 'Ngôi sao', Icon: Star },
   { kind: 'callout', label: 'Chú thích', Icon: MessageSquare },
   { kind: 'line', label: 'Đường kẻ', Icon: Minus },
+];
+
+export const PPT_QUICK_SHAPES_10: ReadonlyArray<{
+  kind: PptShapeKind;
+  label: string;
+  Icon: typeof Square;
+}> = [
+  { kind: 'rect', label: 'Chữ nhật', Icon: Square },
+  { kind: 'roundRect', label: 'Bo góc', Icon: Square },
+  { kind: 'ellipse', label: 'Hình tròn', Icon: Circle },
+  { kind: 'arrowRight', label: 'Mũi tên phải', Icon: ArrowRight },
+  { kind: 'arrowLeft', label: 'Mũi tên trái', Icon: ArrowLeft },
+  { kind: 'plus', label: 'Dấu cộng', Icon: Plus },
+  { kind: 'line', label: 'Đường kẻ', Icon: Minus },
+  { kind: 'star', label: 'Ngôi sao', Icon: Star },
+  { kind: 'callout', label: 'Chú thích', Icon: MessageSquare },
+  { kind: 'arrowDouble', label: 'Mũi tên 2 chiều', Icon: ArrowLeftRight },
 ];
 
 export function SlideShapeSvg({
@@ -507,6 +530,24 @@ export function SlideShapeSvg({
       {shapeKind === 'arrowDown' && (
         <polygon
           points="30,3 30,62 10,62 50,97 90,62 70,62 70,3"
+          fill={fill}
+          stroke={stroke}
+          strokeWidth={sw}
+          vectorEffect="non-scaling-stroke"
+        />
+      )}
+      {shapeKind === 'plus' && (
+        <polygon
+          points="35,4 65,4 65,35 96,35 96,65 65,65 65,96 35,96 35,65 4,65 4,35 35,35"
+          fill={fill}
+          stroke={stroke}
+          strokeWidth={sw}
+          vectorEffect="non-scaling-stroke"
+        />
+      )}
+      {shapeKind === 'arrowDouble' && (
+        <polygon
+          points="3,50 28,15 28,34 72,34 72,15 97,50 72,85 72,66 28,66 28,85"
           fill={fill}
           stroke={stroke}
           strokeWidth={sw}
