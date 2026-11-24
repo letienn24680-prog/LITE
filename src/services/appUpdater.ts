@@ -16,8 +16,8 @@ export interface AppUpdateCheckResult {
   latest: AppVersionManifest | null;
 }
 
-const FALLBACK_CURRENT_VERSION = '1.0';
-const FALLBACK_CURRENT_BUILD_NUMBER = 1;
+export const CURRENT_BUILD_NUMBER = 2;
+export const CURRENT_APP_VERSION = '1.0.1';
 const REMOTE_VERSION_MANIFEST_URL =
   (import.meta.env.VITE_APP_UPDATE_URL ?? '').trim() ||
   'https://raw.githubusercontent.com/letienn24680-prog/LITE/main/public/version.json';
@@ -32,7 +32,7 @@ function parseBuildNumber(raw: unknown): number {
       return num;
     }
   }
-  return FALLBACK_CURRENT_BUILD_NUMBER;
+  return CURRENT_BUILD_NUMBER;
 }
 
 function isValidManifest(value: unknown): value is AppVersionManifest {
@@ -88,20 +88,20 @@ export async function getCurrentNativeAppInfo(): Promise<{
 }> {
   if (!Capacitor.isNativePlatform()) {
     return {
-      version: FALLBACK_CURRENT_VERSION,
-      buildNumber: FALLBACK_CURRENT_BUILD_NUMBER,
+      version: CURRENT_APP_VERSION,
+      buildNumber: CURRENT_BUILD_NUMBER,
     };
   }
   try {
     const info = await CapacitorApp.getInfo();
     return {
-      version: info.version?.trim() || FALLBACK_CURRENT_VERSION,
+      version: info.version?.trim() || CURRENT_APP_VERSION,
       buildNumber: parseBuildNumber(info.build),
     };
   } catch {
     return {
-      version: FALLBACK_CURRENT_VERSION,
-      buildNumber: FALLBACK_CURRENT_BUILD_NUMBER,
+      version: CURRENT_APP_VERSION,
+      buildNumber: CURRENT_BUILD_NUMBER,
     };
   }
 }
