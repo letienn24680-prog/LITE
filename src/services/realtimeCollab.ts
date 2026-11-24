@@ -209,15 +209,39 @@ export function pickCollaboratorColor(seed: string): string {
   return COLLAB_COLORS[index];
 }
 
+export const PUBLIC_WEB_ORIGIN =
+  (import.meta.env.VITE_PUBLIC_APP_URL ?? '').trim().replace(/\/+$/, '') ||
+  'https://lite-git-main-ai-check-thd.vercel.app';
+
+export function resolvePublicWebOrigin(): string {
+  if (typeof window === 'undefined') {
+    return PUBLIC_WEB_ORIGIN;
+  }
+  const origin = (window.location.origin ?? '').trim();
+  const protocol = (window.location.protocol ?? '').trim().toLowerCase();
+  const lowerOrigin = origin.toLowerCase();
+
+  if (
+    !origin ||
+    origin === 'null' ||
+    lowerOrigin.includes('localhost') ||
+    lowerOrigin.includes('127.0.0.1') ||
+    protocol === 'capacitor:' ||
+    protocol === 'file:' ||
+    protocol === 'ionic:'
+  ) {
+    return PUBLIC_WEB_ORIGIN;
+  }
+
+  return origin.replace(/\/+$/, '');
+}
+
 export function buildCollabShareUrl(
   shareToken: string,
   mode?: 'view' | 'edit'
 ): string {
   const modeSuffix = mode === 'view' || mode === 'edit' ? `&mode=${mode}` : '';
-  if (typeof window === 'undefined') {
-    return `/?share=${encodeURIComponent(shareToken)}${modeSuffix}`;
-  }
-  return `${window.location.origin}/?share=${encodeURIComponent(shareToken)}${modeSuffix}`;
+  return `${resolvePublicWebOrigin()}/?share=${encodeURIComponent(shareToken)}${modeSuffix}`;
 }
 
 export function buildAppDeepLinkShareUrl(

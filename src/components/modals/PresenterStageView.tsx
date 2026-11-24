@@ -30,6 +30,7 @@ import {
   Undo2,
   X,
 } from 'lucide-react';
+import { resolvePublicWebOrigin } from '../../services/realtimeCollab';
 import {
   createPresenterRemoteSession,
   type RemoteCommandPayload,
@@ -127,10 +128,15 @@ function getResponsiveBlockFontSize(
 }
 
 function buildRemotePairingUrl(roomCode: string): string {
+  const origin = resolvePublicWebOrigin();
   if (typeof window === 'undefined') {
-    return `#remote/${encodeURIComponent(roomCode)}`;
+    return `${origin}/#remote/${encodeURIComponent(roomCode)}`;
   }
-  return `${window.location.origin}${window.location.pathname}#remote/${encodeURIComponent(roomCode)}`;
+  const pathname =
+    origin === window.location.origin.replace(/\/+$/, '')
+      ? window.location.pathname
+      : '/';
+  return `${origin}${pathname}#remote/${encodeURIComponent(roomCode)}`;
 }
 
 function buildFallbackSlides(document: DocumentItem): SlidePreviewItem[] {

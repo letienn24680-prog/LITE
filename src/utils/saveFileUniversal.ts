@@ -270,3 +270,153 @@ export async function saveFileUniversal(
     message: `Đã tải xuống "${safeName}".`,
   };
 }
+
+export interface ShareFileResult {
+  method: 'android-share' | 'web-share' | 'web-download' | 'cancelled';
+  message: string;
+}
+
+/**
+ * Shares an exported binary file (DOCX/XLSX/PPTX/PDF) directly through Android's native
+ * Share Sheet (Zalo, Messenger, Facebook, Gmail...) via Directory.Cache + Share.share,
+ * or Web Share API Level 2 (with desktop download fallback).
+ */
+export async function shareFileUniversal(
+  blob: Blob,
+  fileName: string,
+  options?: {
+    mimeType?: string;
+    title?: string;
+    text?: string;
+  }
+): Promise<ShareFileResult> {
+  const safeName = sanitizeFileName(fileName);
+  const mimeType = options?.mimeType || blob.type || 'application/octet-stream';
+  const shareTitle = options?.title || safeName;
+  const shareText = options?.text || `Gửi tệp "${shareTitle}" từ LITE Workspace`;
+
+  // 1. Capacitor Android: save into Directory.Cache and invoke native Share sheet
+  if (Capacitor.isNativePlatform()) {
+    const base64 = await blobToBase64(blob);
+    const cachePath = `LITE_SHARE/${Date.now()}-${safeName}`;
+    await Filesystem.writeFile({
+      path: cachePath,
+      data: base64,
+      directory: Directory.Cache,
+      recursive: true,
+    });
+    const { uri: fileUri } = await Filesystem.getUri({
+      directory: Directory.Cache,
+      path: cachePath,
+    });
+
+    try {
+      await Share.share({
+        title: shareTitle,
+        text: shareText,
+        url: fileUri,
+        dialogTitle: 'Gửi tệp qua Zalo, Messenger...',
+      });
+      return {
+        method: 'android-share',
+        message: `Đã mở bảng chia sẻ cho tệp "${safeName}".`,
+      };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message.toLowerCase() : '';
+      if (msg.includes('cancel')) {
+        return { method: 'cancelled', message: 'Đã hủy chia sẻ tệp.' };
+      }
+      throw error;
+    }
+  }
+
+  // 2. Web Share API with files (mobile browsers & supported Chromium)
+  const normalizedBlob =
+    blob.type === mimeType ? blob : new Blob([blob], { type: mimeType });
+  if (
+    typeof navigator !== 'undefined' &&
+    typeof File !== 'undefined' &&
+    typeof navigator.share === 'function'
+  ) {
+    const fileObj = new File([normalizedBlob], safeName, { type: mimeType });
+    const canShareFiles =
+      typeof navigator.canShare === 'function'
+        ? navigator.canShare({ files: [fileObj] })
+        : false;
+    if (canShareFiles) {
+      try {
+        await navigator.share({
+          files: [fileObj],
+          title: shareTitle,
+          text: shareText,
+        });
+        return {
+          method: 'web-share',
+          message: `Đã chia sẻ tệp "${safeName}".`,
+        };
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return { method: 'cancelled', message: 'Đã hủy chia sẻ tệp.' };
+        }
+        // Fall through to file download fallback on unsupported browsers
+      }
+    }
+  }
+
+  // 3. Fallback (Desktop PC browsers without file sharing): download to device with guidance
+  await saveFileUniversal(normalizedBlob, safeName, {
+    mimeType,
+    shareTitle,
+  });
+  return {
+    method: 'web-download',
+    message: `Trình duyệt máy tính không hỗ trợ gửi tệp trực tiếp — đã tải "${safeName}" về máy để bạn kéo thả vào Zalo / Messenger.`,
+  };
+}
+
+/**
+ * Shares a canonical public URL via Android native Share Sheet or Web Share API,
+ * falling back to clipboard copy when unavailable.
+ */
+export async function shareLinkUniversal(options: {
+  title: string;
+  text?: string;
+  url: string;
+}): Promise<'shared' | 'copied' | 'cancelled'> {
+  if (Capacitor.isNativePlatform()) {
+    try {
+      await Share.share({
+        title: options.title,
+        text: options.text || options.title,
+        url: options.url,
+        dialogTitle: 'Gửi liên kết qua Zalo, Messenger...',
+      });
+      return 'shared';
+    } catch (error) {
+      const msg = error instanceof Error ? error.message.toLowerCase() : '';
+      if (msg.includes('cancel')) {
+        return 'cancelled';
+      }
+    }
+  }
+
+  if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+    try {
+      await navigator.share({
+        title: options.title,
+        text: options.text || options.title,
+        url: options.url,
+      });
+      return 'shared';
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        return 'cancelled';
+      }
+    }
+  }
+
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(options.url);
+  }
+  return 'copied';
+}

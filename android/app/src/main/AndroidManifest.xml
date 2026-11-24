@@ -38,6 +38,17 @@
                 <data android:scheme="liteapp" android:host="open" />
             </intent-filter>
 
+            <!-- Android App Links cho URL chia sẻ công khai HTTPS -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="lite-git-main-ai-check-thd.vercel.app"
+                    android:pathPrefix="/" />
+            </intent-filter>
+
             <!-- Bộ filter 1: Mở trực tiếp tệp tài liệu (ACTION_VIEW) qua content:// hoặc file:// -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

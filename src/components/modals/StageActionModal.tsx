@@ -33,6 +33,7 @@ import {
   revokeDocumentShare,
   saveDocumentShareSettings,
 } from '../../services/shareService';
+import { resolvePublicWebOrigin } from '../../services/realtimeCollab';
 import type {
   DocumentItem,
   DocumentType,
@@ -238,7 +239,8 @@ export function StageActionModal({
   const pairingCode = useMemo(() => buildPairingCode(docId), [docId]);
 
   const remoteUrl = useMemo(() => {
-    const base = `${window.location.origin}${window.location.pathname}`;
+    const origin = resolvePublicWebOrigin();
+    const base = `${origin}${window.location.pathname === '/' ? '/' : window.location.pathname}`;
     return `${base}#remote/${encodeURIComponent(pairingCode)}`;
   }, [pairingCode]);
 

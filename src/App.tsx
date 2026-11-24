@@ -464,16 +464,20 @@ function parseCollabShareFromSearch(search: string): ParsedCollabShareQuery | nu
 function parseCollabShareFromDeepLink(rawUrl: string): ParsedCollabShareQuery | null {
   try {
     const parsed = new URL(rawUrl);
-    if (parsed.protocol.toLowerCase() !== 'liteapp:') {
-      return null;
+    const protocol = parsed.protocol.toLowerCase();
+    if (protocol === 'liteapp:') {
+      const hostOrPath = `${parsed.hostname}${parsed.pathname}`
+        .replace(/^\/+/, '')
+        .toLowerCase();
+      if (hostOrPath !== 'open' && !parsed.searchParams.has('share')) {
+        return null;
+      }
+      return parseCollabShareFromSearch(parsed.search);
     }
-    const hostOrPath = `${parsed.hostname}${parsed.pathname}`
-      .replace(/^\/+/, '')
-      .toLowerCase();
-    if (hostOrPath !== 'open' && !parsed.searchParams.has('share')) {
-      return null;
+    if (protocol === 'https:' || protocol === 'http:') {
+      return parseCollabShareFromSearch(parsed.search);
     }
-    return parseCollabShareFromSearch(parsed.search);
+    return null;
   } catch {
     return null;
   }
@@ -1356,9 +1360,14 @@ export function App() {
       setPendingMigrationDocs([]);
       setLastSyncedAt(null);
       setSyncStatus(isSupabaseConfigured ? 'idle' : 'local');
-      setActiveWorkspaceDocId(null);
-      setLastActiveDocId(null);
-      setCollabSharedDoc(null);
+      const hasActiveCollabInvite = Boolean(
+        parseCollabShareFromSearch(window.location.search)
+      );
+      if (!hasActiveCollabInvite) {
+        setActiveWorkspaceDocId(null);
+        setLastActiveDocId(null);
+        setCollabSharedDoc(null);
+      }
       setActiveModal(null);
       setModalDocOverride(null);
       setActiveUtilityModal(null);
@@ -1437,14 +1446,17 @@ export function App() {
       });
       documentsRef.current = finalGuestDocs;
       setDocuments(finalGuestDocs);
-      setLastActiveDocId(
-        finalGuestDocs.find((d) => !d.deletedAt)?.id ?? null
-      );
+      if (!parseCollabShareFromSearch(window.location.search)) {
+        setLastActiveDocId(
+          finalGuestDocs.find((d) => !d.deletedAt)?.id ?? null
+        );
+      }
       persistDocumentsToStorage(finalGuestDocs, 'guest');
 
       const isSpecialRoute =
         Boolean(parseRemoteRoomFromHash(window.location.hash)) ||
-        Boolean(parseShareTokenFromHash(window.location.hash));
+        Boolean(parseShareTokenFromHash(window.location.hash)) ||
+        Boolean(parseCollabShareFromSearch(window.location.search));
       if (window.location.hash && !isSpecialRoute) {
         window.history.pushState(
           null,

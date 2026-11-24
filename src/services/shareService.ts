@@ -1,6 +1,7 @@
 import { createThumbnailDataUri } from '../data/mockDocuments';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import { getCloudFileObjectUrl } from './cloudSync';
+import { resolvePublicWebOrigin } from './realtimeCollab';
 import {
   getR2ApiBaseUrl,
   getR2PresignedDownloadUrl,
@@ -228,7 +229,12 @@ export async function hashSharePassword(password: string): Promise<string> {
  * Builds the public hash URL for sharing a document without requiring sign-in.
  */
 export function buildPublicShareUrl(shareToken: string): string {
-  const baseUrl = `${window.location.origin}${window.location.pathname}`;
+  const origin = resolvePublicWebOrigin();
+  const pathname =
+    typeof window !== 'undefined' && origin === window.location.origin.replace(/\/+$/, '')
+      ? window.location.pathname
+      : '/';
+  const baseUrl = `${origin}${pathname.startsWith('/') ? pathname : `/${pathname}`}`;
   return `${baseUrl}#share/${encodeURIComponent(shareToken)}`;
 }
 
