@@ -136,35 +136,41 @@ export function GoogleDriveBrowserModal({
 }: GoogleDriveBrowserModalProps) {
   const [searchInput, setSearchInput] = useState<string>('');
   const [appliedQuery, setAppliedQuery] = useState<string>('');
+  const [folderOnly, setFolderOnly] = useState<boolean>(false);
   const [files, setFiles] = useState<GoogleDriveFileItem[]>([]);
   const [isLoadingList, setIsLoadingList] = useState<boolean>(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const loadFiles = useCallback(async (queryText: string) => {
-    setIsLoadingList(true);
-    setErrorMessage(null);
-    setAuthError(null);
+  const loadFiles = useCallback(
+    async (queryText: string, onlyLiteFolder = false) => {
+      setIsLoadingList(true);
+      setErrorMessage(null);
+      setAuthError(null);
 
-    try {
-      const results = await listGoogleDriveFiles(queryText);
-      setFiles(results);
-    } catch (error) {
-      if (error instanceof GoogleDriveAuthError) {
-        setAuthError(error.message);
-        setFiles([]);
-      } else {
-        setErrorMessage(
-          error instanceof Error
-            ? error.message
-            : 'Không thể tải danh sách tệp từ Google Drive.'
-        );
+      try {
+        const results = await listGoogleDriveFiles(queryText, {
+          folderOnly: onlyLiteFolder,
+        });
+        setFiles(results);
+      } catch (error) {
+        if (error instanceof GoogleDriveAuthError) {
+          setAuthError(error.message);
+          setFiles([]);
+        } else {
+          setErrorMessage(
+            error instanceof Error
+              ? error.message
+              : 'Không thể tải danh sách tệp từ Google Drive.'
+          );
+        }
+      } finally {
+        setIsLoadingList(false);
       }
-    } finally {
-      setIsLoadingList(false);
-    }
-  }, []);
+    },
+    []
+  );
 
   // Reset state whenever modal opens
   useEffect(() => {
@@ -178,11 +184,11 @@ export function GoogleDriveBrowserModal({
     setAuthError(null);
 
     if (hasGoogleToken) {
-      void loadFiles('');
+      void loadFiles('', folderOnly);
     } else {
       setFiles([]);
     }
-  }, [isOpen, hasGoogleToken, loadFiles]);
+  }, [isOpen, hasGoogleToken, folderOnly, loadFiles]);
 
   // Debounced search when user types
   useEffect(() => {
@@ -195,13 +201,13 @@ export function GoogleDriveBrowserModal({
     }
     const timer = window.setTimeout(() => {
       setAppliedQuery(trimmed);
-      void loadFiles(trimmed);
+      void loadFiles(trimmed, folderOnly);
     }, 360);
 
     return () => {
       window.clearTimeout(timer);
     };
-  }, [isOpen, hasGoogleToken, searchInput, appliedQuery, loadFiles]);
+  }, [isOpen, hasGoogleToken, searchInput, appliedQuery, folderOnly, loadFiles]);
 
   // Close on Escape when not downloading a file
   useEffect(() => {
@@ -349,7 +355,35 @@ export function GoogleDriveBrowserModal({
           ) : (
             <>
               {/* Search & Refresh Strip */}
-              <div className="shrink-0 px-4 sm:px-6 py-3 bg-white border-b border-[#F0ECE4] flex items-center gap-2">
+              <div className="shrink-0 px-4 sm:px-6 py-3 bg-white border-b border-[#F0ECE4] space-y-2.5">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={isLoadingList || isBusyDownloading}
+                    onClick={() => setFolderOnly(false)}
+                    className={`rounded-lg px-2.5 py-1 text-[11.5px] font-semibold transition-colors ${
+                      !folderOnly
+                        ? 'bg-[#4F46E5] text-white'
+                        : 'bg-[#FAF8F5] text-slate-600 border border-[#EAE5DC] hover:bg-slate-100'
+                    }`}
+                  >
+                    Tất cả Drive
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isLoadingList || isBusyDownloading}
+                    onClick={() => setFolderOnly(true)}
+                    className={`rounded-lg px-2.5 py-1 text-[11.5px] font-semibold transition-colors ${
+                      folderOnly
+                        ? 'bg-[#4F46E5] text-white'
+                        : 'bg-[#FAF8F5] text-slate-600 border border-[#EAE5DC] hover:bg-slate-100'
+                    }`}
+                  >
+                    Thư mục LITE Workspace
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2">
                 <form
                   onSubmit={handleSearchSubmit}
                   className="flex-1 min-w-0 relative flex items-center"
@@ -373,7 +407,7 @@ export function GoogleDriveBrowserModal({
                       onClick={() => {
                         setSearchInput('');
                         setAppliedQuery('');
-                        void loadFiles('');
+                        void loadFiles('', folderOnly);
                       }}
                       aria-label="Xóa từ khóa tìm kiếm"
                       className="absolute right-2 h-7 w-7 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center"
@@ -385,7 +419,7 @@ export function GoogleDriveBrowserModal({
 
                 <button
                   type="button"
-                  onClick={() => void loadFiles(searchInput.trim())}
+                  onClick={() => void loadFiles(searchInput.trim(), folderOnly)}
                   disabled={isLoadingList || isBusyDownloading}
                   title="Làm mới danh sách Google Drive"
                   aria-label="Làm mới danh sách Google Drive"
@@ -395,6 +429,7 @@ export function GoogleDriveBrowserModal({
                     className={`h-4 w-4 ${isLoadingList ? 'animate-spin' : ''}`}
                   />
                 </button>
+                </div>
               </div>
 
               {/* File List */}

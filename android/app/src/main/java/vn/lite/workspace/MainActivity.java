@@ -2,9 +2,14 @@ package vn.lite.workspace;
 
 import android.content.ClipData;
 import android.content.Intent;
+import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.view.Window;
+import android.webkit.JavascriptInterface;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
@@ -13,6 +18,37 @@ public class MainActivity extends BridgeActivity {
     protected void onCreate(Bundle savedInstanceState) {
         normalizeIncomingFileIntent(getIntent());
         super.onCreate(savedInstanceState);
+        applyStatusBarAppearance("#FAF8F5", false);
+        if (this.bridge != null && this.bridge.getWebView() != null) {
+            this.bridge.getWebView().addJavascriptInterface(
+                new LITEAndroidSystemBridge(),
+                "LITEAndroidSystem"
+            );
+        }
+    }
+
+    private void applyStatusBarAppearance(String colorHex, boolean isDarkBackground) {
+        try {
+            Window window = getWindow();
+            if (window == null) {
+                return;
+            }
+            window.setStatusBarColor(Color.parseColor(colorHex));
+            WindowInsetsControllerCompat controller =
+                WindowCompat.getInsetsController(window, window.getDecorView());
+            if (controller != null) {
+                controller.setAppearanceLightStatusBars(!isDarkBackground);
+            }
+        } catch (IllegalArgumentException ignored) {
+            // Ignore malformed color string
+        }
+    }
+
+    private class LITEAndroidSystemBridge {
+        @JavascriptInterface
+        public void setStatusBarTheme(String colorHex, boolean isDarkBackground) {
+            runOnUiThread(() -> applyStatusBarAppearance(colorHex, isDarkBackground));
+        }
     }
 
     @Override

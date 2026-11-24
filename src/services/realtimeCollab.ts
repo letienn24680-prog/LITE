@@ -91,7 +91,7 @@ export const COLLAB_COLORS = [
 
 const SESSION_STORAGE_KEY = 'lite_collab_session_id_v1';
 const LOCAL_COLLAB_SHARES_KEY = 'lite_collab_shares_v1';
-const LOCAL_SAVED_DOCS_KEY = 'lite_saved_documents_v1';
+const LOCAL_SAVED_DOCS_PREFIX = 'lite_saved_documents_v2_';
 const SHARES_TABLE = 'document_shares';
 const DOCUMENTS_TABLE = 'documents';
 const COLLABORATORS_TABLE = 'document_collaborators';
@@ -724,9 +724,10 @@ export async function revokeShareLink(
   }
 }
 
-function readLocalSavedDocuments(): DocumentItem[] {
+function readLocalSavedDocuments(currentUserId?: string): DocumentItem[] {
   try {
-    const raw = window.localStorage.getItem(LOCAL_SAVED_DOCS_KEY);
+    const scope = currentUserId?.trim() || 'guest';
+    const raw = window.localStorage.getItem(`${LOCAL_SAVED_DOCS_PREFIX}${scope}`);
     if (!raw) {
       return [];
     }
@@ -1083,7 +1084,7 @@ export async function resolveSharedDocument(
   }
 
   // Fallback by documentId in local saved documents when shareAccess='link' or isShared=true
-  const localSaved = readLocalSavedDocuments().find(
+  const localSaved = readLocalSavedDocuments(currentUserId).find(
     (doc) =>
       doc.id === cleanToken && (doc.shareAccess === 'link' || Boolean(doc.isShared))
   );

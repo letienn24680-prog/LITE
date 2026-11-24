@@ -99,14 +99,15 @@ import {
 } from '../../utils/fileExporter';
 import { downloadDocumentAsPdf } from '../../utils/quickConverter';
 import { useWorkspaceSync } from '../../contexts/WorkspaceSyncContext';
+import { syncAndroidStatusBar } from '../../utils/androidSystemUi';
 import { useDocumentPinchZoom } from '../../hooks/useDocumentPinchZoom';
 import {
-  WordAiToolsModal,
   WordCitationModal,
   WordDrawingOverlay,
   WordFileInfoModal,
   WordFootnoteModal,
 } from './WordOnlyOfficePanels';
+import { AIToolsDrawer } from '../ai/AIToolsDrawer';
 import type {
   CollaboratorPresence,
   DocRealtimePatch,
@@ -729,6 +730,7 @@ export function WordWorkspace({
   const [aiToolsModalTab, setAiToolsModalTab] = useState<
     'summary' | 'grammar' | 'expand' | null
   >(null);
+  const [selectedAiText, setSelectedAiText] = useState<string>('');
   const [imageResizeTick, setImageResizeTick] = useState<number>(0);
 
   const [paperTheme, setPaperTheme] =
@@ -1048,7 +1050,9 @@ export function WordWorkspace({
     const range = selection.getRangeAt(0);
     if (editorEl.contains(range.commonAncestorContainer)) {
       savedRangeRef.current = range.cloneRange();
-      const text = selection.toString().trim();
+      const rawSelected = selection.toString();
+      setSelectedAiText(rawSelected);
+      const text = rawSelected.trim();
       if (text) {
         setSelectedQuote(text.slice(0, 180));
       }
@@ -1441,6 +1445,11 @@ export function WordWorkspace({
     };
   }, [autoSaveEnabled, isDirty, isReadOnly, editRevision, handleSave]);
 
+  const executeFormatCommandRef = useRef<
+    (command: string, value?: string) => void
+  >(() => undefined);
+  const handleExportPdfRef = useRef<() => Promise<void>>(async () => undefined);
+
   // Keyboard shortcuts: Escape, Ctrl/Cmd+S (save), Ctrl/Cmd+F / Ctrl/Cmd+H (find & replace)
   useEffect(() => {
     if (isModalOpen) {
@@ -1451,6 +1460,39 @@ export function WordWorkspace({
         event.preventDefault();
         if (!isReadOnly) {
           handleSave();
+        }
+        return;
+      }
+
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === 'p'
+      ) {
+        event.preventDefault();
+        void handleExportPdfRef.current();
+        return;
+      }
+
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === 'z'
+      ) {
+        if (!isReadOnly && !isDocProtected) {
+          event.preventDefault();
+          executeFormatCommandRef.current('undo');
+        }
+        return;
+      }
+
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        (event.key.toLowerCase() === 'y' ||
+          (event.shiftKey && event.key.toLowerCase() === 'z'))
+      ) {
+        if (!isReadOnly && !isDocProtected) {
+          event.preventDefault();
+          executeFormatCommandRef.current('redo');
         }
         return;
       }
@@ -1505,7 +1547,18 @@ export function WordWorkspace({
     isReadOnly,
     openPopover,
     handleSave,
+    isDocProtected,
   ]);
+
+  useEffect(() => {
+    if (paperTheme === 'dark') {
+      syncAndroidStatusBar({ color: '#141923', isDarkBackground: true });
+    } else if (paperTheme === 'sepia') {
+      syncAndroidStatusBar({ color: '#F7EFE5', isDarkBackground: false });
+    } else {
+      syncAndroidStatusBar({ color: '#FFFFFF', isDarkBackground: false });
+    }
+  }, [paperTheme]);
 
   const flushBroadcastHtml = useCallback((htmlToSend: string) => {
     const plain = (editorRef.current?.textContent ?? '')
@@ -1704,6 +1757,7 @@ export function WordWorkspace({
       handleEditorMutation,
     ]
   );
+  executeFormatCommandRef.current = executeFormatCommand;
 
   // Auto-reset drawing tool when leaving Vẽ tab or entering Read/Protected mode
   useEffect(() => {
@@ -2332,6 +2386,7 @@ export function WordWorkspace({
       setIsExporting(false);
     }
   };
+  handleExportPdfRef.current = handleExportPdfFromFileTab;
 
   const handleClipboardPaste = async () => {
     if (isReadOnly || isDocProtected) return;
@@ -2630,64 +2685,6 @@ export function WordWorkspace({
       ul.appendChild(li);
     }
     handleEditorMutation();
-  };
-
-  const handleApplyAiGrammarFixes = (
-    fixes: Array<{ find: string; replace: string }>
-  ): number => {
-    const editorEl = editorRef.current;
-    if (!editorEl || isReadOnly || isDocProtected || fixes.length === 0) {
-      return 0;
-    }
-    if (wordEditMode === 'original') {
-      editorEl.contentEditable = 'true';
-      setWordEditMode('edit');
-    }
-    const walker = window.document.createTreeWalker(
-      editorEl,
-      NodeFilter.SHOW_TEXT,
-      {
-        acceptNode: (node) => {
-          const parent = node.parentElement;
-          if (!parent || parent.closest('style, script')) {
-            return NodeFilter.FILTER_REJECT;
-          }
-          return node.nodeValue && node.nodeValue.length > 0
-            ? NodeFilter.FILTER_ACCEPT
-            : NodeFilter.FILTER_REJECT;
-        },
-      }
-    );
-
-    const textNodes: Text[] = [];
-    let current = walker.nextNode();
-    while (current) {
-      if (current instanceof Text) {
-        textNodes.push(current);
-      }
-      current = walker.nextNode();
-    }
-
-    let appliedCount = 0;
-    for (const node of textNodes) {
-      let val = node.nodeValue ?? '';
-      let changed = false;
-      for (const fix of fixes) {
-        if (fix.find && val.includes(fix.find)) {
-          val = val.split(fix.find).join(fix.replace);
-          appliedCount += 1;
-          changed = true;
-        }
-      }
-      if (changed) {
-        node.nodeValue = val;
-      }
-    }
-
-    if (appliedCount > 0) {
-      handleEditorMutation();
-    }
-    return appliedCount;
   };
 
   const handleToggleDocProtect = () => {
@@ -4555,7 +4552,11 @@ export function WordWorkspace({
               <div className="flex items-center gap-1.5 shrink-0">
                 <button
                   type="button"
-                  onClick={() => setAiToolsModalTab('summary')}
+                  onMouseDown={handlePreventMouseDown}
+                  onClick={() => {
+                    captureCurrentSelection();
+                    setAiToolsModalTab('summary');
+                  }}
                   className={toolbarBtnClass(aiToolsModalTab === 'summary')}
                 >
                   <Sparkles className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
@@ -4564,7 +4565,11 @@ export function WordWorkspace({
 
                 <button
                   type="button"
-                  onClick={() => setAiToolsModalTab('grammar')}
+                  onMouseDown={handlePreventMouseDown}
+                  onClick={() => {
+                    captureCurrentSelection();
+                    setAiToolsModalTab('grammar');
+                  }}
                   className={toolbarBtnClass(aiToolsModalTab === 'grammar')}
                 >
                   <SpellCheck2 className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
@@ -4573,7 +4578,11 @@ export function WordWorkspace({
 
                 <button
                   type="button"
-                  onClick={() => setAiToolsModalTab('expand')}
+                  onMouseDown={handlePreventMouseDown}
+                  onClick={() => {
+                    captureCurrentSelection();
+                    setAiToolsModalTab('expand');
+                  }}
                   className={toolbarBtnClass(aiToolsModalTab === 'expand')}
                 >
                   <Wand2 className="h-3.5 w-3.5 text-[#185ABD] mr-1" />
@@ -5581,29 +5590,41 @@ export function WordWorkspace({
         onClose={() => setIsCitationModalOpen(false)}
       />
 
-      <WordAiToolsModal
+      <AIToolsDrawer
         isOpen={aiToolsModalTab !== null}
-        initialTab={aiToolsModalTab ?? 'summary'}
+        mode="word"
+        initialAction={aiToolsModalTab ?? 'summary'}
         isDark={isDark}
-        documentTitle={document.title}
-        plainText={(editorRef.current?.innerText ?? '').trim()}
-        selectedText={selectedQuote}
-        headings={outlineEntries.map((entry) => entry.section.title)}
         isReadOnly={isEditingLocked}
-        onInsertHtmlAtTop={(html) => {
+        documentTitle={document.title}
+        wordPlainText={(editorRef.current?.innerText ?? '').trim()}
+        wordSelectedText={selectedAiText}
+        onWordInsertContent={({ html }) => {
           const editorEl = editorRef.current;
           if (!editorEl || isEditingLocked) return;
-          const wrapper = window.document.createElement('div');
-          wrapper.innerHTML = html;
-          const targetRoot =
-            editorEl.querySelector('section.lite-docx') ?? editorEl;
-          targetRoot.insertBefore(wrapper, targetRoot.firstChild);
-          handleEditorMutation();
+          if (savedRangeRef.current && !savedRangeRef.current.collapsed) {
+            savedRangeRef.current.collapse(false);
+          }
+          if (savedRangeRef.current) {
+            executeFormatCommand('insertHTML', html);
+          } else {
+            const wrapper = window.document.createElement('div');
+            wrapper.innerHTML = html;
+            const targetRoot =
+              editorEl.querySelector('section.lite-docx') ?? editorEl;
+            targetRoot.appendChild(wrapper);
+            handleEditorMutation();
+          }
+          setAiToolsModalTab(null);
         }}
-        onInsertHtmlAtCursor={(html) => {
-          executeFormatCommand('insertHTML', html);
+        onWordReplaceSelection={({ html }) => {
+          if (isEditingLocked) return;
+          if (savedRangeRef.current && !savedRangeRef.current.collapsed) {
+            executeFormatCommand('insertHTML', html);
+            setSelectedAiText('');
+            setAiToolsModalTab(null);
+          }
         }}
-        onApplyGrammarFixes={handleApplyAiGrammarFixes}
         onClose={() => setAiToolsModalTab(null)}
       />
     </div>

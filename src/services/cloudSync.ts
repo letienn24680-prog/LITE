@@ -9,6 +9,7 @@ import {
 import type {
   CellStyle,
   CloudUserSummary,
+  DocumentFolder,
   DocumentItem,
   DocumentType,
   ExcelChartItem,
@@ -37,6 +38,7 @@ import type {
 
 const STORAGE_BUCKET = 'user-files';
 const DOCUMENTS_TABLE = 'documents';
+const FOLDERS_TABLE = 'folders';
 const MAX_INLINE_DATA_URI_CHARS_WITH_BINARY = 96_000;
 const MAX_INLINE_DATA_URI_CHARS_NO_BINARY = 350_000;
 const MAX_SLIDE_INLINE_IMAGE_BUDGET_CHARS = 900_000;
@@ -77,6 +79,8 @@ export interface CloudParsedContent {
   wordDrawings?: WordDrawingStroke[];
   wordProtected?: boolean;
   slideProtected?: boolean;
+  folderId?: string | null;
+  deletedAt?: number | null;
 }
 
 interface CloudDocumentRow {
@@ -1293,6 +1297,16 @@ function normalizeParsedContent(
   if (typeof raw.slideProtected === 'boolean') {
     normalized.slideProtected = raw.slideProtected;
   }
+  if (typeof raw.folderId === 'string' && raw.folderId.trim()) {
+    normalized.folderId = raw.folderId.trim();
+  } else if (raw.folderId === null) {
+    normalized.folderId = null;
+  }
+  if (typeof raw.deletedAt === 'number' && Number.isFinite(raw.deletedAt)) {
+    normalized.deletedAt = raw.deletedAt;
+  } else if (raw.deletedAt === null) {
+    normalized.deletedAt = null;
+  }
 
   return normalized;
 }
@@ -1370,6 +1384,8 @@ function mapCloudRowToDocumentItem(row: CloudDocumentRow): DocumentItem {
     pageCount: typeof row.page_count === 'number' ? row.page_count : undefined,
     fileSize: computedFileSize,
     folder: row.folder ?? undefined,
+    folderId: parsed.folderId ?? undefined,
+    deletedAt: parsed.deletedAt ?? undefined,
     sheets: parsed.sheets,
     pdfPages: parsed.pdfPages,
     wordParagraphs: parsed.wordParagraphs,
@@ -1902,6 +1918,12 @@ export async function upsertCloudDocument(
   if (typeof doc.slideProtected === 'boolean') {
     parsedContent.slideProtected = doc.slideProtected;
   }
+  if (doc.folderId !== undefined) {
+    parsedContent.folderId = doc.folderId ?? null;
+  }
+  if (doc.deletedAt !== undefined) {
+    parsedContent.deletedAt = doc.deletedAt ?? null;
+  }
 
   const touchUpdatedAt = options?.touchUpdatedAt !== false;
   const nowIso = new Date().toISOString();
@@ -2093,5 +2115,87 @@ export async function deleteCloudDocument(
     } catch {
       // Best-effort Cloudflare R2 cleanup
     }
+  }
+}
+
+interface CloudFolderRow {
+  id: string;
+  user_id: string;
+  name: string;
+  color: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export async function fetchUserFolders(
+  userId: string
+): Promise<DocumentFolder[] | null> {
+  if (!isSupabaseConfigured || !supabase) {
+    return null;
+  }
+  try {
+    const { data, error } = await supabase
+      .from(FOLDERS_TABLE)
+      .select('id, user_id, name, color, created_at, updated_at')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: true });
+
+    if (error || !Array.isArray(data)) {
+      return null;
+    }
+
+    return (data as CloudFolderRow[]).map((row) => ({
+      id: row.id,
+      name: row.name?.trim() || 'Thư mục mới',
+      color: row.color?.trim() || '#4F46E5',
+      userId: row.user_id,
+      ownerScope: row.user_id,
+      createdAt: row.created_at ?? new Date().toISOString(),
+      updatedAt: row.updated_at ?? undefined,
+    }));
+  } catch {
+    return null;
+  }
+}
+
+export async function upsertCloudFolder(
+  userId: string,
+  folder: DocumentFolder
+): Promise<void> {
+  if (!isSupabaseConfigured || !supabase) {
+    return;
+  }
+  try {
+    await supabase.from(FOLDERS_TABLE).upsert(
+      {
+        id: folder.id,
+        user_id: userId,
+        name: folder.name.trim() || 'Thư mục mới',
+        color: folder.color || '#4F46E5',
+        created_at: folder.createdAt || new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id,id' }
+    );
+  } catch {
+    // Graceful when folders table migration has not yet been applied
+  }
+}
+
+export async function deleteCloudFolder(
+  userId: string,
+  folderId: string
+): Promise<void> {
+  if (!isSupabaseConfigured || !supabase) {
+    return;
+  }
+  try {
+    await supabase
+      .from(FOLDERS_TABLE)
+      .delete()
+      .eq('user_id', userId)
+      .eq('id', folderId);
+  } catch {
+    // Graceful when folders table migration has not yet been applied
   }
 }

@@ -125,6 +125,7 @@ import { useDocumentPinchZoom } from '../../hooks/useDocumentPinchZoom';
 import { CustomVerticalScrollbar } from '../ui/CustomVerticalScrollbar';
 import { OfficeStatusBar } from './OfficeStatusBar';
 import { WorkspaceTopBar } from './WorkspaceTopBar';
+import { AIToolsDrawer } from '../ai/AIToolsDrawer';
 import {
   adjustNumFmtDecimals,
   computeAutoFillValue,
@@ -2403,12 +2404,21 @@ export function ExcelWorkspace({
     ]
   );
 
+  const handlePrintSheetRef = useRef<() => void>(() => window.print());
+
   useEffect(() => {
     const handleWindowKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (isModalOpen || isReadOnly) return;
+      if (isModalOpen) return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
         event.preventDefault();
-        handleSave();
+        if (!isReadOnly) {
+          handleSave();
+        }
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'p') {
+        event.preventDefault();
+        handlePrintSheetRef.current();
       }
     };
     window.addEventListener('keydown', handleWindowKeyDown);
@@ -2727,6 +2737,7 @@ export function ExcelWorkspace({
     } }`;
     window.print();
   };
+  handlePrintSheetRef.current = handlePrintSheet;
 
   const handleCopyCells = useCallback(() => {
     if (!normalizedRange) return;
@@ -8736,10 +8747,29 @@ export function ExcelWorkspace({
         }}
       />
 
-      {/* ONLYOFFICE AI Tools Modal (Tóm tắt / Công thức tiếng Việt / Kiểm tra lỗi & trùng lặp) */}
+      {/* ONLYOFFICE AI Tools Drawer (Công thức tiếng Việt & Tóm tắt số liệu) */}
+      <AIToolsDrawer
+        isOpen={aiModalTab === 'summary' || aiModalTab === 'formula'}
+        mode="excel"
+        initialAction={aiModalTab ?? 'formula'}
+        isReadOnly={isSheetProtected}
+        documentTitle={document.title}
+        excelSheetName={activeSheet.name}
+        excelColumns={activeSheet.columns}
+        excelRows={activeSheet.rows}
+        excelActiveCellRef={rangeLabel}
+        onExcelInsertFormula={(formula) => {
+          handleAiInsertFormula(formula);
+          setAiModalTab(null);
+        }}
+        onExcelOpenAudit={() => setAiModalTab('audit')}
+        onClose={() => setAiModalTab(null)}
+      />
+
+      {/* ONLYOFFICE AI Audit Modal (Phát hiện lỗi & trùng lặp) */}
       <ExcelAiToolsModal
-        isOpen={aiModalTab !== null}
-        initialTab={aiModalTab ?? 'summary'}
+        isOpen={aiModalTab === 'audit'}
+        initialTab="audit"
         sheetName={activeSheet.name}
         rows={activeSheet.rows}
         evaluatedMatrix={evaluatedMatrix}

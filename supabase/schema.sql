@@ -27,9 +27,57 @@ create table if not exists public.documents (
   primary key (user_id, id)
 );
 
--- Bổ sung cột r2_object_key nếu bảng documents đã được tạo từ phiên bản trước
+-- Bổ sung cột r2_object_key, folder_id, deleted_at nếu bảng documents đã được tạo từ phiên bản trước
 alter table public.documents
   add column if not exists r2_object_key text;
+
+alter table public.documents
+  add column if not exists folder_id text;
+
+alter table public.documents
+  add column if not exists deleted_at bigint;
+
+-- 1b. Bảng lưu trữ thư mục theo từng user
+create table if not exists public.folders (
+  id text not null,
+  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  name text not null,
+  color text not null default '#4F46E5',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
+);
+
+alter table public.folders enable row level security;
+
+drop policy if exists "folders_select_own" on public.folders;
+create policy "folders_select_own"
+  on public.folders
+  for select
+  to authenticated
+  using (auth.uid() = user_id);
+
+drop policy if exists "folders_insert_own" on public.folders;
+create policy "folders_insert_own"
+  on public.folders
+  for insert
+  to authenticated
+  with check (auth.uid() = user_id);
+
+drop policy if exists "folders_update_own" on public.folders;
+create policy "folders_update_own"
+  on public.folders
+  for update
+  to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+drop policy if exists "folders_delete_own" on public.folders;
+create policy "folders_delete_own"
+  on public.folders
+  for delete
+  to authenticated
+  using (auth.uid() = user_id);
 
 -- 2. Index phục vụ sắp xếp tài liệu mở/chỉnh sửa gần đây theo từng tài khoản
 create index if not exists idx_documents_user_last_accessed

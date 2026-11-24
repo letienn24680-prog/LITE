@@ -6,12 +6,16 @@ import {
   CheckCircle2,
   Cloud,
   CloudOff,
+  Eye,
+  EyeOff,
+  KeyRound,
   Loader2,
   LogIn,
   LogOut,
   Moon,
   RefreshCw,
   Settings,
+  Sparkles,
   Sun,
   CheckCheck,
   Copy,
@@ -158,6 +162,7 @@ export function SettingsModal({
   const [allowedTableMissing, setAllowedTableMissing] = useState<boolean>(false);
   const [allowedFeedback, setAllowedFeedback] = useState<string | null>(null);
   const [copiedSql, setCopiedSql] = useState<boolean>(false);
+  const [showGeminiKey, setShowGeminiKey] = useState<boolean>(false);
 
   const refreshAllowedEmails = async () => {
     if (!isSupabaseConfigured || !user) return;
@@ -494,6 +499,83 @@ export function SettingsModal({
                       </button>
                     );
                   })}
+                </div>
+              </section>
+
+              {/* 3.5 AI Tools / Gemini API Key */}
+              <section aria-labelledby="settings-ai-heading" className="space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <h3
+                    id="settings-ai-heading"
+                    className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500"
+                  >
+                    <Sparkles className="h-3.5 w-3.5 text-indigo-600" />
+                    <span>Trợ lý AI Tools (Gemini API)</span>
+                  </h3>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[10.5px] font-semibold ${
+                      settings.geminiApiKey?.trim()
+                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                        : 'bg-slate-100 text-slate-600'
+                    }`}
+                  >
+                    {settings.geminiApiKey?.trim()
+                      ? 'Đã gắn khóa Gemini'
+                      : 'Chế độ cục bộ (Offline)'}
+                  </span>
+                </div>
+
+                <div className="rounded-2xl border border-[#EAE5DC] bg-[#FAF8F5] p-4 space-y-2.5">
+                  <label
+                    htmlFor="settings-gemini-key"
+                    className="block text-xs font-semibold text-slate-800"
+                  >
+                    Khóa Gemini API cá nhân (tùy chọn)
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1 min-w-0">
+                      <KeyRound className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                      <input
+                        id="settings-gemini-key"
+                        type={showGeminiKey ? 'text' : 'password'}
+                        value={settings.geminiApiKey ?? ''}
+                        onChange={(event) =>
+                          onUpdateSettings({
+                            geminiApiKey: event.target.value,
+                          })
+                        }
+                        placeholder="AIzaSy... (để trống nếu dùng bộ xử lý cục bộ)"
+                        autoComplete="off"
+                        spellCheck={false}
+                        className="w-full rounded-xl border border-[#DDD6CA] bg-white py-2 pl-8 pr-9 text-xs text-slate-900 placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowGeminiKey((prev) => !prev)}
+                        aria-label={showGeminiKey ? 'Ẩn khóa API' : 'Hiện khóa API'}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                      >
+                        {showGeminiKey ? (
+                          <EyeOff className="h-3.5 w-3.5" />
+                        ) : (
+                          <Eye className="h-3.5 w-3.5" />
+                        )}
+                      </button>
+                    </div>
+                    {settings.geminiApiKey?.trim() && (
+                      <button
+                        type="button"
+                        onClick={() => onUpdateSettings({ geminiApiKey: '' })}
+                        className="shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 hover:bg-rose-50 hover:text-rose-600"
+                      >
+                        Xóa
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-slate-500">
+                    Khóa chỉ lưu trên trình duyệt/thiết bị này và được dùng trực tiếp khi chạy{' '}
+                    <strong>AI Tools</strong> trong Word, Excel và PowerPoint. Khi ngoại tuyến hoặc không nhập khóa, LITE tự động chuyển sang bộ xử lý thông minh cục bộ.
+                  </p>
                 </div>
               </section>
 

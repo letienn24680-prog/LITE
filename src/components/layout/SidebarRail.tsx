@@ -11,6 +11,7 @@ import {
   Presentation,
   Settings,
   Share2,
+  Trash2,
   User,
 } from 'lucide-react';
 import type { CloudUserSummary, SidebarNavKey, SyncStatus } from '../../types/document';
@@ -18,6 +19,7 @@ import type { CloudUserSummary, SidebarNavKey, SyncStatus } from '../../types/do
 export interface SidebarRailProps {
   activeNav: SidebarNavKey;
   onSelectNav: (nav: SidebarNavKey) => void;
+  trashCount?: number;
   currentUser?: CloudUserSummary | null;
   syncStatus?: SyncStatus;
   onOpenSettings?: () => void;
@@ -39,6 +41,7 @@ const NAV_ITEMS: readonly NavItemConfig[] = [
   { key: 'pdf', label: 'PDF', icon: BookOpen },
   { key: 'folders', label: 'Vị trí', icon: Folder },
   { key: 'shared', label: 'Chia sẻ', icon: Share2 },
+  { key: 'trash', label: 'Thùng rác', icon: Trash2 },
 ];
 
 function getUserInitial(user: CloudUserSummary): string {
@@ -49,6 +52,7 @@ function getUserInitial(user: CloudUserSummary): string {
 export function SidebarRail({
   activeNav,
   onSelectNav,
+  trashCount = 0,
   currentUser = null,
   syncStatus = 'local',
   onOpenSettings,
@@ -130,10 +134,17 @@ export function SidebarRail({
                     : 'text-slate-500 hover:bg-[#F6F3EE] hover:text-slate-800'
                 }`}
               >
-                <Icon
-                  className="h-[19px] w-[19px] shrink-0 transition-transform duration-150 group-hover:scale-[1.04]"
-                  strokeWidth={isActive ? 2.15 : 1.75}
-                />
+                <div className="relative">
+                  <Icon
+                    className="h-[19px] w-[19px] shrink-0 transition-transform duration-150 group-hover:scale-[1.04]"
+                    strokeWidth={isActive ? 2.15 : 1.75}
+                  />
+                  {item.key === 'trash' && trashCount > 0 && (
+                    <span className="absolute -right-2 -top-1.5 inline-flex min-w-[16px] items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold leading-[14px] text-white">
+                      {trashCount > 99 ? '99+' : trashCount}
+                    </span>
+                  )}
+                </div>
                 <span className="text-[11px] font-medium leading-none tracking-[-0.01em]">
                   {item.label}
                 </span>

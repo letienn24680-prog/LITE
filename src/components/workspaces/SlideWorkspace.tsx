@@ -116,6 +116,7 @@ import {
 } from '../../utils/fileExporter';
 import { downloadDocumentAsPdf } from '../../utils/quickConverter';
 import { useWorkspaceSync } from '../../contexts/WorkspaceSyncContext';
+import { syncAndroidStatusBar } from '../../utils/androidSystemUi';
 import type {
   CollaboratorPresence,
   DocRealtimePatch,
@@ -148,6 +149,7 @@ import {
   SlideFileInfoModal,
 } from './SlideOnlyOfficePanels';
 import { WorkspaceTopBar } from './WorkspaceTopBar';
+import { AIToolsDrawer } from '../ai/AIToolsDrawer';
 
 export interface SlideWorkspaceProps {
   document: DocumentItem;
@@ -2752,6 +2754,23 @@ export function SlideWorkspace({
         return;
       }
 
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'p') {
+        event.preventDefault();
+        handlePrintDeck();
+        return;
+      }
+
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === 'z' &&
+        !isEditableElement(event.target)
+      ) {
+        event.preventDefault();
+        handleUndoSlideStroke();
+        return;
+      }
+
       if (event.key === 'Escape') {
         if (thumbContextMenu) {
           setThumbContextMenu(null);
@@ -2822,9 +2841,17 @@ export function SlideWorkspace({
       }
     };
 
+    const handleShortcutSlideshow = () => {
+      if (!isSlideshowActive) {
+        startSlideshow(0);
+      }
+    };
+
     window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('lite:shortcut-slideshow', handleShortcutSlideshow);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('lite:shortcut-slideshow', handleShortcutSlideshow);
     };
   }, [
     slides.length,
@@ -2856,6 +2883,14 @@ export function SlideWorkspace({
     handleSave,
     exitSlideshow,
   ]);
+
+  useEffect(() => {
+    if (isSlideshowActive) {
+      syncAndroidStatusBar({ color: '#000000', isDarkBackground: true });
+    } else {
+      syncAndroidStatusBar({ color: '#FFFFFF', isDarkBackground: false });
+    }
+  }, [isSlideshowActive]);
 
   // Keep active slide thumbnail smoothly scrolled into view
   useEffect(() => {
@@ -9298,9 +9333,170 @@ export function SlideWorkspace({
         onClose={() => setIsFileInfoOpen(false)}
       />
 
-      {/* Slide AI Tools Modal */}
+      {/* PowerPoint AI Tools Drawer (Sinh dàn ý & tạo hàng loạt slide) */}
+      <AIToolsDrawer
+        isOpen={aiModalState.isOpen && aiModalState.initialTab === 'generate'}
+        mode="pptx"
+        initialAction="generate"
+        isReadOnly={isEditingLocked}
+        documentTitle={document.title}
+        pptxSlideCount={slides.length}
+        onPptxAppendSlides={(draftSlides) => {
+          const refSlide = slides[safeSlideIdx] ?? slides[0];
+          const accentColor = refSlide?.accentColor || '#C43E1C';
+          const backgroundColor = refSlide?.backgroundColor || '#FFFFFF';
+          const backgroundGradient = refSlide?.backgroundGradient;
+          const slideWidthRatio = refSlide?.slideWidthRatio;
+          const stamp = Date.now();
+
+          const created: SlidePreviewItem[] = draftSlides.map((draft, idx) => {
+            const slideId = `ai-slide-${stamp}-${idx + 1}`;
+            const isHero = idx === 0;
+            const blocks: SlideTextBlock[] = isHero
+              ? [
+                  {
+                    id: `${slideId}-accent-bar`,
+                    text: '',
+                    fontSize: 12,
+                    kind: 'shape',
+                    shapeKind: 'rect',
+                    fillColor: accentColor,
+                    borderColor: accentColor,
+                    borderWidthPx: 0,
+                    xPct: 35,
+                    yPct: 22,
+                    wPct: 30,
+                    hPct: 1.5,
+                  },
+                  {
+                    id: `${slideId}-title`,
+                    text: draft.title,
+                    fontSize: 36,
+                    bold: true,
+                    color: '#1E293B',
+                    align: 'center',
+                    valign: 'middle',
+                    role: 'title',
+                    xPct: 8,
+                    yPct: 27,
+                    wPct: 84,
+                    hPct: 22,
+                  },
+                  {
+                    id: `${slideId}-subtitle`,
+                    text: draft.subtitle || draft.bullets.join(' · '),
+                    fontSize: 18,
+                    color: '#475569',
+                    align: 'center',
+                    valign: 'top',
+                    role: 'subtitle',
+                    xPct: 14,
+                    yPct: 52,
+                    wPct: 72,
+                    hPct: 16,
+                  },
+                  {
+                    id: `${slideId}-points`,
+                    text: draft.bullets.map((b) => `• ${b}`).join('\n'),
+                    fontSize: 15,
+                    color: '#334155',
+                    align: 'center',
+                    valign: 'top',
+                    role: 'body',
+                    xPct: 14,
+                    yPct: 70,
+                    wPct: 72,
+                    hPct: 22,
+                  },
+                ]
+              : [
+                  {
+                    id: `${slideId}-accent-bar`,
+                    text: '',
+                    fontSize: 12,
+                    kind: 'shape',
+                    shapeKind: 'rect',
+                    fillColor: accentColor,
+                    borderColor: accentColor,
+                    borderWidthPx: 0,
+                    xPct: 6,
+                    yPct: 8,
+                    wPct: 1.2,
+                    hPct: 12,
+                  },
+                  {
+                    id: `${slideId}-title`,
+                    text: draft.title,
+                    fontSize: 28,
+                    bold: true,
+                    color: '#1E293B',
+                    align: 'left',
+                    valign: 'middle',
+                    role: 'title',
+                    xPct: 9,
+                    yPct: 7,
+                    wPct: 85,
+                    hPct: 14,
+                  },
+                  ...(draft.subtitle
+                    ? [
+                        {
+                          id: `${slideId}-subtitle`,
+                          text: draft.subtitle,
+                          fontSize: 15,
+                          color: accentColor,
+                          bold: true,
+                          align: 'left' as const,
+                          valign: 'top' as const,
+                          role: 'subtitle' as const,
+                          xPct: 9,
+                          yPct: 22,
+                          wPct: 85,
+                          hPct: 8,
+                        },
+                      ]
+                    : []),
+                  {
+                    id: `${slideId}-body`,
+                    text: draft.bullets.map((b) => `• ${b}`).join('\n'),
+                    fontSize: 18,
+                    lineHeight: 1.55,
+                    color: '#334155',
+                    align: 'left',
+                    valign: 'top',
+                    role: 'body',
+                    xPct: 9,
+                    yPct: draft.subtitle ? 32 : 25,
+                    wPct: 84,
+                    hPct: 58,
+                  },
+                ];
+
+            return {
+              id: slideId,
+              index: slides.length + idx + 1,
+              title: draft.title,
+              summary: draft.bullets.join(' · '),
+              bullets: draft.bullets,
+              speakerNote: draft.speakerNote,
+              accentColor,
+              backgroundColor,
+              backgroundGradient,
+              slideWidthRatio,
+              blocks,
+            };
+          });
+          handleAppendAiSlides(created);
+        }}
+        onPptxOpenOtherAiTab={(tab) =>
+          setAiModalState({ isOpen: true, initialTab: tab })
+        }
+        onClose={() => setAiModalState((prev) => ({ ...prev, isOpen: false }))}
+      />
+
+      {/* Slide AI Tools Modal (Tóm tắt / Speaker Notes) */}
       <SlideAiToolsModal
-        isOpen={aiModalState.isOpen}
+        isOpen={aiModalState.isOpen && aiModalState.initialTab !== 'generate'}
         initialTab={aiModalState.initialTab}
         documentTitle={document.title}
         slides={slides}

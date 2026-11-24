@@ -7,7 +7,18 @@ export type SidebarNavKey =
   | 'excel'
   | 'pdf'
   | 'folders'
-  | 'shared';
+  | 'shared'
+  | 'trash';
+
+export interface DocumentFolder {
+  id: string;
+  name: string;
+  color: string;
+  userId?: string;
+  ownerScope?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
 
 export type FilterKey = 'all' | 'pptx' | 'docx' | 'xlsx' | 'pdf' | 'favorite';
 
@@ -38,6 +49,7 @@ export interface CloudUserSummary {
 export interface UserSettings {
   autoSyncOnEdit: boolean;
   defaultWordTheme: WordPaperTheme;
+  geminiApiKey?: string;
 }
 
 export interface SlideTextRun {
@@ -441,6 +453,8 @@ export interface DocumentItem {
   pageCount?: number;
   fileSize?: string;
   folder?: string;
+  folderId?: string | null;
+  deletedAt?: number | null;
   isShared?: boolean;
   sourceFile?: File | null;
   objectUrl?: string;
@@ -456,6 +470,7 @@ export interface DocumentItem {
   lastAccessedAt?: string;
   isSyncedToCloud?: boolean;
   userId?: string;
+  ownerScope?: string;
   r2ObjectKey?: string;
   shareToken?: string;
   shareAccess?: ShareAccessLevel;

@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import JSZip from 'jszip';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SidebarRail } from './components/layout/SidebarRail';
 import { MobileTopHeader } from './components/layout/MobileTopHeader';
 import { MobileBottomNav } from './components/layout/MobileBottomNav';
@@ -8,25 +7,103 @@ import {
   LocationPanel,
   type LocationSourceKey,
 } from './components/workspace/LocationPanel';
-import { SlideWorkspace } from './components/workspaces/SlideWorkspace';
-import { WordWorkspace } from './components/workspaces/WordWorkspace';
-import { ExcelWorkspace } from './components/workspaces/ExcelWorkspace';
-import { PdfWorkspace } from './components/workspaces/PdfWorkspace';
-import { StageActionModal } from './components/modals/StageActionModal';
+import { LoadingWorkspaceSkeleton } from './components/ui/LoadingWorkspaceSkeleton';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Browser } from '@capacitor/browser';
 import { Filesystem } from '@capacitor/filesystem';
-import { AuthModal } from './components/modals/AuthModal';
-import { SettingsModal } from './components/modals/SettingsModal';
-import { HelpModal } from './components/modals/HelpModal';
-import { CloudActionModal } from './components/modals/CloudActionModal';
-import { GoogleDriveBrowserModal } from './components/modals/GoogleDriveBrowserModal';
-import { ShareCollabModal } from './components/modals/ShareCollabModal';
-import { VersionHistoryModal } from './components/modals/VersionHistoryModal';
-import { QuickConverterModal } from './components/modals/QuickConverterModal';
-import { LegalPagesView, type LegalPageKind } from './components/legal/LegalPagesView';
-import { MobileRemoteView } from './components/remote/MobileRemoteView';
-import { SharedDocumentView } from './components/share/SharedDocumentView';
+import type { LegalPageKind } from './components/legal/LegalPagesView';
+
+const SlideWorkspace = lazy(() =>
+  import('./components/workspaces/SlideWorkspace').then((m) => ({
+    default: m.SlideWorkspace,
+  }))
+);
+const WordWorkspace = lazy(() =>
+  import('./components/workspaces/WordWorkspace').then((m) => ({
+    default: m.WordWorkspace,
+  }))
+);
+const ExcelWorkspace = lazy(() =>
+  import('./components/workspaces/ExcelWorkspace').then((m) => ({
+    default: m.ExcelWorkspace,
+  }))
+);
+const PdfWorkspace = lazy(() =>
+  import('./components/workspaces/PdfWorkspace').then((m) => ({
+    default: m.PdfWorkspace,
+  }))
+);
+const StageActionModal = lazy(() =>
+  import('./components/modals/StageActionModal').then((m) => ({
+    default: m.StageActionModal,
+  }))
+);
+const AuthModal = lazy(() =>
+  import('./components/modals/AuthModal').then((m) => ({
+    default: m.AuthModal,
+  }))
+);
+const SettingsModal = lazy(() =>
+  import('./components/modals/SettingsModal').then((m) => ({
+    default: m.SettingsModal,
+  }))
+);
+const HelpModal = lazy(() =>
+  import('./components/modals/HelpModal').then((m) => ({
+    default: m.HelpModal,
+  }))
+);
+const CloudActionModal = lazy(() =>
+  import('./components/modals/CloudActionModal').then((m) => ({
+    default: m.CloudActionModal,
+  }))
+);
+const GoogleDriveBrowserModal = lazy(() =>
+  import('./components/modals/GoogleDriveBrowserModal').then((m) => ({
+    default: m.GoogleDriveBrowserModal,
+  }))
+);
+const ShareCollabModal = lazy(() =>
+  import('./components/modals/ShareCollabModal').then((m) => ({
+    default: m.ShareCollabModal,
+  }))
+);
+const VersionHistoryModal = lazy(() =>
+  import('./components/modals/VersionHistoryModal').then((m) => ({
+    default: m.VersionHistoryModal,
+  }))
+);
+const QuickConverterModal = lazy(() =>
+  import('./components/modals/QuickConverterModal').then((m) => ({
+    default: m.QuickConverterModal,
+  }))
+);
+const LegalPagesView = lazy(() =>
+  import('./components/legal/LegalPagesView').then((m) => ({
+    default: m.LegalPagesView,
+  }))
+);
+const MobileRemoteView = lazy(() =>
+  import('./components/remote/MobileRemoteView').then((m) => ({
+    default: m.MobileRemoteView,
+  }))
+);
+const SharedDocumentView = lazy(() =>
+  import('./components/share/SharedDocumentView').then((m) => ({
+    default: m.SharedDocumentView,
+  }))
+);
+const ApkUpdateModal = lazy(() =>
+  import('./components/modals/ApkUpdateModal').then((m) => ({
+    default: m.ApkUpdateModal,
+  }))
+);
+import { WifiOff } from 'lucide-react';
+import {
+  checkForAndroidAppUpdate,
+  type AppUpdateCheckResult,
+} from './services/appUpdater';
+import { syncAndroidStatusBar } from './utils/androidSystemUi';
 import {
   WorkspaceSyncProvider,
   type DriveSyncBadgeStatus,
@@ -46,11 +123,14 @@ import {
 import {
   buildCloudUserSummary,
   deleteCloudDocument,
+  deleteCloudFolder,
   downloadCloudFileArrayBuffer,
   fetchUserDocuments,
+  fetchUserFolders,
   syncLocalDocumentsToCloud,
   touchDocumentLastAccessed,
   upsertCloudDocument,
+  upsertCloudFolder,
 } from './services/cloudSync';
 import {
   getR2PresignedDownloadUrl,
@@ -69,6 +149,7 @@ import {
   type RealtimeRoomHandle,
 } from './services/realtimeCollab';
 import {
+  clearGoogleDriveUserCache,
   clearStoredGoogleDriveToken,
   getStoredGoogleDriveToken,
   GOOGLE_TOKEN_CHANGED_EVENT,
@@ -78,28 +159,27 @@ import {
   type GoogleDriveFileItem,
 } from './services/googleDrive';
 import {
+  AUTO_TRASH_RETENTION_MS,
+  clearUserSessionCaches,
   deleteOriginalFileBinary,
   enqueuePendingUpload,
   flushPendingUploads,
   getPendingUploads,
+  loadDocuments,
+  loadFolders,
   loadOriginalFileBinary,
+  normalizeSyncUserId,
   saveDocumentVersion,
+  saveDocumentsForOwner,
+  saveFoldersForOwner,
   saveLocalDraft,
   saveOriginalFileBinary,
   type DocumentVersionRecord,
   type PendingUploadTarget,
 } from './services/offlineSyncQueue';
-import {
-  buildDocumentUploadPayload,
-  exportOriginalDocumentBinary,
-} from './utils/fileExporter';
-import {
-  parseExcelArrayBuffer,
-  parsePptxArrayBuffer,
-  parseUploadedFile,
-} from './utils/fileParser';
 import type {
   CloudUserSummary,
+  DocumentFolder,
   DocumentItem,
   FilterKey,
   ModalType,
@@ -112,7 +192,8 @@ import type {
   WordPaperTheme,
 } from './types/document';
 
-const STORAGE_KEY = 'lite_saved_documents_v1';
+const LEGACY_STORAGE_KEY = 'lite_saved_documents_v1';
+const SCOPED_STORAGE_KEY_PREFIX = 'lite_saved_documents_v2_';
 const SETTINGS_STORAGE_KEY = 'lite_user_settings_v1';
 
 const LEGACY_MOCK_ID_SET = new Set<string>(LEGACY_MOCK_DOCUMENT_IDS);
@@ -190,6 +271,7 @@ async function detectExtensionFromBytes(bytes: Uint8Array): Promise<string | nul
   // ZIP-based Office Open XML formats (PK...)
   if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b) {
     try {
+      const { default: JSZip } = await import('jszip');
       const zip = await JSZip.loadAsync(bytes);
       if (zip.file('word/document.xml')) {
         return 'docx';
@@ -202,6 +284,52 @@ async function detectExtensionFromBytes(bytes: Uint8Array): Promise<string | nul
       }
     } catch {
       // Not a valid Office Open XML zip archive
+    }
+  }
+
+  // Legacy Microsoft Compound Binary Format (OLE2: D0 CF 11 E0) -> .xls / .doc
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0xd0 &&
+    bytes[1] === 0xcf &&
+    bytes[2] === 0x11 &&
+    bytes[3] === 0xe0
+  ) {
+    try {
+      const asciiView = new TextDecoder('latin1').decode(
+        bytes.subarray(0, Math.min(bytes.length, 65536))
+      );
+      if (asciiView.includes('WordDocument')) {
+        return 'doc';
+      }
+      if (asciiView.includes('Workbook') || asciiView.includes('Book')) {
+        return 'xls';
+      }
+    } catch {
+      // Ignore OLE2 sniffing failures
+    }
+  }
+
+  // Plain UTF-8 CSV detection when Android content:// URI omits .csv suffix
+  if (bytes.length > 0 && bytes.length <= 8 * 1024 * 1024) {
+    try {
+      const sample = new TextDecoder('utf-8', { fatal: true }).decode(
+        bytes.subarray(0, Math.min(bytes.length, 4096))
+      );
+      const lines = sample
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+      if (
+        lines.length >= 2 &&
+        lines[0].includes(',') &&
+        lines[1].includes(',') &&
+        !/[\x00-\x08\x0E-\x1F]/.test(sample)
+      ) {
+        return 'csv';
+      }
+    } catch {
+      // Not valid UTF-8 text
     }
   }
 
@@ -265,6 +393,7 @@ async function readAndroidUriAsFile(uri: string): Promise<File> {
 const DEFAULT_USER_SETTINGS: UserSettings = {
   autoSyncOnEdit: true,
   defaultWordTheme: 'light',
+  geminiApiKey: '',
 };
 
 function formatFileSize(bytes: number): string {
@@ -404,6 +533,10 @@ function loadInitialUserSettings(): UserSettings {
       defaultWordTheme: isValidWordTheme(candidate.defaultWordTheme)
         ? candidate.defaultWordTheme
         : DEFAULT_USER_SETTINGS.defaultWordTheme,
+      geminiApiKey:
+        typeof candidate.geminiApiKey === 'string'
+          ? candidate.geminiApiKey.trim()
+          : '',
     };
   } catch {
     return DEFAULT_USER_SETTINGS;
@@ -477,15 +610,163 @@ function sanitizeDocumentForStorage(doc: DocumentItem): DocumentItem {
   return nextDoc;
 }
 
-function persistDocumentsToStorage(docs: DocumentItem[]): {
+function getDocumentStorageKey(userId?: string | null): string {
+  return `${SCOPED_STORAGE_KEY_PREFIX}${normalizeSyncUserId(userId)}`;
+}
+
+function isDocumentInOwnerScope(
+  doc: DocumentItem,
+  ownerScope: string
+): boolean {
+  const docScope = doc.ownerScope?.trim();
+  const docUser = doc.userId?.trim();
+  if (ownerScope === 'guest') {
+    if (doc.isSyncedToCloud || doc.sharedOwnerId) {
+      return false;
+    }
+    if (docScope && docScope !== 'guest') {
+      return false;
+    }
+    if (docUser && docUser !== 'guest') {
+      return false;
+    }
+    return true;
+  }
+  if (docScope && docScope !== ownerScope) {
+    return false;
+  }
+  if (docUser && docUser !== ownerScope && !doc.isShared) {
+    return false;
+  }
+  return true;
+}
+
+function clearNonGuestDocumentsLocalStorage(
+  loggedOutUserId?: string | null
+): void {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) {
+      return;
+    }
+    const cleanLoggedOut = loggedOutUserId?.trim();
+    if (cleanLoggedOut && cleanLoggedOut !== 'guest') {
+      window.localStorage.removeItem(getDocumentStorageKey(cleanLoggedOut));
+    }
+    window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+
+    const guestKey = getDocumentStorageKey('guest');
+    const guestFoldersKey = `${SCOPED_FOLDER_STORAGE_KEY_PREFIX}guest`;
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i += 1) {
+      const key = window.localStorage.key(i);
+      if (
+        key &&
+        ((key.startsWith(SCOPED_STORAGE_KEY_PREFIX) && key !== guestKey) ||
+          (key.startsWith(SCOPED_FOLDER_STORAGE_KEY_PREFIX) &&
+            key !== guestFoldersKey))
+      ) {
+        keysToRemove.push(key);
+      }
+    }
+    for (const key of keysToRemove) {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    // Ignore localStorage cleanup errors
+  }
+}
+
+const SCOPED_FOLDER_STORAGE_KEY_PREFIX = 'lite_folders_v1_';
+const AUTO_SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;
+
+function getFolderStorageKey(userId?: string | null): string {
+  return `${SCOPED_FOLDER_STORAGE_KEY_PREFIX}${normalizeSyncUserId(userId)}`;
+}
+
+function loadInitialFolders(userId?: string | null): DocumentFolder[] {
+  const ownerScope = normalizeSyncUserId(userId);
+  try {
+    const raw = window.localStorage.getItem(getFolderStorageKey(ownerScope));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (item): item is DocumentFolder =>
+          Boolean(item) &&
+          typeof item === 'object' &&
+          typeof item.id === 'string' &&
+          typeof item.name === 'string'
+      )
+      .map((item) => ({
+        ...item,
+        color: item.color || '#4F46E5',
+        ownerScope,
+        userId: item.userId ?? ownerScope,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function persistFoldersToStorage(
+  folders: DocumentFolder[],
+  userId?: string | null
+): void {
+  const ownerScope = normalizeSyncUserId(userId);
+  const scoped = folders.map((folder) => ({
+    ...folder,
+    ownerScope,
+    userId: folder.userId ?? ownerScope,
+  }));
+  void saveFoldersForOwner(ownerScope, scoped).catch(() => undefined);
+  try {
+    window.localStorage.setItem(
+      getFolderStorageKey(ownerScope),
+      JSON.stringify(scoped)
+    );
+  } catch {
+    // Ignore quota errors on folder metadata
+  }
+}
+
+function isDocumentExpiredInTrash(doc: DocumentItem, nowMs = Date.now()): boolean {
+  return (
+    typeof doc.deletedAt === 'number' &&
+    Number.isFinite(doc.deletedAt) &&
+    doc.deletedAt > 0 &&
+    nowMs - doc.deletedAt >= AUTO_TRASH_RETENTION_MS
+  );
+}
+
+function persistDocumentsToStorage(
+  docs: DocumentItem[],
+  userId?: string | null
+): {
   ok: boolean;
   quotaExceeded: boolean;
 } {
+  const ownerScope = normalizeSyncUserId(userId);
+  const scopedPayload = docs
+    .filter(
+      (doc) =>
+        !LEGACY_MOCK_ID_SET.has(doc.id) &&
+        isDocumentInOwnerScope(doc, ownerScope)
+    )
+    .map((doc) => ({
+      ...sanitizeDocumentForStorage(doc),
+      ownerScope,
+      userId: doc.userId ?? ownerScope,
+    }));
+
+  void saveDocumentsForOwner(ownerScope, scopedPayload).catch(() => undefined);
+
   try {
-    const payload = docs
-      .filter((doc) => !LEGACY_MOCK_ID_SET.has(doc.id))
-      .map(sanitizeDocumentForStorage);
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    window.localStorage.setItem(
+      getDocumentStorageKey(ownerScope),
+      JSON.stringify(scopedPayload)
+    );
+    window.localStorage.removeItem(LEGACY_STORAGE_KEY);
     return { ok: true, quotaExceeded: false };
   } catch (error) {
     const isQuota =
@@ -497,14 +778,27 @@ function persistDocumentsToStorage(docs: DocumentItem[]): {
   }
 }
 
-function loadInitialDocuments(): DocumentItem[] {
+function loadInitialDocuments(userId?: string | null): DocumentItem[] {
+  const ownerScope = normalizeSyncUserId(userId);
+  const scopedKey = getDocumentStorageKey(ownerScope);
+
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    let raw = window.localStorage.getItem(scopedKey);
+    let migratedFromLegacy = false;
+
+    if (!raw && ownerScope === 'guest') {
+      raw = window.localStorage.getItem(LEGACY_STORAGE_KEY);
+      migratedFromLegacy = Boolean(raw);
+    }
+
     if (!raw) {
       return [];
     }
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) {
+      if (migratedFromLegacy) {
+        window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+      }
       return [];
     }
 
@@ -520,16 +814,25 @@ function loadInitialDocuments(): DocumentItem[] {
         filteredLegacyMock = true;
         continue;
       }
+      if (!isDocumentInOwnerScope(entry, ownerScope)) {
+        continue;
+      }
       if (seenIds.has(entry.id)) {
         continue;
       }
       seenIds.add(entry.id);
-      merged.push(sanitizeDocumentForStorage(entry));
+      merged.push({
+        ...sanitizeDocumentForStorage(entry),
+        ownerScope,
+        userId: entry.userId ?? ownerScope,
+      });
     }
 
-    if (filteredLegacyMock) {
-      persistDocumentsToStorage(merged);
-      removeLocalSharesForDocumentIds(LEGACY_MOCK_DOCUMENT_IDS);
+    if (filteredLegacyMock || migratedFromLegacy) {
+      persistDocumentsToStorage(merged, ownerScope);
+      if (filteredLegacyMock) {
+        removeLocalSharesForDocumentIds(LEGACY_MOCK_DOCUMENT_IDS);
+      }
     }
 
     return merged;
@@ -649,8 +952,13 @@ function mergeHydratedPptxSlides(
 }
 
 function isUnsyncedLocalCandidate(doc: DocumentItem): boolean {
+  const scope = doc.ownerScope?.trim();
+  const uid = doc.userId?.trim();
+  const isGuestOwned =
+    (!scope || scope === 'guest') && (!uid || uid === 'guest');
   return (
     !LEGACY_MOCK_ID_SET.has(doc.id) &&
+    isGuestOwned &&
     !doc.isSyncedToCloud &&
     (Boolean(doc.isUploaded) || Boolean(doc.lastSavedAt))
   );
@@ -658,7 +966,7 @@ function isUnsyncedLocalCandidate(doc: DocumentItem): boolean {
 
 export function App() {
   const [documents, setDocuments] = useState<DocumentItem[]>(() =>
-    loadInitialDocuments()
+    loadInitialDocuments('guest')
   );
   const [remoteRoomCode, setRemoteRoomCode] = useState<string | null>(() =>
     parseRemoteRoomFromHash(window.location.hash)
@@ -715,6 +1023,10 @@ export function App() {
     return documents[0]?.id ?? null;
   });
   const [activeNav, setActiveNav] = useState<SidebarNavKey>('home');
+  const [folders, setFolders] = useState<DocumentFolder[]>(() =>
+    loadInitialFolders('guest')
+  );
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [activeLocation, setActiveLocation] = useState<LocationSourceKey>('all');
   const [isLocationPanelOpen, setIsLocationPanelOpen] = useState<boolean>(false);
   const [isDriveModalOpen, setIsDriveModalOpen] = useState<boolean>(false);
@@ -771,11 +1083,49 @@ export function App() {
     useState<boolean>(false);
   const [quickConverterDocOverride, setQuickConverterDocOverride] =
     useState<DocumentItem | null>(null);
+  const [exitBackToastVisible, setExitBackToastVisible] =
+    useState<boolean>(false);
+  const [isOnline, setIsOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine !== false : true
+  );
+  const [apkUpdateResult, setApkUpdateResult] =
+    useState<AppUpdateCheckResult | null>(null);
+  const [isApkUpdateModalOpen, setIsApkUpdateModalOpen] =
+    useState<boolean>(false);
 
   const createdObjectUrlsRef = useRef<string[]>([]);
   const deviceFileInputRef = useRef<HTMLInputElement | null>(null);
   const activeNavRef = useRef<SidebarNavKey>(activeNav);
   activeNavRef.current = activeNav;
+  const activeWorkspaceDocIdRef = useRef<string | null>(activeWorkspaceDocId);
+  activeWorkspaceDocIdRef.current = activeWorkspaceDocId;
+  const activeModalRef = useRef<ModalType>(activeModal);
+  activeModalRef.current = activeModal;
+  const activeUtilityModalRef = useRef<UtilityModalType>(activeUtilityModal);
+  activeUtilityModalRef.current = activeUtilityModal;
+  const isDriveModalOpenRef = useRef<boolean>(isDriveModalOpen);
+  isDriveModalOpenRef.current = isDriveModalOpen;
+  const isVersionHistoryOpenRef = useRef<boolean>(isVersionHistoryOpen);
+  isVersionHistoryOpenRef.current = isVersionHistoryOpen;
+  const isQuickConverterOpenRef = useRef<boolean>(isQuickConverterOpen);
+  isQuickConverterOpenRef.current = isQuickConverterOpen;
+  const isLocationPanelOpenRef = useRef<boolean>(isLocationPanelOpen);
+  isLocationPanelOpenRef.current = isLocationPanelOpen;
+  const remoteRoomCodeRef = useRef<string | null>(remoteRoomCode);
+  remoteRoomCodeRef.current = remoteRoomCode;
+  const sharedTokenRef = useRef<string | null>(sharedToken);
+  sharedTokenRef.current = sharedToken;
+  const legalPageRef = useRef<LegalPageKind | null>(legalPage);
+  legalPageRef.current = legalPage;
+  const collabShareQueryRef = useRef<ParsedCollabShareQuery | null>(collabShareQuery);
+  collabShareQueryRef.current = collabShareQuery;
+  const lastHardwareBackAtRef = useRef<number>(0);
+  const exitBackToastTimerRef = useRef<number | null>(null);
+  const foldersRef = useRef<DocumentFolder[]>(folders);
+  foldersRef.current = folders;
+  const selectedFolderIdRef = useRef<string | null>(selectedFolderId);
+  selectedFolderIdRef.current = selectedFolderId;
+  const autoSnapshotDirtyDocIdsRef = useRef<Set<string>>(new Set());
   const documentsRef = useRef<DocumentItem[]>(documents);
   documentsRef.current = documents;
 
@@ -805,6 +1155,7 @@ export function App() {
       options?: { openImmediately?: boolean }
     ) => Promise<void>
   >(async () => undefined);
+  const handleBackHomeRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     const timersMap = driveDebounceTimersRef.current;
@@ -942,7 +1293,7 @@ export function App() {
                         : d
                     )
                   : [sharedDoc, ...prev];
-              persistDocumentsToStorage(nextDocs);
+              persistDocumentsToStorage(nextDocs, currentUserRef.current?.id);
               return nextDocs;
             });
           }
@@ -984,6 +1335,127 @@ export function App() {
     };
   }, [collabShareQuery]);
 
+  const resetToGuestSession = useCallback(
+    async (prevUserId: string | null) => {
+      driveDebounceTimersRef.current.forEach((timerId) => {
+        window.clearTimeout(timerId);
+      });
+      driveDebounceTimersRef.current.clear();
+      latestDriveDocByIdRef.current.clear();
+      saveQueueByDocRef.current.clear();
+      saveSeqByDocRef.current.clear();
+      autoHydrateAttemptedRef.current.clear();
+
+      currentUserRef.current = null;
+      lastLoadedUserIdRef.current = null;
+      inFlightSyncUserIdRef.current = null;
+
+      documentsRef.current = [];
+      setDocuments([]);
+      setCurrentUser(null);
+      setPendingMigrationDocs([]);
+      setLastSyncedAt(null);
+      setSyncStatus(isSupabaseConfigured ? 'idle' : 'local');
+      setActiveWorkspaceDocId(null);
+      setLastActiveDocId(null);
+      setCollabSharedDoc(null);
+      setActiveModal(null);
+      setModalDocOverride(null);
+      setActiveUtilityModal(null);
+      setIsVersionHistoryOpen(false);
+      setVersionHistoryDocOverride(null);
+      setIsQuickConverterOpen(false);
+      setQuickConverterDocOverride(null);
+      setIsDriveModalOpen(false);
+      setDriveSyncBadge('idle');
+      setDriveSyncLabel('');
+      setPendingOfflineCount(0);
+
+      clearStoredGoogleDriveToken(prevUserId);
+      clearGoogleDriveUserCache(prevUserId);
+      setActiveGoogleDriveUser(null);
+      setHasGoogleToken(false);
+
+      clearNonGuestDocumentsLocalStorage(prevUserId);
+      await clearUserSessionCaches(prevUserId).catch(() => undefined);
+
+      if (currentUserRef.current !== null) {
+        return;
+      }
+
+      const [guestLocalDocs, guestIdbDocs, guestIdbFolders] = await Promise.all([
+        Promise.resolve(loadInitialDocuments('guest')),
+        loadDocuments('guest').catch(() => [] as DocumentItem[]),
+        loadFolders('guest').catch(() => [] as DocumentFolder[]),
+      ]);
+      if (currentUserRef.current !== null) {
+        return;
+      }
+
+      const guestLocalFolders = loadInitialFolders('guest');
+      const guestFolderById = new Map<string, DocumentFolder>();
+      for (const f of guestLocalFolders) {
+        guestFolderById.set(f.id, f);
+      }
+      for (const f of guestIdbFolders) {
+        if (!guestFolderById.has(f.id)) {
+          guestFolderById.set(f.id, f);
+        }
+      }
+      const finalGuestFolders = Array.from(guestFolderById.values());
+      foldersRef.current = finalGuestFolders;
+      setFolders(finalGuestFolders);
+      setSelectedFolderId(null);
+      persistFoldersToStorage(finalGuestFolders, 'guest');
+
+      const guestById = new Map<string, DocumentItem>();
+      for (const doc of guestLocalDocs) {
+        if (isDocumentInOwnerScope(doc, 'guest') && !LEGACY_MOCK_ID_SET.has(doc.id)) {
+          guestById.set(doc.id, { ...doc, ownerScope: 'guest', userId: 'guest' });
+        }
+      }
+      for (const doc of guestIdbDocs) {
+        if (
+          !guestById.has(doc.id) &&
+          isDocumentInOwnerScope(doc, 'guest') &&
+          !LEGACY_MOCK_ID_SET.has(doc.id)
+        ) {
+          guestById.set(doc.id, { ...doc, ownerScope: 'guest', userId: 'guest' });
+        }
+      }
+
+      const nowMs = Date.now();
+      const rawGuestDocs = Array.from(guestById.values());
+      const finalGuestDocs = rawGuestDocs.filter(
+        (doc) => !isDocumentExpiredInTrash(doc, nowMs)
+      );
+      const expiredGuestDocs = rawGuestDocs.filter((doc) =>
+        isDocumentExpiredInTrash(doc, nowMs)
+      );
+      expiredGuestDocs.forEach((doc) => {
+        void deleteOriginalFileBinary('guest', doc.id).catch(() => undefined);
+      });
+      documentsRef.current = finalGuestDocs;
+      setDocuments(finalGuestDocs);
+      setLastActiveDocId(
+        finalGuestDocs.find((d) => !d.deletedAt)?.id ?? null
+      );
+      persistDocumentsToStorage(finalGuestDocs, 'guest');
+
+      const isSpecialRoute =
+        Boolean(parseRemoteRoomFromHash(window.location.hash)) ||
+        Boolean(parseShareTokenFromHash(window.location.hash));
+      if (window.location.hash && !isSpecialRoute) {
+        window.history.pushState(
+          null,
+          '',
+          `${window.location.pathname}${window.location.search}`
+        );
+      }
+    },
+    []
+  );
+
   const syncSessionForUser = useCallback(async (user: CloudUserSummary) => {
     if (
       lastLoadedUserIdRef.current === user.id ||
@@ -996,13 +1468,43 @@ export function App() {
     setSyncStatus('syncing');
 
     try {
-      const [fetchedCloudDocs, sharedWithMeDocs] = await Promise.all([
+      const [
+        fetchedCloudDocs,
+        sharedWithMeDocs,
+        cachedOwnerDocs,
+        cloudFolders,
+        cachedOwnerFolders,
+      ] = await Promise.all([
         fetchUserDocuments(user.id),
         loadSharedWithMeDocuments(user.id).catch(() => [] as DocumentItem[]),
+        loadDocuments(user.id).catch(() => [] as DocumentItem[]),
+        fetchUserFolders(user.id).catch(() => null),
+        loadFolders(user.id).catch(() => [] as DocumentFolder[]),
       ]);
       if (currentUserRef.current?.id !== user.id) {
         return;
       }
+
+      const localStorageFolders = loadInitialFolders(user.id);
+      const mergedFolderMap = new Map<string, DocumentFolder>();
+      for (const f of cloudFolders ?? []) {
+        mergedFolderMap.set(f.id, { ...f, userId: user.id, ownerScope: user.id });
+      }
+      for (const f of cachedOwnerFolders) {
+        if (!mergedFolderMap.has(f.id)) {
+          mergedFolderMap.set(f.id, { ...f, userId: user.id, ownerScope: user.id });
+        }
+      }
+      for (const f of localStorageFolders) {
+        if (!mergedFolderMap.has(f.id)) {
+          mergedFolderMap.set(f.id, { ...f, userId: user.id, ownerScope: user.id });
+        }
+      }
+      const finalUserFolders = Array.from(mergedFolderMap.values());
+      foldersRef.current = finalUserFolders;
+      setFolders(finalUserFolders);
+      setSelectedFolderId(null);
+      persistFoldersToStorage(finalUserFolders, user.id);
 
       // Silently purge any legacy mock records that were previously synced to Supabase
       const legacyCloudDocs = fetchedCloudDocs.filter((cloudDoc) =>
@@ -1015,17 +1517,25 @@ export function App() {
         });
       }
 
-      const existingById = new Map<string, DocumentItem>(
-        documentsRef.current.map((doc) => [doc.id, doc])
-      );
+      const existingById = new Map<string, DocumentItem>();
+      for (const doc of cachedOwnerDocs) {
+        if (isDocumentInOwnerScope(doc, user.id)) {
+          existingById.set(doc.id, doc);
+        }
+      }
+      for (const doc of documentsRef.current) {
+        if (isDocumentInOwnerScope(doc, user.id)) {
+          existingById.set(doc.id, doc);
+        }
+      }
+
       const cloudDocs = fetchedCloudDocs
         .filter((cloudDoc) => !LEGACY_MOCK_ID_SET.has(cloudDoc.id))
-        .map((cloudDoc) =>
-          preserveInMemoryRuntimeFields(
-            cloudDoc,
-            existingById.get(cloudDoc.id)
-          )
-        );
+        .map((cloudDoc) => ({
+          ...preserveInMemoryRuntimeFields(cloudDoc, existingById.get(cloudDoc.id)),
+          userId: user.id,
+          ownerScope: user.id,
+        }));
       const cloudIds = new Set<string>(cloudDocs.map((doc) => doc.id));
 
       const sharedDocs = sharedWithMeDocs
@@ -1033,12 +1543,13 @@ export function App() {
           (sharedDoc) =>
             !LEGACY_MOCK_ID_SET.has(sharedDoc.id) && !cloudIds.has(sharedDoc.id)
         )
-        .map((sharedDoc) =>
-          preserveInMemoryRuntimeFields(
+        .map((sharedDoc) => ({
+          ...preserveInMemoryRuntimeFields(
             { ...sharedDoc, isShared: true },
             existingById.get(sharedDoc.id)
-          )
-        );
+          ),
+          ownerScope: user.id,
+        }));
       sharedDocs.forEach((doc) => {
         cloudIds.add(doc.id);
       });
@@ -1049,7 +1560,11 @@ export function App() {
         !LEGACY_MOCK_ID_SET.has(activeCollabDoc.id) &&
         !cloudIds.has(activeCollabDoc.id)
       ) {
-        sharedDocs.unshift({ ...activeCollabDoc, isShared: true });
+        sharedDocs.unshift({
+          ...activeCollabDoc,
+          isShared: true,
+          ownerScope: user.id,
+        });
         cloudIds.add(activeCollabDoc.id);
         if (activeCollabDoc.shareToken) {
           void resolveSharedDocument(
@@ -1059,7 +1574,7 @@ export function App() {
         }
       }
 
-      // Keep unsynced local candidates (excluding legacy mocks) untouched in memory while asking user to migrate
+      // Keep ONLY true guest-owned unsynced local candidates while asking user to migrate
       const localCandidates = documentsRef.current.filter(
         (doc) =>
           !LEGACY_MOCK_ID_SET.has(doc.id) &&
@@ -1067,9 +1582,39 @@ export function App() {
           !cloudIds.has(doc.id)
       );
 
-      const mergedDocs = [...cloudDocs, ...sharedDocs, ...localCandidates];
+      // Include any offline drafts created under this user's own ownerScope not yet pushed
+      const userOfflineUnsynced = cachedOwnerDocs.filter(
+        (doc) =>
+          !LEGACY_MOCK_ID_SET.has(doc.id) &&
+          !doc.isSyncedToCloud &&
+          doc.ownerScope === user.id &&
+          !cloudIds.has(doc.id)
+      );
+
+      const rawMergedDocs = [
+        ...cloudDocs,
+        ...sharedDocs,
+        ...userOfflineUnsynced,
+        ...localCandidates,
+      ];
+      const nowMs = Date.now();
+      const mergedDocs = rawMergedDocs.filter(
+        (doc) => !isDocumentExpiredInTrash(doc, nowMs)
+      );
+      const expiredTrashDocs = rawMergedDocs.filter((doc) =>
+        isDocumentExpiredInTrash(doc, nowMs)
+      );
+      if (expiredTrashDocs.length > 0) {
+        expiredTrashDocs.forEach((doc) => {
+          void deleteOriginalFileBinary(user.id, doc.id).catch(() => undefined);
+          if (doc.isSyncedToCloud) {
+            void deleteCloudDocument(user.id, doc).catch(() => undefined);
+          }
+        });
+      }
+      documentsRef.current = mergedDocs;
       setDocuments(mergedDocs);
-      persistDocumentsToStorage(mergedDocs);
+      persistDocumentsToStorage(mergedDocs, user.id);
 
       const currentHash = window.location.hash;
       const isSpecialRoute =
@@ -1120,6 +1665,50 @@ export function App() {
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) {
       setSyncStatus('local');
+      void Promise.all([
+        loadDocuments('guest').catch(() => [] as DocumentItem[]),
+        loadFolders('guest').catch(() => [] as DocumentFolder[]),
+      ])
+        .then(([idbGuestDocs, idbGuestFolders]) => {
+          if (currentUserRef.current !== null) {
+            return;
+          }
+          if (idbGuestFolders.length > 0) {
+            const folderIds = new Set(foldersRef.current.map((f) => f.id));
+            const newFolders = idbGuestFolders.filter((f) => !folderIds.has(f.id));
+            if (newFolders.length > 0) {
+              const combinedFolders = [...foldersRef.current, ...newFolders];
+              foldersRef.current = combinedFolders;
+              setFolders(combinedFolders);
+            }
+          }
+          const existingIds = new Set(documentsRef.current.map((d) => d.id));
+          const additions = idbGuestDocs.filter(
+            (d) =>
+              !existingIds.has(d.id) &&
+              isDocumentInOwnerScope(d, 'guest') &&
+              !LEGACY_MOCK_ID_SET.has(d.id)
+          );
+          const nowMs = Date.now();
+          const rawCombined = [...documentsRef.current, ...additions];
+          const nonExpired = rawCombined.filter(
+            (d) => !isDocumentExpiredInTrash(d, nowMs)
+          );
+          const expired = rawCombined.filter((d) =>
+            isDocumentExpiredInTrash(d, nowMs)
+          );
+          if (expired.length > 0 || additions.length > 0) {
+            expired.forEach((doc) => {
+              void deleteOriginalFileBinary('guest', doc.id).catch(
+                () => undefined
+              );
+            });
+            documentsRef.current = nonExpired;
+            setDocuments(nonExpired);
+            persistDocumentsToStorage(nonExpired, 'guest');
+          }
+        })
+        .catch(() => undefined);
       return;
     }
 
@@ -1139,59 +1728,21 @@ export function App() {
       if (sessionUser) {
         setAuthExternalNotice(null);
         setActiveUtilityModal((prev) => (prev === 'auth' ? null : prev));
+        const prevUserId = currentUserRef.current?.id;
+        if (prevUserId && prevUserId !== sessionUser.id) {
+          clearNonGuestDocumentsLocalStorage(prevUserId);
+          void clearUserSessionCaches(prevUserId).catch(() => undefined);
+          documentsRef.current = [];
+          setDocuments([]);
+        }
         const summary = buildCloudUserSummary(sessionUser);
         currentUserRef.current = summary;
         setCurrentUser(summary);
         void syncSessionForUser(summary);
       } else {
-        const hadUser =
-          currentUserRef.current !== null ||
-          lastLoadedUserIdRef.current !== null;
-        currentUserRef.current = null;
-        lastLoadedUserIdRef.current = null;
-        inFlightSyncUserIdRef.current = null;
-        setCurrentUser(null);
-        setPendingMigrationDocs([]);
-        setLastSyncedAt(null);
-        setSyncStatus('idle');
-        if (hadUser) {
-          driveDebounceTimersRef.current.forEach((timerId) => {
-            window.clearTimeout(timerId);
-          });
-          driveDebounceTimersRef.current.clear();
-          latestDriveDocByIdRef.current.clear();
-          setDriveSyncBadge('idle');
-          setDriveSyncLabel('');
-          setPendingOfflineCount(0);
-          clearStoredGoogleDriveToken();
-          setActiveGoogleDriveUser(null);
-          setHasGoogleToken(false);
-          autoHydrateAttemptedRef.current.clear();
-          const localOnly = documentsRef.current.filter(
-            (doc) =>
-              !doc.isSyncedToCloud &&
-              !doc.userId &&
-              !LEGACY_MOCK_ID_SET.has(doc.id)
-          );
-          persistDocumentsToStorage(localOnly);
-          const localDocs = loadInitialDocuments();
-          setDocuments(localDocs);
-          setActiveWorkspaceDocId(null);
-          setLastActiveDocId(localDocs[0]?.id ?? null);
-          setActiveModal(null);
-          setModalDocOverride(null);
-          setActiveUtilityModal(null);
-          const isSpecialRoute =
-            Boolean(parseRemoteRoomFromHash(window.location.hash)) ||
-            Boolean(parseShareTokenFromHash(window.location.hash));
-          if (window.location.hash && !isSpecialRoute) {
-            window.history.pushState(
-              null,
-              '',
-              `${window.location.pathname}${window.location.search}`
-            );
-          }
-        }
+        const prevUserId =
+          currentUserRef.current?.id ?? lastLoadedUserIdRef.current ?? null;
+        void resetToGuestSession(prevUserId);
       }
     };
 
@@ -1241,11 +1792,11 @@ export function App() {
       }
     );
 
-    return () => {
+      return () => {
       isMounted = false;
       authSubscription.subscription.unsubscribe();
     };
-  }, [syncSessionForUser]);
+  }, [resetToGuestSession, syncSessionForUser]);
 
   useEffect(() => {
     const syncDriveTokenState = () => {
@@ -1402,6 +1953,176 @@ export function App() {
     };
   }, []);
 
+  // Android virtual keyboard viewport adaptation (100dvh + visualViewport + scroll active field into view)
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const root = document.documentElement;
+    let prevKeyboardOpen = false;
+
+    const syncViewportMetrics = () => {
+      const vv = window.visualViewport;
+      const viewportHeight = vv?.height ?? window.innerHeight;
+      const offsetTop = vv?.offsetTop ?? 0;
+      const keyboardHeight = Math.max(
+        0,
+        window.innerHeight - viewportHeight - offsetTop
+      );
+      const isKeyboardOpen = keyboardHeight > 120;
+
+      root.style.setProperty(
+        '--lite-viewport-height',
+        `${Math.round(viewportHeight)}px`
+      );
+      root.style.setProperty(
+        '--lite-keyboard-inset',
+        `${Math.round(keyboardHeight)}px`
+      );
+      if (isKeyboardOpen) {
+        root.setAttribute('data-keyboard-open', 'true');
+      } else {
+        root.removeAttribute('data-keyboard-open');
+      }
+
+      if (isKeyboardOpen && !prevKeyboardOpen) {
+        const activeEl = document.activeElement as HTMLElement | null;
+        if (
+          activeEl &&
+          (activeEl.tagName === 'INPUT' ||
+            activeEl.tagName === 'TEXTAREA' ||
+            activeEl.isContentEditable)
+        ) {
+          window.requestAnimationFrame(() => {
+            try {
+              activeEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            } catch {
+              // Ignore scrollIntoView errors on detached nodes
+            }
+          });
+        }
+      }
+      prevKeyboardOpen = isKeyboardOpen;
+    };
+
+    syncViewportMetrics();
+    const vv = window.visualViewport;
+    vv?.addEventListener('resize', syncViewportMetrics);
+    vv?.addEventListener('scroll', syncViewportMetrics);
+    window.addEventListener('resize', syncViewportMetrics);
+
+    return () => {
+      vv?.removeEventListener('resize', syncViewportMetrics);
+      vv?.removeEventListener('scroll', syncViewportMetrics);
+      window.removeEventListener('resize', syncViewportMetrics);
+    };
+  }, []);
+
+  // Android Hardware Back Button handler
+  useEffect(() => {
+    let isDisposed = false;
+    let backListenerHandle: { remove: () => Promise<void> } | null = null;
+
+    void CapacitorApp.addListener('backButton', () => {
+      if (isVersionHistoryOpenRef.current) {
+        setIsVersionHistoryOpen(false);
+        setVersionHistoryDocOverride(null);
+        return;
+      }
+      if (isQuickConverterOpenRef.current) {
+        setIsQuickConverterOpen(false);
+        setQuickConverterDocOverride(null);
+        return;
+      }
+      if (isDriveModalOpenRef.current) {
+        setIsDriveModalOpen(false);
+        return;
+      }
+      if (activeUtilityModalRef.current !== null) {
+        setActiveUtilityModal(null);
+        return;
+      }
+      if (activeModalRef.current !== null) {
+        setActiveModal(null);
+        setModalDocOverride(null);
+        return;
+      }
+
+      // Let active workspace drawers/modals (AIToolsDrawer, Slideshow, popovers) intercept Back first
+      const workspaceEvent = new CustomEvent('lite:hardware-back', {
+        cancelable: true,
+      });
+      if (!window.dispatchEvent(workspaceEvent)) {
+        return;
+      }
+
+      const activeDocId = activeWorkspaceDocIdRef.current;
+      if (
+        activeDocId ||
+        remoteRoomCodeRef.current ||
+        sharedTokenRef.current ||
+        legalPageRef.current ||
+        collabShareQueryRef.current
+      ) {
+        if (activeDocId) {
+          const currentDoc =
+            documentsRef.current.find((d) => d.id === activeDocId) ??
+            (collabSharedDocRef.current?.id === activeDocId
+              ? collabSharedDocRef.current
+              : undefined);
+          if (currentDoc) {
+            void saveLocalDraft(currentUserRef.current?.id ?? null, currentDoc).catch(
+              () => undefined
+            );
+          }
+        }
+        handleBackHomeRef.current();
+        return;
+      }
+
+      if (isLocationPanelOpenRef.current) {
+        setIsLocationPanelOpen(false);
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastHardwareBackAtRef.current < 2000) {
+        setExitBackToastVisible(false);
+        void CapacitorApp.exitApp().catch(() => undefined);
+        return;
+      }
+
+      lastHardwareBackAtRef.current = now;
+      setExitBackToastVisible(true);
+      if (exitBackToastTimerRef.current !== null) {
+        window.clearTimeout(exitBackToastTimerRef.current);
+      }
+      exitBackToastTimerRef.current = window.setTimeout(() => {
+        setExitBackToastVisible(false);
+        exitBackToastTimerRef.current = null;
+      }, 2000);
+    })
+      .then((h) => {
+        if (isDisposed) {
+          void h.remove();
+        } else {
+          backListenerHandle = h;
+        }
+      })
+      .catch(() => {
+        // Running on desktop/web outside Capacitor shell
+      });
+
+    return () => {
+      isDisposed = true;
+      void backListenerHandle?.remove();
+      if (exitBackToastTimerRef.current !== null) {
+        window.clearTimeout(exitBackToastTimerRef.current);
+      }
+    };
+  }, []);
+
   const hydrateCloudPdfDocument = useCallback(async (doc: DocumentItem) => {
     const hasR2Source = Boolean(doc.r2ObjectKey) && isR2ApiConfigured;
     const hasSupabaseSource = Boolean(doc.storagePath) && isSupabaseConfigured;
@@ -1534,6 +2255,7 @@ export function App() {
               ? '.xls'
               : '.xlsx';
           try {
+            const { parseExcelArrayBuffer } = await import('./utils/fileParser');
             const parsedSheets = await parseExcelArrayBuffer(
               buffer.slice(0),
               ext
@@ -1570,6 +2292,7 @@ export function App() {
       }
 
       // doc.type === 'pptx'
+      const { parsePptxArrayBuffer } = await import('./utils/fileParser');
       const parsedPptx = await parsePptxArrayBuffer(buffer.slice(0), {
         docIdPrefix: doc.id,
       });
@@ -1645,9 +2368,15 @@ export function App() {
     setIsLocationPanelOpen(false);
     setActiveNav(nav);
     if (nav === 'home') {
+      setSelectedFolderId(null);
+      setActiveFilter('all');
+      setActiveLocation('all');
+    } else if (nav === 'trash') {
+      setSelectedFolderId(null);
       setActiveFilter('all');
       setActiveLocation('all');
     } else if (nav === 'shared') {
+      setSelectedFolderId(null);
       setActiveFilter('all');
       setActiveLocation('shared');
     } else {
@@ -1724,6 +2453,29 @@ export function App() {
   );
 
   const handleBackHome = useCallback(() => {
+    const closingDocId = activeWorkspaceDocIdRef.current;
+    if (
+      closingDocId &&
+      activeCollabPermissionRef.current !== 'view' &&
+      autoSnapshotDirtyDocIdsRef.current.has(closingDocId)
+    ) {
+      const closingDoc =
+        documentsRef.current.find((doc) => doc.id === closingDocId) ??
+        (collabSharedDocRef.current?.id === closingDocId
+          ? collabSharedDocRef.current
+          : undefined);
+      if (closingDoc) {
+        const activeUser = currentUserRef.current;
+        const saverName =
+          activeUser?.displayName || activeUser?.email || undefined;
+        autoSnapshotDirtyDocIdsRef.current.delete(closingDocId);
+        void saveDocumentVersion(activeUser?.id ?? null, closingDoc, saverName, {
+          saveKind: 'auto',
+          skipIfUnchanged: true,
+        }).catch(() => undefined);
+      }
+    }
+
     setLegalPage(null);
     setRemoteRoomCode(null);
     setSharedToken(null);
@@ -1752,6 +2504,8 @@ export function App() {
       window.history.pushState(null, '', `${targetPath}${url.search}`);
     }
   }, []);
+
+  handleBackHomeRef.current = handleBackHome;
 
   const enqueueCloudUpsert = useCallback(
     (
@@ -1811,7 +2565,7 @@ export function App() {
               };
             });
             setDocuments(nextDocs);
-            persistDocumentsToStorage(nextDocs);
+            persistDocumentsToStorage(nextDocs, userId);
             setLastSyncedAt(new Date().toISOString());
             setSyncStatus('synced');
           } catch {
@@ -1842,7 +2596,7 @@ export function App() {
         doc.id === docId ? toggledDoc : doc
       );
       setDocuments(nextDocs);
-      persistDocumentsToStorage(nextDocs);
+      persistDocumentsToStorage(nextDocs, currentUserRef.current?.id);
 
       const activeUser = currentUserRef.current;
       if (activeUser && isSupabaseConfigured && toggledDoc.isSyncedToCloud) {
@@ -1893,6 +2647,7 @@ export function App() {
             };
           }
         }
+        const { buildDocumentUploadPayload } = await import('./utils/fileExporter');
         const { blob, fileName, mimeType } =
           await buildDocumentUploadPayload(docForPayload);
         await upsertDocumentToLiteDrive(
@@ -1985,6 +2740,7 @@ export function App() {
                 };
               }
             }
+            const { buildDocumentUploadPayload } = await import('./utils/fileExporter');
             const payload = await buildDocumentUploadPayload(docSnap);
             await upsertDocumentToLiteDrive(
               docSnap.id,
@@ -2026,13 +2782,13 @@ export function App() {
     void flushOfflineQueueForUser(activeUserId);
 
     const handleOnline = () => {
+      setIsOnline(true);
       void flushOfflineQueueForUser(currentUserRef.current?.id ?? null);
     };
     const handleOffline = () => {
-      if (currentUserRef.current || hasGoogleTokenRef.current) {
-        setDriveSyncBadge('offline');
-        setDriveSyncLabel('Chờ đồng bộ (Ngoại tuyến)');
-      }
+      setIsOnline(false);
+      setDriveSyncBadge('offline');
+      setDriveSyncLabel('Chế độ ngoại tuyến — Đã lưu cục bộ');
     };
 
     window.addEventListener('online', handleOnline);
@@ -2042,6 +2798,22 @@ export function App() {
       window.removeEventListener('offline', handleOffline);
     };
   }, [currentUser?.id, hasGoogleToken, flushOfflineQueueForUser]);
+
+  // Automatic Android APK version check against version.json on native startup
+  useEffect(() => {
+    let cancelled = false;
+    void checkForAndroidAppUpdate()
+      .then((res) => {
+        if (!cancelled && res.hasUpdate && res.latest) {
+          setApkUpdateResult(res);
+          setIsApkUpdateModalOpen(true);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSaveDocument = useCallback(
     (updatedDoc: DocumentItem, options?: { isManualSave?: boolean }) => {
@@ -2055,8 +2827,13 @@ export function App() {
           ? collabSharedDocRef.current
           : undefined);
 
+      const activeUser = currentUserRef.current;
+      const ownerScope = normalizeSyncUserId(activeUser?.id);
+
       const savedDoc: DocumentItem = {
         ...updatedDoc,
+        ownerScope,
+        userId: updatedDoc.userId ?? ownerScope,
         updatedAt: 'Vừa lưu',
         lastSavedAt: new Date().toISOString(),
       };
@@ -2077,7 +2854,10 @@ export function App() {
         );
         setDocuments(nextDocs);
 
-        const storageResult = persistDocumentsToStorage(nextDocs);
+        const storageResult = persistDocumentsToStorage(
+          nextDocs,
+          activeUser?.id
+        );
         if (storageResult.quotaExceeded) {
           setUploadNotice(
             `Đã lưu tạm "${savedDoc.title}" trong phiên hiện tại, nhưng bộ nhớ trình duyệt đã đầy nên không thể lưu vĩnh viễn toàn bộ dữ liệu lớn.`
@@ -2089,19 +2869,21 @@ export function App() {
         setCollabSharedDoc(savedDoc);
       }
 
-      const activeUser = currentUserRef.current;
       const activeUserId = activeUser?.id ?? null;
 
       // Save instant IndexedDB draft scoped to userId
       void saveLocalDraft(activeUserId, savedDoc).catch(() => undefined);
 
-      // Save manual version checkpoint (max 10 per userId + docId)
+      // Save manual version checkpoint (max 10 per userId + docId), or mark dirty for 5-min / close auto-snapshot
       if (options?.isManualSave) {
+        autoSnapshotDirtyDocIdsRef.current.delete(savedDoc.id);
         const saverName =
           activeUser?.displayName || activeUser?.email || undefined;
-        void saveDocumentVersion(activeUserId, savedDoc, saverName).catch(
-          () => undefined
-        );
+        void saveDocumentVersion(activeUserId, savedDoc, saverName, {
+          saveKind: 'manual',
+        }).catch(() => undefined);
+      } else {
+        autoSnapshotDirtyDocIdsRef.current.add(savedDoc.id);
       }
 
       const isOffline =
@@ -2204,7 +2986,7 @@ export function App() {
         );
         documentsRef.current = nextDocs;
         setDocuments(nextDocs);
-        persistDocumentsToStorage(nextDocs);
+        persistDocumentsToStorage(nextDocs, currentUserRef.current?.id);
       }
 
       if (collabSharedDocRef.current?.id === mergedRestored.id) {
@@ -2264,7 +3046,7 @@ export function App() {
           : doc
       );
       setDocuments(nextDocs);
-      persistDocumentsToStorage(nextDocs);
+      persistDocumentsToStorage(nextDocs, currentUserRef.current?.id);
 
       setCollabSharedDoc((prev) =>
         prev && prev.id === info.documentId
@@ -2308,7 +3090,7 @@ export function App() {
       );
 
       setDocuments(nextDocs);
-      persistDocumentsToStorage(nextDocs);
+      persistDocumentsToStorage(nextDocs, currentUserRef.current?.id);
 
       const activeUser = currentUserRef.current;
       if (activeUser && isSupabaseConfigured) {
@@ -2363,7 +3145,7 @@ export function App() {
       );
 
       setDocuments(nextDocs);
-      persistDocumentsToStorage(nextDocs);
+      persistDocumentsToStorage(nextDocs, currentUserRef.current?.id);
 
       const activeUser = currentUserRef.current;
       if (activeUser && isSupabaseConfigured) {
@@ -2409,7 +3191,7 @@ export function App() {
     [enqueueCloudUpsert]
   );
 
-  const handleDeleteDocuments = useCallback(
+  const handlePermanentDeleteDocuments = useCallback(
     async (docsToDelete: DocumentItem[]) => {
       if (docsToDelete.length === 0) {
         return;
@@ -2469,7 +3251,7 @@ export function App() {
           (doc) => !deletedIdSet.has(doc.id)
         );
         setDocuments(nextDocs);
-        persistDocumentsToStorage(nextDocs);
+        persistDocumentsToStorage(nextDocs, activeUserForCleanup);
         setPendingMigrationDocs((prev) =>
           prev.filter((doc) => !deletedIdSet.has(doc.id))
         );
@@ -2538,11 +3320,11 @@ export function App() {
 
         if (docsToDelete.length === 1) {
           setUploadNotice(
-            `Đã xóa tài liệu "${docsToDelete[0].title}" khỏi thư viện.`
+            `Đã xóa vĩnh viễn "${docsToDelete[0].title}" khỏi Thùng rác.`
           );
         } else {
           setUploadNotice(
-            `Đã xóa ${docsToDelete.length} tài liệu khỏi thư viện.`
+            `Đã xóa vĩnh viễn ${docsToDelete.length} tài liệu khỏi Thùng rác.`
           );
         }
       } finally {
@@ -2552,13 +3334,368 @@ export function App() {
     []
   );
 
+  const handleMoveDocumentsToTrash = useCallback(
+    async (docsToTrash: DocumentItem[]) => {
+      if (docsToTrash.length === 0) {
+        return;
+      }
+
+      setIsDeleting(true);
+      try {
+        const deletedAtMs = Date.now();
+        const targetIdSet = new Set<string>(docsToTrash.map((doc) => doc.id));
+        const activeUser = currentUserRef.current;
+        const ownerScope = normalizeSyncUserId(activeUser?.id);
+        const updatedTargets: DocumentItem[] = [];
+
+        const nextDocs = documentsRef.current.map((doc) => {
+          if (!targetIdSet.has(doc.id)) {
+            return doc;
+          }
+          const trashedDoc: DocumentItem = {
+            ...doc,
+            deletedAt: deletedAtMs,
+            ownerScope,
+            userId: doc.userId ?? ownerScope,
+          };
+          updatedTargets.push(trashedDoc);
+          return trashedDoc;
+        });
+
+        documentsRef.current = nextDocs;
+        setDocuments(nextDocs);
+        persistDocumentsToStorage(nextDocs, activeUser?.id);
+
+        setActiveWorkspaceDocId((prevId) => {
+          if (prevId && targetIdSet.has(prevId)) {
+            if (parseDocIdFromHash(window.location.hash)) {
+              window.history.pushState(
+                null,
+                '',
+                `${window.location.pathname}${window.location.search}`
+              );
+            }
+            return null;
+          }
+          return prevId;
+        });
+
+        setLastActiveDocId((prevId) =>
+          prevId && !targetIdSet.has(prevId)
+            ? prevId
+            : (nextDocs.find((d) => !d.deletedAt)?.id ?? null)
+        );
+
+        if (activeUser && isSupabaseConfigured) {
+          for (const docItem of updatedTargets) {
+            if (docItem.isSyncedToCloud) {
+              void enqueueCloudUpsert(activeUser.id, docItem, {
+                file: null,
+                touchUpdatedAt: false,
+              });
+            }
+          }
+        }
+
+        if (docsToTrash.length === 1) {
+          setUploadNotice(
+            `Đã chuyển "${docsToTrash[0].title}" vào Thùng rác (tự xóa vĩnh viễn sau 30 ngày).`
+          );
+        } else {
+          setUploadNotice(
+            `Đã chuyển ${docsToTrash.length} tài liệu vào Thùng rác.`
+          );
+        }
+      } finally {
+        setIsDeleting(false);
+      }
+    },
+    [enqueueCloudUpsert]
+  );
+
+  const handleDeleteDocuments = useCallback(
+    async (docsToDelete: DocumentItem[]) => {
+      if (activeNavRef.current === 'trash') {
+        await handlePermanentDeleteDocuments(docsToDelete);
+      } else {
+        await handleMoveDocumentsToTrash(docsToDelete);
+      }
+    },
+    [handlePermanentDeleteDocuments, handleMoveDocumentsToTrash]
+  );
+
+  const handleRestoreDocumentsFromTrash = useCallback(
+    async (docsToRestore: DocumentItem[]) => {
+      if (docsToRestore.length === 0) {
+        return;
+      }
+
+      setIsDeleting(true);
+      try {
+        const targetIdSet = new Set<string>(docsToRestore.map((doc) => doc.id));
+        const validFolderIds = new Set(foldersRef.current.map((f) => f.id));
+        const activeUser = currentUserRef.current;
+        const ownerScope = normalizeSyncUserId(activeUser?.id);
+        const restoredList: DocumentItem[] = [];
+
+        const nextDocs = documentsRef.current.map((doc) => {
+          if (!targetIdSet.has(doc.id)) {
+            return doc;
+          }
+          const keepFolder =
+            doc.folderId && validFolderIds.has(doc.folderId) ? doc.folderId : null;
+          const restored: DocumentItem = {
+            ...doc,
+            deletedAt: null,
+            folderId: keepFolder,
+            ...(keepFolder === null ? { folder: undefined } : {}),
+            updatedAt: 'Vừa khôi phục',
+            ownerScope,
+            userId: doc.userId ?? ownerScope,
+          };
+          restoredList.push(restored);
+          return restored;
+        });
+
+        documentsRef.current = nextDocs;
+        setDocuments(nextDocs);
+        persistDocumentsToStorage(nextDocs, activeUser?.id);
+
+        if (activeUser && isSupabaseConfigured) {
+          for (const docItem of restoredList) {
+            if (docItem.isSyncedToCloud) {
+              void enqueueCloudUpsert(activeUser.id, docItem, {
+                file: null,
+                touchUpdatedAt: true,
+              });
+            }
+          }
+        }
+
+        if (docsToRestore.length === 1) {
+          setUploadNotice(
+            `Đã khôi phục "${docsToRestore[0].title}" về Trang chủ.`
+          );
+        } else {
+          setUploadNotice(
+            `Đã khôi phục ${docsToRestore.length} tài liệu về Trang chủ.`
+          );
+        }
+      } finally {
+        setIsDeleting(false);
+      }
+    },
+    [enqueueCloudUpsert]
+  );
+
+  const handleSelectFolder = useCallback((folderId: string | null) => {
+    setSelectedFolderId(folderId);
+    setActiveNav((prev) =>
+      prev === 'trash' || prev === 'shared' ? 'home' : prev
+    );
+    setActiveLocation((prev) => (prev === 'shared' ? 'all' : prev));
+  }, []);
+
+  const handleCreateFolder = useCallback(
+    (name: string, color = '#4F46E5') => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      const activeUser = currentUserRef.current;
+      const ownerScope = normalizeSyncUserId(activeUser?.id);
+      const newFolder: DocumentFolder = {
+        id: `fld-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        name: trimmed,
+        color: color || '#4F46E5',
+        userId: ownerScope,
+        ownerScope,
+        createdAt: new Date().toISOString(),
+      };
+      const nextFolders = [...foldersRef.current, newFolder];
+      foldersRef.current = nextFolders;
+      setFolders(nextFolders);
+      persistFoldersToStorage(nextFolders, activeUser?.id);
+      setSelectedFolderId(newFolder.id);
+      if (activeNavRef.current === 'trash' || activeNavRef.current === 'shared') {
+        setActiveNav('home');
+      }
+      if (activeUser && isSupabaseConfigured) {
+        void upsertCloudFolder(activeUser.id, newFolder).catch(() => undefined);
+      }
+      setUploadNotice(`Đã tạo thư mục "${newFolder.name}".`);
+    },
+    []
+  );
+
+  const handleRenameFolder = useCallback((folderId: string, nextName: string) => {
+    const trimmed = nextName.trim();
+    if (!trimmed) return;
+    const activeUser = currentUserRef.current;
+    let updatedFolder: DocumentFolder | null = null;
+    const nextFolders = foldersRef.current.map((f) => {
+      if (f.id !== folderId) return f;
+      updatedFolder = {
+        ...f,
+        name: trimmed,
+        updatedAt: new Date().toISOString(),
+      };
+      return updatedFolder;
+    });
+    if (!updatedFolder) return;
+    foldersRef.current = nextFolders;
+    setFolders(nextFolders);
+    persistFoldersToStorage(nextFolders, activeUser?.id);
+
+    const nextDocs = documentsRef.current.map((doc) =>
+      doc.folderId === folderId ? { ...doc, folder: trimmed } : doc
+    );
+    documentsRef.current = nextDocs;
+    setDocuments(nextDocs);
+    persistDocumentsToStorage(nextDocs, activeUser?.id);
+
+    if (activeUser && isSupabaseConfigured) {
+      void upsertCloudFolder(activeUser.id, updatedFolder).catch(() => undefined);
+    }
+  }, []);
+
+  const handleChangeFolderColor = useCallback((folderId: string, color: string) => {
+    const activeUser = currentUserRef.current;
+    let updatedFolder: DocumentFolder | null = null;
+    const nextFolders = foldersRef.current.map((f) => {
+      if (f.id !== folderId) return f;
+      updatedFolder = {
+        ...f,
+        color,
+        updatedAt: new Date().toISOString(),
+      };
+      return updatedFolder;
+    });
+    if (!updatedFolder) return;
+    foldersRef.current = nextFolders;
+    setFolders(nextFolders);
+    persistFoldersToStorage(nextFolders, activeUser?.id);
+    if (activeUser && isSupabaseConfigured) {
+      void upsertCloudFolder(activeUser.id, updatedFolder).catch(() => undefined);
+    }
+  }, []);
+
+  const handleDeleteFolder = useCallback(
+    (folderId: string) => {
+      const targetFolder = foldersRef.current.find((f) => f.id === folderId);
+      const activeUser = currentUserRef.current;
+      const nextFolders = foldersRef.current.filter((f) => f.id !== folderId);
+      foldersRef.current = nextFolders;
+      setFolders(nextFolders);
+      persistFoldersToStorage(nextFolders, activeUser?.id);
+
+      setSelectedFolderId((prev) => (prev === folderId ? null : prev));
+
+      const affectedDocs: DocumentItem[] = [];
+      const nextDocs = documentsRef.current.map((doc) => {
+        if (doc.folderId !== folderId) return doc;
+        const clearedDoc: DocumentItem = {
+          ...doc,
+          folderId: null,
+          folder: undefined,
+        };
+        affectedDocs.push(clearedDoc);
+        return clearedDoc;
+      });
+      if (affectedDocs.length > 0) {
+        documentsRef.current = nextDocs;
+        setDocuments(nextDocs);
+        persistDocumentsToStorage(nextDocs, activeUser?.id);
+        if (activeUser && isSupabaseConfigured) {
+          for (const docItem of affectedDocs) {
+            if (docItem.isSyncedToCloud) {
+              void enqueueCloudUpsert(activeUser.id, docItem, {
+                file: null,
+                touchUpdatedAt: false,
+              });
+            }
+          }
+        }
+      }
+
+      if (activeUser && isSupabaseConfigured) {
+        void deleteCloudFolder(activeUser.id, folderId).catch(() => undefined);
+      }
+
+      if (targetFolder) {
+        setUploadNotice(
+          `Đã xóa thư mục "${targetFolder.name}". Các tài liệu bên trong vẫn được giữ ở Trang chủ.`
+        );
+      }
+    },
+    [enqueueCloudUpsert]
+  );
+
+  const handleMoveDocumentsToFolder = useCallback(
+    (docIds: string[], folderId: string | null) => {
+      if (docIds.length === 0) return;
+      const idSet = new Set(docIds);
+      const targetFolder = folderId
+        ? foldersRef.current.find((f) => f.id === folderId) ?? null
+        : null;
+      const activeUser = currentUserRef.current;
+      const updatedDocs: DocumentItem[] = [];
+
+      const nextDocs = documentsRef.current.map((doc) => {
+        if (!idSet.has(doc.id)) return doc;
+        const moved: DocumentItem = {
+          ...doc,
+          folderId: targetFolder ? targetFolder.id : null,
+          folder: targetFolder ? targetFolder.name : undefined,
+        };
+        updatedDocs.push(moved);
+        return moved;
+      });
+
+      if (updatedDocs.length === 0) return;
+      documentsRef.current = nextDocs;
+      setDocuments(nextDocs);
+      persistDocumentsToStorage(nextDocs, activeUser?.id);
+
+      if (activeUser && isSupabaseConfigured) {
+        for (const docItem of updatedDocs) {
+          if (docItem.isSyncedToCloud) {
+            void enqueueCloudUpsert(activeUser.id, docItem, {
+              file: null,
+              touchUpdatedAt: false,
+            });
+          }
+        }
+      }
+
+      setUploadNotice(
+        targetFolder
+          ? `Đã di chuyển ${updatedDocs.length} tài liệu vào thư mục "${targetFolder.name}".`
+          : `Đã đưa ${updatedDocs.length} tài liệu ra ngoài Trang chủ.`
+      );
+    },
+    [enqueueCloudUpsert]
+  );
+
   const handleCreateDocument = useCallback(
     (params: CreateEditableDocumentParams) => {
-      const newDoc = createNewEditableDocument(params);
+      const activeUser = currentUserRef.current;
+      const ownerScope = normalizeSyncUserId(activeUser?.id);
+      const activeFolder =
+        selectedFolderIdRef.current && activeNavRef.current !== 'trash'
+          ? foldersRef.current.find((f) => f.id === selectedFolderIdRef.current) ??
+            null
+          : null;
+      const newDoc: DocumentItem = {
+        ...createNewEditableDocument(params),
+        ...(activeFolder
+          ? { folderId: activeFolder.id, folder: activeFolder.name }
+          : {}),
+        ownerScope,
+        userId: ownerScope,
+      };
       const nextDocs = [newDoc, ...documentsRef.current];
       documentsRef.current = nextDocs;
       setDocuments(nextDocs);
-      persistDocumentsToStorage(nextDocs);
+      persistDocumentsToStorage(nextDocs, activeUser?.id);
 
       setRemoteRoomCode(null);
       setSharedToken(null);
@@ -2572,7 +3709,6 @@ export function App() {
         window.location.hash = targetHash;
       }
 
-      const activeUser = currentUserRef.current;
       if (activeUser && isSupabaseConfigured) {
         void enqueueCloudUpsert(activeUser.id, newDoc, {
           file: null,
@@ -2599,6 +3735,7 @@ export function App() {
       const errorMessages: string[] = [];
 
       try {
+        const { parseUploadedFile } = await import('./utils/fileParser');
         for (const file of fileArray) {
           const result = await parseUploadedFile(file);
           if (result.createdObjectUrls.length > 0) {
@@ -2629,8 +3766,22 @@ export function App() {
               ).catch(() => undefined);
             }
 
+            const activeOwnerScope = normalizeSyncUserId(
+              currentUserRef.current?.id
+            );
+            const activeFolder =
+              selectedFolderIdRef.current && activeNavRef.current !== 'trash'
+                ? foldersRef.current.find(
+                    (f) => f.id === selectedFolderIdRef.current
+                  ) ?? null
+                : null;
             acceptedDocs.push({
               ...result.document,
+              ...(activeFolder
+                ? { folderId: activeFolder.id, folder: activeFolder.name }
+                : {}),
+              ownerScope: activeOwnerScope,
+              userId: activeOwnerScope,
               rawArrayBuffer: rawBuffer,
               originalMimeType,
               originalFileName,
@@ -2649,7 +3800,10 @@ export function App() {
           setDocuments(nextDocs);
           setLastActiveDocId(primaryDoc.id);
 
-          const storageResult = persistDocumentsToStorage(nextDocs);
+          const storageResult = persistDocumentsToStorage(
+            nextDocs,
+            currentUserRef.current?.id
+          );
           if (storageResult.quotaExceeded) {
             quotaNote =
               ' (Bộ nhớ trình duyệt đã đầy — tệp vẫn sẵn sàng dùng trong phiên hiện tại.)';
@@ -2772,7 +3926,7 @@ export function App() {
             };
           });
           setDocuments(updatedDocs);
-          persistDocumentsToStorage(updatedDocs);
+          persistDocumentsToStorage(updatedDocs, activeUser.id);
         }
 
         if (currentUserRef.current?.id === activeUser.id) {
@@ -2847,7 +4001,7 @@ export function App() {
         });
 
       setDocuments(nextDocs);
-      persistDocumentsToStorage(nextDocs);
+      persistDocumentsToStorage(nextDocs, currentUserRef.current?.id);
       setPendingMigrationDocs([]);
       setActiveUtilityModal(null);
       setLastSyncedAt(new Date().toISOString());
@@ -2882,7 +4036,7 @@ export function App() {
     );
 
     setDocuments(cloudDocs);
-    persistDocumentsToStorage(cloudDocs);
+    persistDocumentsToStorage(cloudDocs, currentUserRef.current?.id);
     setPendingMigrationDocs([]);
     setActiveUtilityModal(null);
     setUploadNotice(
@@ -2967,7 +4121,7 @@ export function App() {
 
       const mergedDocs = [...cloudDocs, ...sharedDocs, ...remainingLocal];
       setDocuments(mergedDocs);
-      persistDocumentsToStorage(mergedDocs);
+      persistDocumentsToStorage(mergedDocs, activeUser.id);
       setPendingMigrationDocs([]);
       setLastSyncedAt(new Date().toISOString());
       setSyncStatus(failedCount > 0 ? 'error' : 'synced');
@@ -2997,6 +4151,8 @@ export function App() {
     }
 
     setIsLoggingOut(true);
+    const prevUserId =
+      currentUserRef.current?.id ?? lastLoadedUserIdRef.current ?? null;
     try {
       if (supabase) {
         await supabase.auth.signOut();
@@ -3004,57 +4160,13 @@ export function App() {
     } catch {
       // Proceed to clear local session state even if network signOut fails
     } finally {
-      driveDebounceTimersRef.current.forEach((timerId) => {
-        window.clearTimeout(timerId);
-      });
-      driveDebounceTimersRef.current.clear();
-      latestDriveDocByIdRef.current.clear();
-      setDriveSyncBadge('idle');
-      setDriveSyncLabel('');
-      setPendingOfflineCount(0);
-      clearStoredGoogleDriveToken();
-      setActiveGoogleDriveUser(null);
-      setHasGoogleToken(false);
-      currentUserRef.current = null;
-      lastLoadedUserIdRef.current = null;
-      inFlightSyncUserIdRef.current = null;
-      autoHydrateAttemptedRef.current.clear();
-
-      // Strip cloud-owned documents from localStorage before returning to Guest Local Mode
-      const pureLocalDocs = documentsRef.current.filter(
-        (doc) =>
-          !doc.isSyncedToCloud &&
-          !doc.userId &&
-          !LEGACY_MOCK_ID_SET.has(doc.id)
-      );
-      persistDocumentsToStorage(pureLocalDocs);
-
-      const localDocs = loadInitialDocuments();
-      setDocuments(localDocs);
-      setCurrentUser(null);
-      setPendingMigrationDocs([]);
-      setLastSyncedAt(null);
-      setSyncStatus(isSupabaseConfigured ? 'idle' : 'local');
-      setActiveWorkspaceDocId(null);
-      setLastActiveDocId(localDocs[0]?.id ?? null);
-      setActiveModal(null);
-      setModalDocOverride(null);
-      setActiveUtilityModal(null);
-
-      if (window.location.hash) {
-        window.history.pushState(
-          null,
-          '',
-          `${window.location.pathname}${window.location.search}`
-        );
-      }
-
+      await resetToGuestSession(prevUserId);
       setUploadNotice(
-        'Đã đăng xuất tài khoản. Ứng dụng đã chuyển về chế độ cục bộ (Local Mode).'
+        'Đã đăng xuất tài khoản. Dữ liệu phiên cũ đã được dọn sạch và chuyển về chế độ khách (Guest).'
       );
       setIsLoggingOut(false);
     }
-  }, [isLoggingOut]);
+  }, [isLoggingOut, resetToGuestSession]);
 
   const handleOpenModal = useCallback(
     (modal: Exclude<ModalType, null>, overrideDoc?: DocumentItem) => {
@@ -3185,6 +4297,7 @@ export function App() {
 
   const handleOpenDriveFile = useCallback(
     async (file: File, driveItem: GoogleDriveFileItem) => {
+      const { parseUploadedFile } = await import('./utils/fileParser');
       const result = await parseUploadedFile(file);
       if (result.createdObjectUrls.length > 0) {
         createdObjectUrlsRef.current.push(...result.createdObjectUrls);
@@ -3220,8 +4333,11 @@ export function App() {
         ).catch(() => undefined);
       }
 
+      const activeOwnerScope = normalizeSyncUserId(currentUserRef.current?.id);
       const parsedDoc: DocumentItem = {
         ...result.document,
+        ownerScope: activeOwnerScope,
+        userId: activeOwnerScope,
         folder: 'Google Drive',
         rawArrayBuffer: rawBuffer,
         originalMimeType,
@@ -3232,7 +4348,7 @@ export function App() {
       const nextDocs = [parsedDoc, ...documentsRef.current];
       documentsRef.current = nextDocs;
       setDocuments(nextDocs);
-      persistDocumentsToStorage(nextDocs);
+      persistDocumentsToStorage(nextDocs, currentUserRef.current?.id);
 
       const activeUser = currentUserRef.current;
       if (activeUser && isSupabaseConfigured) {
@@ -3248,38 +4364,79 @@ export function App() {
     [enqueueCloudUpsert, handleOpenDocument]
   );
 
+  const activeDocuments = useMemo(
+    () =>
+      documents.filter(
+        (d) => !(typeof d.deletedAt === 'number' && d.deletedAt > 0)
+      ),
+    [documents]
+  );
+
+  const trashCount = useMemo(
+    () =>
+      documents.filter((d) => typeof d.deletedAt === 'number' && d.deletedAt > 0)
+        .length,
+    [documents]
+  );
+
+  const folderDocCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const doc of activeDocuments) {
+      if (doc.folderId) {
+        counts[doc.folderId] = (counts[doc.folderId] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }, [activeDocuments]);
+
   const locationCounts = useMemo(
     () => ({
-      recent: documents.filter((d) =>
+      recent: activeDocuments.filter((d) =>
         Boolean(d.lastAccessedAt || d.lastSavedAt || d.updatedAt)
       ).length,
-      shared: documents.filter((d) => Boolean(d.isShared)).length,
-      cloud: documents.filter((d) => Boolean(d.isSyncedToCloud)).length,
-      device: documents.filter(
+      shared: activeDocuments.filter((d) => Boolean(d.isShared)).length,
+      cloud: activeDocuments.filter((d) => Boolean(d.isSyncedToCloud)).length,
+      device: activeDocuments.filter(
         (d) => !d.isSyncedToCloud || Boolean(d.isUploaded)
       ).length,
     }),
-    [documents]
+    [activeDocuments]
   );
 
   const filteredDocuments = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
+    const isTrash = activeNav === 'trash';
 
     const matched = documents.filter((doc) => {
-      if ((activeNav === 'shared' || activeLocation === 'shared') && !doc.isShared) {
-        return false;
-      }
+      const isDeleted = typeof doc.deletedAt === 'number' && doc.deletedAt > 0;
+      if (isTrash) {
+        if (!isDeleted) return false;
+      } else {
+        if (isDeleted) return false;
 
-      if (activeLocation === 'cloud' && !doc.isSyncedToCloud) {
-        return false;
-      }
+        if (
+          selectedFolderId &&
+          (activeNav === 'home' || activeNav === 'folders') &&
+          doc.folderId !== selectedFolderId
+        ) {
+          return false;
+        }
 
-      if (
-        activeLocation === 'device' &&
-        doc.isSyncedToCloud &&
-        !doc.isUploaded
-      ) {
-        return false;
+        if ((activeNav === 'shared' || activeLocation === 'shared') && !doc.isShared) {
+          return false;
+        }
+
+        if (activeLocation === 'cloud' && !doc.isSyncedToCloud) {
+          return false;
+        }
+
+        if (
+          activeLocation === 'device' &&
+          doc.isSyncedToCloud &&
+          !doc.isUploaded
+        ) {
+          return false;
+        }
       }
 
       if (activeFilter === 'favorite' && !doc.isFavorite) {
@@ -3316,6 +4473,12 @@ export function App() {
       return true;
     });
 
+    if (isTrash) {
+      return [...matched].sort(
+        (a, b) => (b.deletedAt ?? 0) - (a.deletedAt ?? 0)
+      );
+    }
+
     if (activeLocation === 'recent') {
       return [...matched].sort((a, b) => {
         const timeA = Math.max(
@@ -3340,7 +4503,14 @@ export function App() {
     }
 
     return matched;
-  }, [documents, activeNav, activeLocation, activeFilter, searchQuery]);
+  }, [
+    documents,
+    activeNav,
+    activeLocation,
+    activeFilter,
+    searchQuery,
+    selectedFolderId,
+  ]);
 
   const activeWorkspaceDoc = useMemo(() => {
     if (collabSharedDoc && collabSharedDoc.id === activeWorkspaceDocId) {
@@ -3478,6 +4648,42 @@ export function App() {
     void hydrateCloudPdfDocument(activeWorkspaceDoc);
   }, [activeWorkspaceDoc, hydrateCloudPdfDocument]);
 
+  // Automatic 5-minute background Version Snapshot while editing inside a workspace
+  useEffect(() => {
+    const docId = activeWorkspaceDoc?.id;
+    if (!docId) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      if (
+        activeCollabPermissionRef.current === 'view' ||
+        !autoSnapshotDirtyDocIdsRef.current.has(docId)
+      ) {
+        return;
+      }
+      const latestDoc =
+        documentsRef.current.find((doc) => doc.id === docId) ??
+        (collabSharedDocRef.current?.id === docId
+          ? collabSharedDocRef.current
+          : undefined);
+      if (!latestDoc) {
+        return;
+      }
+      const activeUser = currentUserRef.current;
+      const saverName =
+        activeUser?.displayName || activeUser?.email || undefined;
+      autoSnapshotDirtyDocIdsRef.current.delete(docId);
+      void saveDocumentVersion(activeUser?.id ?? null, latestDoc, saverName, {
+        saveKind: 'auto',
+        skipIfUnchanged: true,
+      }).catch(() => undefined);
+    }, AUTO_SNAPSHOT_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [activeWorkspaceDoc?.id]);
+
   const modalDocument = useMemo(() => {
     if (modalDocOverride) {
       return modalDocOverride;
@@ -3505,7 +4711,64 @@ export function App() {
     activeUtilityModal !== null ||
     isDriveModalOpen ||
     isVersionHistoryOpen ||
-    isQuickConverterOpen;
+    isQuickConverterOpen ||
+    isApkUpdateModalOpen;
+
+  // Sync Android StatusBar theme smoothly when returning Home or opening workspaces
+  useEffect(() => {
+    if (!activeWorkspaceDoc) {
+      syncAndroidStatusBar({ color: '#FAF8F5', isDarkBackground: false });
+    } else if (activeWorkspaceDoc.type !== 'docx') {
+      syncAndroidStatusBar({ color: '#FFFFFF', isDarkBackground: false });
+    }
+  }, [activeWorkspaceDoc]);
+
+  // Global keyboard shortcuts fallback (Ctrl+S, Ctrl+P, Ctrl+Z, Ctrl+Y, F5)
+  useEffect(() => {
+    const handleGlobalShortcuts = (event: KeyboardEvent) => {
+      if (!activeWorkspaceDoc || isAnyModalOpen || event.defaultPrevented) {
+        return;
+      }
+
+      if (event.key === 'F5' && activeWorkspaceDoc.type === 'pptx') {
+        event.preventDefault();
+        window.dispatchEvent(new CustomEvent('lite:shortcut-slideshow'));
+        return;
+      }
+
+      if (!(event.ctrlKey || event.metaKey)) {
+        return;
+      }
+
+      const lower = event.key.toLowerCase();
+      if (lower === 's') {
+        event.preventDefault();
+        handleSaveDocument(activeWorkspaceDoc, { isManualSave: true });
+      } else if (lower === 'p') {
+        event.preventDefault();
+        window.print();
+      } else if (lower === 'z' && !event.shiftKey) {
+        event.preventDefault();
+        try {
+          window.document.execCommand('undo');
+        } catch {
+          // Ignore unsupported undo command outside contentEditable
+        }
+      } else if (lower === 'y' || (lower === 'z' && event.shiftKey)) {
+        event.preventDefault();
+        try {
+          window.document.execCommand('redo');
+        } catch {
+          // Ignore unsupported redo command outside contentEditable
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalShortcuts);
+    return () => {
+      window.removeEventListener('keydown', handleGlobalShortcuts);
+    };
+  }, [activeWorkspaceDoc, isAnyModalOpen, handleSaveDocument]);
 
   const handleDownloadOriginalFile = useCallback(async () => {
     const doc = activeWorkspaceDoc;
@@ -3564,6 +4827,9 @@ export function App() {
     }
 
     try {
+      const { exportOriginalDocumentBinary } = await import(
+        './utils/fileExporter'
+      );
       const result = await exportOriginalDocumentBinary(doc, binaryBuffer);
       if (result.message) {
         setUploadNotice(result.message);
@@ -3617,31 +4883,37 @@ export function App() {
   // Priority Route 1: Mobile Realtime Remote Controller (#remote/<roomCode>)
   if (remoteRoomCode) {
     return (
-      <MobileRemoteView
-        roomCode={remoteRoomCode}
-        onExitToHome={handleBackHome}
-      />
+      <Suspense fallback={<LoadingWorkspaceSkeleton />}>
+        <MobileRemoteView
+          roomCode={remoteRoomCode}
+          onExitToHome={handleBackHome}
+        />
+      </Suspense>
     );
   }
 
   // Priority Route 2: Public / Password-Protected Share Viewer (#share/<token>)
   if (sharedToken) {
     return (
-      <SharedDocumentView
-        shareToken={sharedToken}
-        onNavigateHome={handleBackHome}
-      />
+      <Suspense fallback={<LoadingWorkspaceSkeleton />}>
+        <SharedDocumentView
+          shareToken={sharedToken}
+          onNavigateHome={handleBackHome}
+        />
+      </Suspense>
     );
   }
 
   // Priority Route 2.5: Legal Pages (/privacy | /terms)
   if (legalPage) {
     return (
-      <LegalPagesView
-        page={legalPage}
-        onNavigatePage={handleNavigateLegal}
-        onBackToApp={handleBackFromLegal}
-      />
+      <Suspense fallback={<LoadingWorkspaceSkeleton />}>
+        <LegalPagesView
+          page={legalPage}
+          onNavigatePage={handleNavigateLegal}
+          onBackToApp={handleBackFromLegal}
+        />
+      </Suspense>
     );
   }
 
@@ -3691,79 +4963,82 @@ export function App() {
     <>
       {activeWorkspaceDoc ? (
         <WorkspaceSyncProvider value={workspaceSyncContextValue}>
-          {activeWorkspaceDoc.type === 'pptx' ? (
-            <SlideWorkspace
-              document={activeWorkspaceDoc}
-              isModalOpen={isAnyModalOpen}
-              autoSaveEnabled={userSettings.autoSyncOnEdit}
-              isHydratingCloudFile={hydratingPdfDocId === activeWorkspaceDoc.id}
-              collaborators={collabCollaborators}
-              selfSessionId={selfSessionId}
-              collabPermission={activeCollabPermission}
-              onPresenceUpdate={handleCollabPresenceUpdate}
-              onBroadcastPatch={handleCollabBroadcastPatch}
-              incomingRemotePatch={latestRemotePatch}
-              onRetryCloudDownload={() => {
-                void hydrateCloudPdfDocument(activeWorkspaceDoc);
-              }}
-              onBackHome={handleBackHome}
-              onSaveDocument={handleSaveDocument}
-              onOpenModal={handleOpenModal}
-            />
-          ) : activeWorkspaceDoc.type === 'docx' ? (
-            <WordWorkspace
-              document={activeWorkspaceDoc}
-              isModalOpen={isAnyModalOpen}
-              defaultPaperTheme={userSettings.defaultWordTheme}
-              autoSaveEnabled={userSettings.autoSyncOnEdit}
-              isHydratingCloudFile={hydratingPdfDocId === activeWorkspaceDoc.id}
-              collaborators={collabCollaborators}
-              selfSessionId={selfSessionId}
-              collabPermission={activeCollabPermission}
-              onPresenceUpdate={handleCollabPresenceUpdate}
-              onBroadcastPatch={handleCollabBroadcastPatch}
-              incomingRemotePatch={latestRemotePatch}
-              onRetryCloudDownload={() => {
-                void hydrateCloudPdfDocument(activeWorkspaceDoc);
-              }}
-              onBackHome={handleBackHome}
-              onSaveDocument={handleSaveDocument}
-              onOpenModal={handleOpenModal}
-            />
-          ) : activeWorkspaceDoc.type === 'xlsx' ? (
-            <ExcelWorkspace
-              document={activeWorkspaceDoc}
-              isModalOpen={isAnyModalOpen}
-              autoSaveEnabled={userSettings.autoSyncOnEdit}
-              collaborators={collabCollaborators}
-              selfSessionId={selfSessionId}
-              collabPermission={activeCollabPermission}
-              onPresenceUpdate={handleCollabPresenceUpdate}
-              onBroadcastPatch={handleCollabBroadcastPatch}
-              incomingRemotePatch={latestRemotePatch}
-              onBackHome={handleBackHome}
-              onSaveDocument={handleSaveDocument}
-              onOpenModal={handleOpenModal}
-            />
-          ) : (
-            <PdfWorkspace
-              document={activeWorkspaceDoc}
-              isModalOpen={isAnyModalOpen}
-              isHydratingCloudFile={hydratingPdfDocId === activeWorkspaceDoc.id}
-              onRetryCloudDownload={() => {
-                void hydrateCloudPdfDocument(activeWorkspaceDoc);
-              }}
-              onBackHome={handleBackHome}
-              onOpenModal={handleOpenModal}
-              onReplacePdfFile={handleReplacePdfFile}
-            />
-          )}
+          <Suspense fallback={<LoadingWorkspaceSkeleton />}>
+            {activeWorkspaceDoc.type === 'pptx' ? (
+              <SlideWorkspace
+                document={activeWorkspaceDoc}
+                isModalOpen={isAnyModalOpen}
+                autoSaveEnabled={userSettings.autoSyncOnEdit}
+                isHydratingCloudFile={hydratingPdfDocId === activeWorkspaceDoc.id}
+                collaborators={collabCollaborators}
+                selfSessionId={selfSessionId}
+                collabPermission={activeCollabPermission}
+                onPresenceUpdate={handleCollabPresenceUpdate}
+                onBroadcastPatch={handleCollabBroadcastPatch}
+                incomingRemotePatch={latestRemotePatch}
+                onRetryCloudDownload={() => {
+                  void hydrateCloudPdfDocument(activeWorkspaceDoc);
+                }}
+                onBackHome={handleBackHome}
+                onSaveDocument={handleSaveDocument}
+                onOpenModal={handleOpenModal}
+              />
+            ) : activeWorkspaceDoc.type === 'docx' ? (
+              <WordWorkspace
+                document={activeWorkspaceDoc}
+                isModalOpen={isAnyModalOpen}
+                defaultPaperTheme={userSettings.defaultWordTheme}
+                autoSaveEnabled={userSettings.autoSyncOnEdit}
+                isHydratingCloudFile={hydratingPdfDocId === activeWorkspaceDoc.id}
+                collaborators={collabCollaborators}
+                selfSessionId={selfSessionId}
+                collabPermission={activeCollabPermission}
+                onPresenceUpdate={handleCollabPresenceUpdate}
+                onBroadcastPatch={handleCollabBroadcastPatch}
+                incomingRemotePatch={latestRemotePatch}
+                onRetryCloudDownload={() => {
+                  void hydrateCloudPdfDocument(activeWorkspaceDoc);
+                }}
+                onBackHome={handleBackHome}
+                onSaveDocument={handleSaveDocument}
+                onOpenModal={handleOpenModal}
+              />
+            ) : activeWorkspaceDoc.type === 'xlsx' ? (
+              <ExcelWorkspace
+                document={activeWorkspaceDoc}
+                isModalOpen={isAnyModalOpen}
+                autoSaveEnabled={userSettings.autoSyncOnEdit}
+                collaborators={collabCollaborators}
+                selfSessionId={selfSessionId}
+                collabPermission={activeCollabPermission}
+                onPresenceUpdate={handleCollabPresenceUpdate}
+                onBroadcastPatch={handleCollabBroadcastPatch}
+                incomingRemotePatch={latestRemotePatch}
+                onBackHome={handleBackHome}
+                onSaveDocument={handleSaveDocument}
+                onOpenModal={handleOpenModal}
+              />
+            ) : (
+              <PdfWorkspace
+                document={activeWorkspaceDoc}
+                isModalOpen={isAnyModalOpen}
+                isHydratingCloudFile={hydratingPdfDocId === activeWorkspaceDoc.id}
+                onRetryCloudDownload={() => {
+                  void hydrateCloudPdfDocument(activeWorkspaceDoc);
+                }}
+                onBackHome={handleBackHome}
+                onOpenModal={handleOpenModal}
+                onReplacePdfFile={handleReplacePdfFile}
+              />
+            )}
+          </Suspense>
         </WorkspaceSyncProvider>
       ) : (
         <div className="h-[100dvh] w-full overflow-hidden flex bg-[#FAF8F5] text-slate-900">
           <SidebarRail
             activeNav={activeNav}
             onSelectNav={handleSelectNav}
+            trashCount={trashCount}
             currentUser={currentUser}
             syncStatus={syncStatus}
             onOpenSettings={handleOpenSettings}
@@ -3777,6 +5052,14 @@ export function App() {
             currentUser={currentUser}
             hasGoogleToken={hasGoogleToken}
             counts={locationCounts}
+            folders={folders}
+            selectedFolderId={selectedFolderId}
+            folderDocCounts={folderDocCounts}
+            onSelectFolder={handleSelectFolder}
+            onCreateFolder={handleCreateFolder}
+            onRenameFolder={handleRenameFolder}
+            onChangeFolderColor={handleChangeFolderColor}
+            onDeleteFolder={handleDeleteFolder}
             onSelectLocation={(loc) => {
               setActiveLocation(loc);
             }}
@@ -3814,10 +5097,22 @@ export function App() {
               uploadProgress={uploadProgress}
               isDeleting={isDeleting}
               uploadNotice={uploadNotice}
+              folders={folders}
+              selectedFolderId={selectedFolderId}
+              folderDocCounts={folderDocCounts}
+              onSelectFolder={handleSelectFolder}
+              onCreateFolder={handleCreateFolder}
+              onRenameFolder={handleRenameFolder}
+              onChangeFolderColor={handleChangeFolderColor}
+              onDeleteFolder={handleDeleteFolder}
+              onMoveDocumentsToFolder={handleMoveDocumentsToFolder}
               onSearchChange={setSearchQuery}
               onFilterChange={handleFilterChange}
               onOpenDocument={handleOpenDocument}
               onCreateDocument={handleCreateDocument}
+              onOpenGoogleDrive={() => {
+                setIsDriveModalOpen(true);
+              }}
               onShareDocument={handleShareDocument}
               onConvertDocument={(doc) => {
                 setQuickConverterDocOverride(doc ?? null);
@@ -3831,6 +5126,8 @@ export function App() {
               onToggleFavorite={handleToggleFavorite}
               onUploadFiles={handleUploadFiles}
               onDeleteDocuments={handleDeleteDocuments}
+              onRestoreDocuments={handleRestoreDocumentsFromTrash}
+              onPermanentDeleteDocuments={handlePermanentDeleteDocuments}
               onDismissNotice={handleDismissNotice}
             />
           </div>
@@ -3838,113 +5135,157 @@ export function App() {
           <MobileBottomNav
             activeNav={activeNav}
             onSelectNav={handleSelectNav}
+            trashCount={trashCount}
           />
         </div>
       )}
 
-      <StageActionModal
-        modal={activeModal === 'share' ? null : activeModal}
-        document={modalDocument}
-        onClose={handleCloseModal}
-        onSwitchModal={handleSwitchModal}
-        onShareConfigUpdated={handleShareConfigUpdated}
-      />
+      <Suspense fallback={null}>
+        {activeModal && activeModal !== 'share' && (
+          <StageActionModal
+            modal={activeModal}
+            document={modalDocument}
+            onClose={handleCloseModal}
+            onSwitchModal={handleSwitchModal}
+            onShareConfigUpdated={handleShareConfigUpdated}
+          />
+        )}
 
-      <ShareCollabModal
-        isOpen={activeModal === 'share'}
-        onClose={handleCloseModal}
-        document={modalDocument}
-        currentUser={currentUser}
-        collaborators={collabCollaborators}
-        selfSessionId={selfSessionId}
-        onShareStateChanged={handleShareStateChanged}
-      />
+        {activeModal === 'share' && (
+          <ShareCollabModal
+            isOpen={true}
+            onClose={handleCloseModal}
+            document={modalDocument}
+            currentUser={currentUser}
+            collaborators={collabCollaborators}
+            selfSessionId={selfSessionId}
+            onShareStateChanged={handleShareStateChanged}
+          />
+        )}
 
-      <AuthModal
-        isOpen={activeUtilityModal === 'auth'}
-        externalNotice={authExternalNotice}
-        onClose={() => {
-          setAuthExternalNotice(null);
-          handleAuthSuccess();
-        }}
-        onAuthSuccess={() => {
-          setAuthExternalNotice(null);
-          handleAuthSuccess();
-        }}
-        onNavigateLegal={handleNavigateLegal}
-      />
+        {activeUtilityModal === 'auth' && (
+          <AuthModal
+            isOpen={true}
+            externalNotice={authExternalNotice}
+            onClose={() => {
+              setAuthExternalNotice(null);
+              handleAuthSuccess();
+            }}
+            onAuthSuccess={() => {
+              setAuthExternalNotice(null);
+              handleAuthSuccess();
+            }}
+            onNavigateLegal={handleNavigateLegal}
+          />
+        )}
 
-      <SettingsModal
-        isOpen={activeUtilityModal === 'settings'}
-        user={currentUser}
-        settings={userSettings}
-        syncStatus={syncStatus}
-        cloudDocumentCount={cloudDocumentCount}
-        lastSyncedAt={lastSyncedAt}
-        isSupabaseConfigured={isSupabaseConfigured}
-        onClose={handleCloseUtilityModal}
-        onUpdateSettings={handleUpdateSettings}
-        onManualSync={handleManualSync}
-        onOpenAuth={handleOpenAuthModal}
-        onRequestLogout={handleRequestLogout}
-      />
+        {activeUtilityModal === 'settings' && (
+          <SettingsModal
+            isOpen={true}
+            user={currentUser}
+            settings={userSettings}
+            syncStatus={syncStatus}
+            cloudDocumentCount={cloudDocumentCount}
+            lastSyncedAt={lastSyncedAt}
+            isSupabaseConfigured={isSupabaseConfigured}
+            onClose={handleCloseUtilityModal}
+            onUpdateSettings={handleUpdateSettings}
+            onManualSync={handleManualSync}
+            onOpenAuth={handleOpenAuthModal}
+            onRequestLogout={handleRequestLogout}
+          />
+        )}
 
-      <HelpModal
-        isOpen={activeUtilityModal === 'help'}
-        onClose={handleCloseUtilityModal}
-      />
+        {activeUtilityModal === 'help' && (
+          <HelpModal isOpen={true} onClose={handleCloseUtilityModal} />
+        )}
 
-      <CloudActionModal
-        mode={cloudActionModalMode}
-        userEmail={currentUser?.email}
-        localCandidateCount={pendingMigrationDocs.length}
-        isProcessing={isMigratingLocal || isLoggingOut}
-        onClose={handleCloseCloudActionModal}
-        onConfirmLogout={() => {
-          void handleConfirmLogout();
-        }}
-        onConfirmMigrateLocal={() => {
-          void handleConfirmMigrateLocal();
-        }}
-        onSkipMigrateLocal={handleSkipMigrateLocal}
-      />
+        {cloudActionModalMode !== null && (
+          <CloudActionModal
+            mode={cloudActionModalMode}
+            userEmail={currentUser?.email}
+            localCandidateCount={pendingMigrationDocs.length}
+            isProcessing={isMigratingLocal || isLoggingOut}
+            onClose={handleCloseCloudActionModal}
+            onConfirmLogout={() => {
+              void handleConfirmLogout();
+            }}
+            onConfirmMigrateLocal={() => {
+              void handleConfirmMigrateLocal();
+            }}
+            onSkipMigrateLocal={handleSkipMigrateLocal}
+          />
+        )}
 
-      <GoogleDriveBrowserModal
-        isOpen={isDriveModalOpen}
-        hasGoogleToken={hasGoogleToken}
-        onClose={() => {
-          setIsDriveModalOpen(false);
-        }}
-        onConnectGoogle={() => {
-          void handleConnectGoogleDrive();
-        }}
-        onOpenDriveFile={handleOpenDriveFile}
-      />
+        {isDriveModalOpen && (
+          <GoogleDriveBrowserModal
+            isOpen={true}
+            hasGoogleToken={hasGoogleToken}
+            onClose={() => {
+              setIsDriveModalOpen(false);
+            }}
+            onConnectGoogle={() => {
+              void handleConnectGoogleDrive();
+            }}
+            onOpenDriveFile={handleOpenDriveFile}
+          />
+        )}
 
-      <VersionHistoryModal
-        isOpen={isVersionHistoryOpen}
-        document={versionHistoryDocOverride ?? activeWorkspaceDoc ?? modalDocument}
-        userId={currentUser?.id ?? null}
-        savedByName={currentUser?.displayName || currentUser?.email || null}
-        onClose={() => {
-          setIsVersionHistoryOpen(false);
-          setVersionHistoryDocOverride(null);
-        }}
-        onRestoreVersion={handleRestoreVersion}
-        onSaveCheckpoint={(doc) => {
-          handleSaveDocument(doc, { isManualSave: true });
-        }}
-      />
+        {isVersionHistoryOpen && (
+          <VersionHistoryModal
+            isOpen={true}
+            document={
+              versionHistoryDocOverride ?? activeWorkspaceDoc ?? modalDocument
+            }
+            userId={currentUser?.id ?? null}
+            savedByName={currentUser?.displayName || currentUser?.email || null}
+            onClose={() => {
+              setIsVersionHistoryOpen(false);
+              setVersionHistoryDocOverride(null);
+            }}
+            onRestoreVersion={handleRestoreVersion}
+            onSaveCheckpoint={(doc) => {
+              handleSaveDocument(doc, { isManualSave: true });
+            }}
+          />
+        )}
 
-      <QuickConverterModal
-        isOpen={isQuickConverterOpen}
-        onClose={() => {
-          setIsQuickConverterOpen(false);
-          setQuickConverterDocOverride(null);
-        }}
-        documents={documents}
-        initialDocument={quickConverterDocOverride ?? activeWorkspaceDoc}
-      />
+        {isQuickConverterOpen && (
+          <QuickConverterModal
+            isOpen={true}
+            onClose={() => {
+              setIsQuickConverterOpen(false);
+              setQuickConverterDocOverride(null);
+            }}
+            documents={activeDocuments}
+            initialDocument={quickConverterDocOverride ?? activeWorkspaceDoc}
+          />
+        )}
+
+        {isApkUpdateModalOpen && apkUpdateResult?.latest && (
+          <ApkUpdateModal
+            isOpen={true}
+            currentVersion={apkUpdateResult.currentVersion}
+            currentBuildNumber={apkUpdateResult.currentBuildNumber}
+            latestManifest={apkUpdateResult.latest}
+            onClose={() => setIsApkUpdateModalOpen(false)}
+          />
+        )}
+      </Suspense>
+
+      {!isOnline && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed left-1/2 top-2 z-[115] -translate-x-1/2 inline-flex items-center gap-2 rounded-full border border-amber-300/90 bg-amber-50/95 px-3.5 py-1.5 text-[11.5px] font-semibold text-amber-900 shadow-md backdrop-blur-sm"
+        >
+          <WifiOff className="h-3.5 w-3.5 shrink-0 text-amber-600" aria-hidden="true" />
+          <span>
+            Chế độ ngoại tuyến — Đã lưu cục bộ
+            {pendingOfflineCount > 0 ? ` (${pendingOfflineCount} chờ đồng bộ)` : ''}
+          </span>
+        </div>
+      )}
 
       <input
         ref={deviceFileInputRef}
@@ -3960,6 +5301,16 @@ export function App() {
           event.target.value = '';
         }}
       />
+
+      {exitBackToastVisible && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-20 left-1/2 z-[120] -translate-x-1/2 rounded-full bg-slate-900/95 px-4 py-2 text-xs font-semibold text-white shadow-lg ring-1 ring-white/15 backdrop-blur-sm md:bottom-8"
+        >
+          Bấm lần nữa để thoát
+        </div>
+      )}
     </>
   );
 }

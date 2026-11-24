@@ -1,19 +1,33 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import {
+  Check,
   CheckCircle2,
   ChevronRight,
   Clock,
   Cloud,
+  Folder,
   FolderOpen,
+  FolderPlus,
   Laptop,
+  Pencil,
   Plus,
   Smartphone,
+  Trash2,
   Upload,
   Users,
   X,
 } from 'lucide-react';
-import type { CloudUserSummary } from '../../types/document';
+import type { CloudUserSummary, DocumentFolder } from '../../types/document';
 import { requestGoogleDriveAccess } from '../../lib/supabase';
+
+const FOLDER_COLOR_PALETTE = [
+  '#4F46E5',
+  '#185ABD',
+  '#107C41',
+  '#C43E1C',
+  '#D97706',
+  '#9333EA',
+] as const;
 
 export type LocationSourceKey =
   | 'all'
@@ -33,6 +47,14 @@ export interface LocationPanelProps {
     cloud: number;
     device: number;
   };
+  folders?: DocumentFolder[];
+  selectedFolderId?: string | null;
+  folderDocCounts?: Record<string, number>;
+  onSelectFolder?: (folderId: string | null) => void;
+  onCreateFolder?: (name: string, color?: string) => void;
+  onRenameFolder?: (folderId: string, nextName: string) => void;
+  onChangeFolderColor?: (folderId: string, color: string) => void;
+  onDeleteFolder?: (folderId: string) => void;
   onSelectLocation: (loc: LocationSourceKey) => void;
   onPickDeviceFiles: () => void;
   onBrowseGoogleDrive: () => void;
@@ -70,12 +92,26 @@ export function LocationPanel({
   currentUser,
   hasGoogleToken,
   counts,
+  folders = [],
+  selectedFolderId = null,
+  folderDocCounts = {},
+  onSelectFolder,
+  onCreateFolder,
+  onRenameFolder,
+  onChangeFolderColor,
+  onDeleteFolder,
   onSelectLocation,
   onPickDeviceFiles,
   onBrowseGoogleDrive,
   onAddGoogleAccount,
   onCloseMobile,
 }: LocationPanelProps): JSX.Element | null {
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [newFolderColor, setNewFolderColor] = useState<string>(FOLDER_COLOR_PALETTE[0]);
+  const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
+  const [editingFolderName, setEditingFolderName] = useState('');
+
   useEffect(() => {
     if (!isOpen) {
       return;
@@ -339,6 +375,236 @@ export function LocationPanel({
               <span>Chọn tệp từ máy</span>
             </button>
           </div>
+        </div>
+
+        <div className="my-2 border-t border-[#F0ECE4]" />
+
+        {/* Thư mục tùy chỉnh */}
+        <div className="pt-0.5">
+          <div className="flex items-center justify-between gap-2 px-2 pb-1">
+            <p className="text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">
+              Thư mục ({folders.length})
+            </p>
+            {onCreateFolder && (
+              <button
+                type="button"
+                onClick={() => {
+                  setIsCreatingFolder((prev) => !prev);
+                  setNewFolderName('');
+                }}
+                className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-semibold text-indigo-600 hover:bg-indigo-50 transition-colors"
+                title="Tạo thư mục mới"
+              >
+                <FolderPlus className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Tạo</span>
+              </button>
+            )}
+          </div>
+
+          {isCreatingFolder && onCreateFolder && (
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                const trimmed = newFolderName.trim();
+                if (!trimmed) {
+                  return;
+                }
+                onCreateFolder(trimmed, newFolderColor);
+                setNewFolderName('');
+                setIsCreatingFolder(false);
+              }}
+              className="mb-2 rounded-xl border border-indigo-200 bg-indigo-50/40 p-2.5 space-y-2"
+            >
+              <input
+                type="text"
+                value={newFolderName}
+                onChange={(event) => setNewFolderName(event.target.value)}
+                placeholder="Tên thư mục mới..."
+                maxLength={48}
+                autoFocus
+                className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              />
+              <div className="flex items-center justify-between gap-1.5">
+                <div className="flex items-center gap-1">
+                  {FOLDER_COLOR_PALETTE.map((hex) => (
+                    <button
+                      key={hex}
+                      type="button"
+                      onClick={() => setNewFolderColor(hex)}
+                      aria-label={`Chọn màu ${hex}`}
+                      className={`h-4 w-4 rounded-full transition-transform ${
+                        newFolderColor === hex
+                          ? 'scale-110 ring-2 ring-offset-1 ring-slate-700'
+                          : 'opacity-80 hover:opacity-100'
+                      }`}
+                      style={{ backgroundColor: hex }}
+                    />
+                  ))}
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setIsCreatingFolder(false)}
+                    className="rounded-md px-2 py-1 text-[11px] font-medium text-slate-500 hover:bg-slate-100"
+                  >
+                    Hủy
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={!newFolderName.trim()}
+                    className="rounded-md bg-indigo-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    Tạo
+                  </button>
+                </div>
+              </div>
+            </form>
+          )}
+
+          {folders.length === 0 ? (
+            <p className="px-2 py-1.5 text-[11.5px] text-slate-400">
+              Chưa có thư mục nào. Bấm &ldquo;Tạo&rdquo; để sắp xếp tài liệu.
+            </p>
+          ) : (
+            <div className="space-y-1">
+              {folders.map((folder) => {
+                const isSelected = selectedFolderId === folder.id;
+                const isEditing = editingFolderId === folder.id;
+                const docCount = folderDocCounts[folder.id] ?? 0;
+
+                if (isEditing) {
+                  return (
+                    <form
+                      key={folder.id}
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        const trimmed = editingFolderName.trim();
+                        if (trimmed && onRenameFolder) {
+                          onRenameFolder(folder.id, trimmed);
+                        }
+                        setEditingFolderId(null);
+                      }}
+                      className="rounded-xl border border-indigo-200 bg-white p-2 space-y-2"
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="text"
+                          value={editingFolderName}
+                          onChange={(event) => setEditingFolderName(event.target.value)}
+                          maxLength={48}
+                          autoFocus
+                          className="min-w-0 flex-1 rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-900 focus:border-indigo-400 focus:outline-none"
+                        />
+                        <button
+                          type="submit"
+                          aria-label="Lưu tên thư mục"
+                          className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-600 text-white hover:bg-indigo-700"
+                        >
+                          <Check className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingFolderId(null)}
+                          aria-label="Hủy đổi tên"
+                          className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      {onChangeFolderColor && (
+                        <div className="flex items-center gap-1.5 px-0.5">
+                          <span className="text-[10.5px] text-slate-400">Màu:</span>
+                          {FOLDER_COLOR_PALETTE.map((hex) => (
+                            <button
+                              key={hex}
+                              type="button"
+                              onClick={() => onChangeFolderColor(folder.id, hex)}
+                              aria-label={`Đổi màu ${hex}`}
+                              className={`h-3.5 w-3.5 rounded-full ${
+                                folder.color === hex
+                                  ? 'ring-2 ring-offset-1 ring-slate-700'
+                                  : 'opacity-75 hover:opacity-100'
+                              }`}
+                              style={{ backgroundColor: hex }}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </form>
+                  );
+                }
+
+                return (
+                  <div
+                    key={folder.id}
+                    className={`group flex items-center gap-2 rounded-xl px-2.5 py-2 transition-all ${
+                      isSelected
+                        ? 'bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500/25 shadow-sm'
+                        : 'text-slate-700 hover:bg-[#FAF8F5] hover:text-slate-950'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onSelectFolder?.(isSelected ? null : folder.id);
+                        if (isMobile) {
+                          onCloseMobile();
+                        }
+                      }}
+                      className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                    >
+                      <span
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-white shadow-xs"
+                        style={{ backgroundColor: folder.color || '#4F46E5' }}
+                      >
+                        <Folder className="h-3.5 w-3.5" aria-hidden="true" />
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold">
+                        {folder.name}
+                      </span>
+                    </button>
+
+                    <div className="flex shrink-0 items-center gap-0.5">
+                      <span
+                        className={`rounded-full px-1.5 py-0.5 text-[10.5px] font-semibold tabular-nums ${
+                          isSelected
+                            ? 'bg-indigo-600/15 text-indigo-700'
+                            : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        {docCount}
+                      </span>
+                      {onRenameFolder && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingFolderId(folder.id);
+                            setEditingFolderName(folder.name);
+                          }}
+                          title="Đổi tên / màu thư mục"
+                          aria-label={`Đổi tên thư mục ${folder.name}`}
+                          className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-slate-200/70 hover:text-slate-700 md:opacity-0 md:group-hover:opacity-100"
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </button>
+                      )}
+                      {onDeleteFolder && (
+                        <button
+                          type="button"
+                          onClick={() => onDeleteFolder(folder.id)}
+                          title="Xóa thư mục (tài liệu vẫn giữ ở Trang chủ)"
+                          aria-label={`Xóa thư mục ${folder.name}`}
+                          className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-rose-50 hover:text-rose-600 md:opacity-0 md:group-hover:opacity-100"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <div className="my-2 border-t border-[#F0ECE4]" />

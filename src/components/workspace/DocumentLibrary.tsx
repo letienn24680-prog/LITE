@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type {
   ChangeEvent,
   DragEvent,
+  FormEvent,
   KeyboardEvent,
   MouseEvent as ReactMouseEvent,
 } from 'react';
@@ -13,16 +14,20 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   Cloud,
   FileOutput,
   FileSearch,
   FileSpreadsheet,
   FileText,
   Folder,
+  FolderInput,
+  FolderPlus,
   History,
   LayoutGrid,
   List,
   Loader2,
+  Pencil,
   Play,
   Plus,
   Presentation,
@@ -35,12 +40,22 @@ import {
   X,
 } from 'lucide-react';
 import type {
+  DocumentFolder,
   DocumentItem,
   DocumentType,
   FilterKey,
   SidebarNavKey,
 } from '../../types/document';
 import { CustomVerticalScrollbar } from '../ui/CustomVerticalScrollbar';
+
+const FOLDER_COLOR_CHOICES = [
+  '#4F46E5',
+  '#185ABD',
+  '#107C41',
+  '#C43E1C',
+  '#D97706',
+  '#9333EA',
+] as const;
 
 export interface DocumentLibraryProps {
   documents: DocumentItem[];
@@ -58,13 +73,25 @@ export interface DocumentLibraryProps {
   onUploadFiles: (files: FileList | File[]) => void;
   onDismissNotice?: () => void;
   onDeleteDocuments?: (docs: DocumentItem[]) => Promise<void> | void;
+  onRestoreDocuments?: (docs: DocumentItem[]) => Promise<void> | void;
+  onPermanentDeleteDocuments?: (docs: DocumentItem[]) => Promise<void> | void;
   isDeleting?: boolean;
+  folders?: DocumentFolder[];
+  selectedFolderId?: string | null;
+  folderDocCounts?: Record<string, number>;
+  onSelectFolder?: (folderId: string | null) => void;
+  onCreateFolder?: (name: string, color?: string) => void;
+  onRenameFolder?: (folderId: string, nextName: string) => void;
+  onChangeFolderColor?: (folderId: string, color: string) => void;
+  onDeleteFolder?: (folderId: string) => void;
+  onMoveDocumentsToFolder?: (docIds: string[], folderId: string | null) => void;
   onCreateDocument?: (params: {
     type: 'docx' | 'xlsx' | 'pptx';
     title?: string;
     templateMode?: 'blank' | 'starter';
     folder?: string;
   }) => void;
+  onOpenGoogleDrive?: () => void;
   onShareDocument?: (doc: DocumentItem) => void;
   onConvertDocument?: (doc?: DocumentItem) => void;
   onOpenVersionHistoryDoc?: (doc: DocumentItem) => void;
@@ -289,13 +316,30 @@ export function DocumentLibrary({
   onUploadFiles,
   onDismissNotice,
   onDeleteDocuments,
+  onRestoreDocuments,
+  onPermanentDeleteDocuments,
   isDeleting = false,
+  folders = [],
+  selectedFolderId = null,
+  folderDocCounts = {},
+  onSelectFolder,
+  onCreateFolder,
+  onRenameFolder,
+  onChangeFolderColor,
+  onDeleteFolder,
+  onMoveDocumentsToFolder,
   onCreateDocument,
+  onOpenGoogleDrive,
   onShareDocument,
   onConvertDocument,
   onOpenVersionHistoryDoc,
   onNavigateLegal,
 }: DocumentLibraryProps) {
+  const isTrashView = activeNav === 'trash';
+  const selectedFolder =
+    selectedFolderId ? folders.find((f) => f.id === selectedFolderId) ?? null : null;
+  const folderById = new Map(folders.map((folder) => [folder.id, folder]));
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const libraryScrollRef = useRef<HTMLElement | null>(null);
   const createMenuRef = useRef<HTMLDivElement | null>(null);
@@ -306,6 +350,13 @@ export function DocumentLibrary({
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedDeleteIds, setSelectedDeleteIds] = useState<string[]>([]);
   const [confirmDeleteDocs, setConfirmDeleteDocs] = useState<DocumentItem[]>([]);
+  const [isFolderModalOpen, setIsFolderModalOpen] = useState(false);
+  const [editingFolderTarget, setEditingFolderTarget] = useState<DocumentFolder | null>(null);
+  const [folderDraftName, setFolderDraftName] = useState('');
+  const [folderDraftColor, setFolderDraftColor] = useState<string>(FOLDER_COLOR_CHOICES[0]);
+  const [moveFolderTargetDocs, setMoveFolderTargetDocs] = useState<DocumentItem[] | null>(
+    null
+  );
   const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [createDocType, setCreateDocType] = useState<CreatableDocumentType>('docx');
@@ -599,7 +650,11 @@ export function DocumentLibrary({
     if (confirmDeleteDocs.length === 0 || isDeleting) return;
     const targets = confirmDeleteDocs;
     try {
-      await onDeleteDocuments?.(targets);
+      if (isTrashView && onPermanentDeleteDocuments) {
+        await onPermanentDeleteDocuments(targets);
+      } else {
+        await onDeleteDocuments?.(targets);
+      }
       const deletedIds = new Set(targets.map((item) => item.id));
       setSelectedDeleteIds((prev) => prev.filter((id) => !deletedIds.has(id)));
       setConfirmDeleteDocs([]);
@@ -607,6 +662,35 @@ export function DocumentLibrary({
     } catch {
       setConfirmDeleteDocs([]);
     }
+  };
+
+  const openCreateFolderDialog = () => {
+    setEditingFolderTarget(null);
+    setFolderDraftName('');
+    setFolderDraftColor(FOLDER_COLOR_CHOICES[0]);
+    setIsFolderModalOpen(true);
+  };
+
+  const openRenameFolderDialog = (folder: DocumentFolder) => {
+    setEditingFolderTarget(folder);
+    setFolderDraftName(folder.name);
+    setFolderDraftColor(folder.color || FOLDER_COLOR_CHOICES[0]);
+    setIsFolderModalOpen(true);
+  };
+
+  const handleSubmitFolderDialog = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const trimmed = folderDraftName.trim();
+    if (!trimmed) return;
+    if (editingFolderTarget) {
+      onRenameFolder?.(editingFolderTarget.id, trimmed);
+      if (editingFolderTarget.color !== folderDraftColor) {
+        onChangeFolderColor?.(editingFolderTarget.id, folderDraftColor);
+      }
+    } else {
+      onCreateFolder?.(trimmed, folderDraftColor);
+    }
+    setIsFolderModalOpen(false);
   };
 
   const handleCardKeyDown = (event: KeyboardEvent<HTMLElement>, doc: DocumentItem) => {
@@ -682,16 +766,44 @@ export function DocumentLibrary({
           </div>
 
           <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:shrink-0 sm:items-center sm:justify-end sm:gap-2.5">
-            <button
-              type="button"
-              onClick={() => onConvertDocument?.()}
-              disabled={isUploadBusy}
-              title="Chuyển đổi sang PDF, gộp hoặc tách PDF"
-              className="col-span-2 inline-flex h-11 w-full shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl border border-[#DFD9CE] bg-white px-3 text-sm font-medium text-slate-700 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-all duration-150 hover:border-indigo-300 hover:bg-indigo-50/60 hover:text-indigo-700 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 disabled:cursor-not-allowed disabled:opacity-60 sm:col-span-1 sm:w-auto md:gap-2 md:px-3.5"
-            >
-              <FileOutput className="h-4 w-4 shrink-0 text-indigo-600" aria-hidden="true" />
-              <span>Chuyển đổi & Xuất tệp</span>
-            </button>
+            {!isTrashView && (
+              <button
+                type="button"
+                onClick={() => onConvertDocument?.()}
+                disabled={isUploadBusy}
+                title="Chuyển đổi sang PDF, gộp hoặc tách PDF"
+                className="col-span-2 inline-flex h-11 w-full shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl border border-[#DFD9CE] bg-white px-3 text-sm font-medium text-slate-700 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-all duration-150 hover:border-indigo-300 hover:bg-indigo-50/60 hover:text-indigo-700 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 disabled:cursor-not-allowed disabled:opacity-60 sm:col-span-1 sm:w-auto md:gap-2 md:px-3.5"
+              >
+                <FileOutput className="h-4 w-4 shrink-0 text-indigo-600" aria-hidden="true" />
+                <span>Chuyển đổi & Xuất tệp</span>
+              </button>
+            )}
+
+            {!isTrashView && onOpenGoogleDrive && (
+              <button
+                type="button"
+                onClick={onOpenGoogleDrive}
+                disabled={isUploadBusy}
+                title="Mở & đồng bộ tài liệu từ Google Drive"
+                className="inline-flex h-11 w-full shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl border border-[#DFD9CE] bg-white px-3 text-sm font-medium text-slate-700 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-all duration-150 hover:border-indigo-300 hover:bg-indigo-50/60 hover:text-indigo-700 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto md:gap-2 md:px-3.5"
+              >
+                <Cloud className="h-4 w-4 shrink-0 text-sky-600" aria-hidden="true" />
+                <span>Mở từ Drive</span>
+              </button>
+            )}
+
+            {!isTrashView && onCreateFolder && (
+              <button
+                type="button"
+                onClick={openCreateFolderDialog}
+                disabled={isUploadBusy}
+                title="Tạo thư mục mới để phân loại tài liệu"
+                className="inline-flex h-11 w-full shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl border border-[#DFD9CE] bg-white px-3 text-sm font-medium text-slate-700 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-all duration-150 hover:border-indigo-300 hover:bg-indigo-50/60 hover:text-indigo-700 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto md:gap-2 md:px-3.5"
+              >
+                <FolderPlus className="h-4 w-4 shrink-0 text-indigo-600" aria-hidden="true" />
+                <span>Thư mục mới</span>
+              </button>
+            )}
 
             <div ref={createMenuRef} className="relative">
               <button
@@ -1044,6 +1156,34 @@ export function DocumentLibrary({
                         <span>{allVisibleSelected ? 'Bỏ chọn' : 'Chọn tất cả'}</span>
                       </button>
 
+                      {!isTrashView && onMoveDocumentsToFolder && folders.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setMoveFolderTargetDocs(selectedVisibleDocs)}
+                          disabled={selectedVisibleDocs.length === 0 || isDeleting}
+                          className="inline-flex min-h-[38px] items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50 px-3.5 py-1.5 text-xs font-medium text-indigo-700 shadow-xs transition-colors hover:bg-indigo-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <FolderInput className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span>Di chuyển ({selectedVisibleDocs.length})</span>
+                        </button>
+                      )}
+
+                      {isTrashView && onRestoreDocuments && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void onRestoreDocuments(selectedVisibleDocs);
+                            setSelectedDeleteIds([]);
+                            setIsSelectionMode(false);
+                          }}
+                          disabled={selectedVisibleDocs.length === 0 || isDeleting}
+                          className="inline-flex min-h-[38px] items-center gap-1.5 rounded-full bg-emerald-600 px-3.5 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span>Khôi phục ({selectedVisibleDocs.length})</span>
+                        </button>
+                      )}
+
                       <button
                         type="button"
                         onClick={() => setConfirmDeleteDocs(selectedVisibleDocs)}
@@ -1051,7 +1191,11 @@ export function DocumentLibrary({
                         className="inline-flex min-h-[38px] items-center gap-1.5 rounded-full bg-rose-600 px-3.5 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-rose-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/40 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                        <span>Xóa đã chọn ({selectedVisibleDocs.length})</span>
+                        <span>
+                          {isTrashView
+                            ? `Xóa vĩnh viễn (${selectedVisibleDocs.length})`
+                            : `Xóa đã chọn (${selectedVisibleDocs.length})`}
+                        </span>
                       </button>
 
                       <button
@@ -1069,7 +1213,137 @@ export function DocumentLibrary({
             </div>
           </div>
 
-          {activeNav === 'folders' && (
+          {!isTrashView && selectedFolder && (
+            <nav
+              aria-label="Đường dẫn thư mục"
+              className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#EBE6DD] bg-white px-3 py-2 text-xs shadow-xs"
+            >
+              <div className="flex min-w-0 items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => onSelectFolder?.(null)}
+                  className="font-semibold text-slate-600 transition-colors hover:text-indigo-600"
+                >
+                  Trang chủ
+                </button>
+                <ChevronRight className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+                <span
+                  className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-white"
+                  style={{ backgroundColor: selectedFolder.color || '#4F46E5' }}
+                >
+                  <Folder className="h-3 w-3" aria-hidden="true" />
+                </span>
+                <span className="truncate font-bold text-slate-900">
+                  {selectedFolder.name}
+                </span>
+              </div>
+
+              <div className="flex shrink-0 items-center gap-1.5">
+                {onRenameFolder && (
+                  <button
+                    type="button"
+                    onClick={() => openRenameFolderDialog(selectedFolder)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+                  >
+                    <Pencil className="h-3 w-3" aria-hidden="true" />
+                    <span>Đổi tên</span>
+                  </button>
+                )}
+                {onDeleteFolder && (
+                  <button
+                    type="button"
+                    onClick={() => onDeleteFolder(selectedFolder.id)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-medium text-rose-700 hover:bg-rose-100"
+                  >
+                    <Trash2 className="h-3 w-3" aria-hidden="true" />
+                    <span>Xóa thư mục</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => onSelectFolder?.(null)}
+                  className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[11px] font-semibold text-indigo-700 hover:bg-indigo-100"
+                >
+                  <span>Về Trang chủ</span>
+                </button>
+              </div>
+            </nav>
+          )}
+
+          {!isTrashView &&
+            !selectedFolder &&
+            (activeNav === 'home' || activeNav === 'folders') &&
+            folders.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-[#EBE6DD] bg-white/85 px-3 py-2.5 text-xs">
+                <span className="inline-flex items-center gap-1.5 font-semibold text-slate-700">
+                  <Folder className="h-3.5 w-3.5 text-indigo-500" aria-hidden="true" />
+                  <span>Thư mục:</span>
+                </span>
+                <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                  {folders.map((folder) => {
+                    const count = folderDocCounts[folder.id] ?? 0;
+                    return (
+                      <div
+                        key={folder.id}
+                        className="group inline-flex items-center gap-1 rounded-xl border border-[#E5DFD3] bg-[#FAF8F5] pl-2 pr-1.5 py-1 transition-all hover:border-indigo-300 hover:bg-indigo-50/60"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => onSelectFolder?.(folder.id)}
+                          className="inline-flex items-center gap-1.5 text-left"
+                        >
+                          <span
+                            className="h-2.5 w-2.5 shrink-0 rounded-full"
+                            style={{ backgroundColor: folder.color || '#4F46E5' }}
+                          />
+                          <span className="max-w-[140px] truncate font-semibold text-slate-800 group-hover:text-indigo-700">
+                            {folder.name}
+                          </span>
+                          <span className="rounded-full bg-white px-1.5 py-0.2 text-[10px] font-semibold tabular-nums text-slate-500">
+                            {count}
+                          </span>
+                        </button>
+                        {onRenameFolder && (
+                          <button
+                            type="button"
+                            onClick={() => openRenameFolderDialog(folder)}
+                            aria-label={`Đổi tên thư mục ${folder.name}`}
+                            className="flex h-5 w-5 items-center justify-center rounded text-slate-400 hover:bg-white hover:text-slate-700"
+                          >
+                            <Pencil className="h-2.5 w-2.5" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+          {isTrashView && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-200/80 bg-rose-50/70 px-4 py-2.5 text-xs text-rose-900">
+              <div className="flex min-w-0 items-center gap-2">
+                <Trash2 className="h-4 w-4 shrink-0 text-rose-600" aria-hidden="true" />
+                <p className="leading-relaxed">
+                  <strong>Thùng rác:</strong> Các tài liệu đã xóa sẽ được giữ tối đa{' '}
+                  <strong>30 ngày</strong> trước khi hệ thống tự động xóa vĩnh viễn.
+                </p>
+              </div>
+              {documents.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setConfirmDeleteDocs(documents)}
+                  disabled={isDeleting}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-rose-300 bg-white px-3 py-1.5 text-xs font-semibold text-rose-700 shadow-xs transition-colors hover:bg-rose-600 hover:text-white disabled:opacity-50"
+                >
+                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Dọn sạch thùng rác</span>
+                </button>
+              )}
+            </div>
+          )}
+
+          {activeNav === 'folders' && folders.length === 0 && (
             <div className="flex items-center gap-2 rounded-xl border border-[#EBE6DD] bg-white/75 px-3 py-1.5 text-xs text-slate-600">
               <Folder className="h-3.5 w-3.5 shrink-0 text-indigo-500" aria-hidden="true" />
               <span className="shrink-0 font-medium text-slate-700">Thư mục:</span>
@@ -1084,7 +1358,7 @@ export function DocumentLibrary({
                     </span>
                   ))
                 ) : (
-                  <span className="text-slate-400">Chưa có thư mục phù hợp</span>
+                  <span className="text-slate-400">Chưa có thư mục nào — bấm &ldquo;Thư mục mới&rdquo; để tạo</span>
                 )}
               </div>
             </div>
@@ -1109,17 +1383,29 @@ export function DocumentLibrary({
             className="flex flex-col items-center justify-center rounded-2xl border border-[#EAE5DC] bg-white px-6 py-14 text-center shadow-[0_1px_2px_rgba(30,36,48,0.03)]"
           >
             <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#F5F2EC] text-slate-400">
-              <FileSearch className="h-5 w-5" aria-hidden="true" />
+              {isTrashView ? (
+                <Trash2 className="h-5 w-5" aria-hidden="true" />
+              ) : (
+                <FileSearch className="h-5 w-5" aria-hidden="true" />
+              )}
             </div>
             <h2 className="mt-4 text-[15px] font-semibold text-slate-900">
-              {hasActiveFilterOrSearch
-                ? 'Không tìm thấy tài liệu phù hợp'
-                : 'Chưa có tài liệu nào trong thư viện'}
+              {isTrashView
+                ? 'Thùng rác đang trống'
+                : hasActiveFilterOrSearch
+                  ? 'Không tìm thấy tài liệu phù hợp'
+                  : selectedFolder
+                    ? `Thư mục "${selectedFolder.name}" chưa có tài liệu`
+                    : 'Chưa có tài liệu nào trong thư viện'}
             </h2>
             <p className="mt-1.5 max-w-sm text-sm text-slate-500">
-              {hasActiveFilterOrSearch
-                ? 'Thử thay đổi từ khóa tìm kiếm hoặc đặt lại bộ lọc để xem toàn bộ tài liệu.'
-                : 'Tải lên tệp PPTX, DOCX, XLSX, XLS, CSV hoặc PDF từ máy tính để bắt đầu làm việc ngay.'}
+              {isTrashView
+                ? 'Các tài liệu bạn xóa sẽ tạm lưu ở đây tối đa 30 ngày để có thể khôi phục về Trang chủ.'
+                : hasActiveFilterOrSearch
+                  ? 'Thử thay đổi từ khóa tìm kiếm hoặc đặt lại bộ lọc để xem toàn bộ tài liệu.'
+                  : selectedFolder
+                    ? 'Hãy tải tệp lên hoặc dùng "Di chuyển vào thư mục" từ menu tài liệu để đưa tệp vào đây.'
+                    : 'Tải lên tệp PPTX, DOCX, XLSX, XLS, CSV hoặc PDF từ máy tính để bắt đầu làm việc ngay.'}
             </p>
             <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
               {hasActiveFilterOrSearch && (
@@ -1278,11 +1564,27 @@ export function DocumentLibrary({
                         )}
                       </div>
 
-                      {activeNav === 'folders' && doc.folder && (
-                        <div className="mt-0.5 hidden items-center gap-1 text-[11px] text-slate-500 md:flex">
-                          <Folder className="h-3 w-3 text-slate-400" aria-hidden="true" />
-                          <span className="truncate">{doc.folder}</span>
+                      {!isTrashView && doc.folderId && folderById.get(doc.folderId) ? (
+                        <div className="mt-0.5 hidden items-center gap-1 text-[11px] text-slate-600 md:flex">
+                          <span
+                            className="h-2 w-2 rounded-full"
+                            style={{
+                              backgroundColor:
+                                folderById.get(doc.folderId)?.color || '#4F46E5',
+                            }}
+                          />
+                          <span className="truncate font-medium">
+                            {folderById.get(doc.folderId)?.name}
+                          </span>
                         </div>
+                      ) : (
+                        activeNav === 'folders' &&
+                        doc.folder && (
+                          <div className="mt-0.5 hidden items-center gap-1 text-[11px] text-slate-500 md:flex">
+                            <Folder className="h-3 w-3 text-slate-400" aria-hidden="true" />
+                            <span className="truncate">{doc.folder}</span>
+                          </div>
+                        )
                       )}
                     </div>
                   </div>
@@ -1329,72 +1631,107 @@ export function DocumentLibrary({
                       </span>
                     )}
 
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onToggleFavorite(doc.id);
-                      }}
-                      aria-label={
-                        doc.isFavorite
-                          ? `Bỏ yêu thích ${doc.title}`
-                          : `Đánh dấu yêu thích ${doc.title}`
-                      }
-                      aria-pressed={doc.isFavorite}
-                      className={`flex h-8 w-8 items-center justify-center rounded-lg transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 md:h-7 md:w-7 ${
-                        doc.isFavorite
-                          ? 'text-amber-400 hover:bg-amber-50'
-                          : 'text-slate-400 hover:bg-slate-100 hover:text-amber-400 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100'
-                      }`}
-                    >
-                      <Star
-                        className={`h-4 w-4 ${doc.isFavorite ? 'fill-amber-400' : ''}`}
-                      />
-                    </button>
+                    {isTrashView ? (
+                      <>
+                        {onRestoreDocuments && (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void onRestoreDocuments([doc]);
+                            }}
+                            disabled={isDeleting}
+                            className="inline-flex h-8 items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 text-[11px] font-semibold text-emerald-700 transition-colors hover:bg-emerald-100 disabled:opacity-50"
+                            title="Khôi phục về Trang chủ"
+                          >
+                            <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                            <span className="hidden sm:inline">Khôi phục về Trang chủ</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setConfirmDeleteDocs([doc]);
+                          }}
+                          disabled={isDeleting}
+                          className="inline-flex h-8 items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 text-[11px] font-semibold text-rose-700 transition-colors hover:bg-rose-600 hover:text-white disabled:opacity-50"
+                          title="Xóa vĩnh viễn"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span className="hidden sm:inline">Xóa vĩnh viễn</span>
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onToggleFavorite(doc.id);
+                          }}
+                          aria-label={
+                            doc.isFavorite
+                              ? `Bỏ yêu thích ${doc.title}`
+                              : `Đánh dấu yêu thích ${doc.title}`
+                          }
+                          aria-pressed={doc.isFavorite}
+                          className={`flex h-8 w-8 items-center justify-center rounded-lg transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 md:h-7 md:w-7 ${
+                            doc.isFavorite
+                              ? 'text-amber-400 hover:bg-amber-50'
+                              : 'text-slate-400 hover:bg-slate-100 hover:text-amber-400 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100'
+                          }`}
+                        >
+                          <Star
+                            className={`h-4 w-4 ${doc.isFavorite ? 'fill-amber-400' : ''}`}
+                          />
+                        </button>
 
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onConvertDocument?.(doc);
-                      }}
-                      aria-label={`Chuyển đổi & Xuất tệp ${doc.title}`}
-                      title="Chuyển đổi & Xuất tệp"
-                      className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-all duration-150 hover:bg-indigo-50 hover:text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 md:h-7 md:w-7 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
-                    >
-                      <FileOutput className="h-4 w-4" aria-hidden="true" />
-                    </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onConvertDocument?.(doc);
+                          }}
+                          aria-label={`Chuyển đổi & Xuất tệp ${doc.title}`}
+                          title="Chuyển đổi & Xuất tệp"
+                          className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-all duration-150 hover:bg-indigo-50 hover:text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 md:h-7 md:w-7 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
+                        >
+                          <FileOutput className="h-4 w-4" aria-hidden="true" />
+                        </button>
 
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        if (onShareDocument) {
-                          onShareDocument(doc);
-                        } else {
-                          onOpenDocument(doc);
-                        }
-                      }}
-                      aria-label={`Chia sẻ ${doc.title}`}
-                      title="Chia sẻ tài liệu"
-                      className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-all duration-150 hover:bg-indigo-50 hover:text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 md:h-7 md:w-7 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
-                    >
-                      <Share2 className="h-4 w-4" aria-hidden="true" />
-                    </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (onShareDocument) {
+                              onShareDocument(doc);
+                            } else {
+                              onOpenDocument(doc);
+                            }
+                          }}
+                          aria-label={`Chia sẻ ${doc.title}`}
+                          title="Chia sẻ tài liệu"
+                          className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-all duration-150 hover:bg-indigo-50 hover:text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 md:h-7 md:w-7 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
+                        >
+                          <Share2 className="h-4 w-4" aria-hidden="true" />
+                        </button>
 
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setConfirmDeleteDocs([doc]);
-                      }}
-                      disabled={isDeleting}
-                      aria-label={`Xóa tài liệu ${doc.title}`}
-                      title="Xóa tài liệu"
-                      className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-all duration-150 hover:bg-rose-50 hover:text-rose-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/40 disabled:opacity-50 md:h-7 md:w-7 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
-                    >
-                      <Trash2 className="h-4 w-4" aria-hidden="true" />
-                    </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setConfirmDeleteDocs([doc]);
+                          }}
+                          disabled={isDeleting}
+                          aria-label={`Xóa tài liệu ${doc.title}`}
+                          title="Chuyển vào Thùng rác"
+                          className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-all duration-150 hover:bg-rose-50 hover:text-rose-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/40 disabled:opacity-50 md:h-7 md:w-7 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
+                        >
+                          <Trash2 className="h-4 w-4" aria-hidden="true" />
+                        </button>
+                      </>
+                    )}
                   </div>
                 </article>
               );
@@ -1501,68 +1838,103 @@ export function DocumentLibrary({
                       {badge.label}
                     </span>
 
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onToggleFavorite(doc.id);
-                      }}
-                      aria-label={
-                        doc.isFavorite
-                          ? `Bỏ yêu thích ${doc.title}`
-                          : `Đánh dấu yêu thích ${doc.title}`
-                      }
-                      aria-pressed={doc.isFavorite}
-                      className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 md:h-7 md:w-7 ${
-                        doc.isFavorite
-                          ? 'text-amber-400 hover:bg-amber-50'
-                          : 'text-slate-300 hover:bg-slate-100 hover:text-amber-400'
-                      }`}
-                    >
-                      <Star
-                        className={`h-4 w-4 ${doc.isFavorite ? 'fill-amber-400' : ''}`}
-                      />
-                    </button>
+                    {isTrashView ? (
+                      <>
+                        {onRestoreDocuments && (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void onRestoreDocuments([doc]);
+                            }}
+                            disabled={isDeleting}
+                            title="Khôi phục về Trang chủ"
+                            aria-label={`Khôi phục ${doc.title} về Trang chủ`}
+                            className="flex h-8 w-8 items-center justify-center rounded-lg text-emerald-600 transition-colors hover:bg-emerald-50 disabled:opacity-50 md:h-7 md:w-7"
+                          >
+                            <RotateCcw className="h-4 w-4" aria-hidden="true" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setConfirmDeleteDocs([doc]);
+                          }}
+                          disabled={isDeleting}
+                          aria-label={`Xóa vĩnh viễn ${doc.title}`}
+                          title="Xóa vĩnh viễn"
+                          className="flex h-8 w-8 items-center justify-center rounded-lg text-rose-500 transition-colors hover:bg-rose-50 hover:text-rose-700 disabled:opacity-50 md:h-7 md:w-7"
+                        >
+                          <Trash2 className="h-4 w-4" aria-hidden="true" />
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onToggleFavorite(doc.id);
+                          }}
+                          aria-label={
+                            doc.isFavorite
+                              ? `Bỏ yêu thích ${doc.title}`
+                              : `Đánh dấu yêu thích ${doc.title}`
+                          }
+                          aria-pressed={doc.isFavorite}
+                          className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 md:h-7 md:w-7 ${
+                            doc.isFavorite
+                              ? 'text-amber-400 hover:bg-amber-50'
+                              : 'text-slate-300 hover:bg-slate-100 hover:text-amber-400'
+                          }`}
+                        >
+                          <Star
+                            className={`h-4 w-4 ${doc.isFavorite ? 'fill-amber-400' : ''}`}
+                          />
+                        </button>
 
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onConvertDocument?.(doc);
-                      }}
-                      aria-label={`Chuyển đổi & Xuất tệp ${doc.title}`}
-                      title="Chuyển đổi & Xuất tệp"
-                      className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-colors duration-150 hover:bg-indigo-50 hover:text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 md:h-7 md:w-7"
-                    >
-                      <FileOutput className="h-4 w-4" aria-hidden="true" />
-                    </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onConvertDocument?.(doc);
+                          }}
+                          aria-label={`Chuyển đổi & Xuất tệp ${doc.title}`}
+                          title="Chuyển đổi & Xuất tệp"
+                          className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-colors duration-150 hover:bg-indigo-50 hover:text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 md:h-7 md:w-7"
+                        >
+                          <FileOutput className="h-4 w-4" aria-hidden="true" />
+                        </button>
 
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onOpenDocument(doc);
-                      }}
-                      aria-label={`Mở ${doc.title}`}
-                      title="Mở tài liệu"
-                      className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-colors duration-150 hover:bg-indigo-50 hover:text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 md:h-7 md:w-7"
-                    >
-                      <ArrowUpRight className="h-4 w-4" aria-hidden="true" />
-                    </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onOpenDocument(doc);
+                          }}
+                          aria-label={`Mở ${doc.title}`}
+                          title="Mở tài liệu"
+                          className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-colors duration-150 hover:bg-indigo-50 hover:text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 md:h-7 md:w-7"
+                        >
+                          <ArrowUpRight className="h-4 w-4" aria-hidden="true" />
+                        </button>
 
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setConfirmDeleteDocs([doc]);
-                      }}
-                      disabled={isDeleting}
-                      aria-label={`Xóa tài liệu ${doc.title}`}
-                      title="Xóa tài liệu"
-                      className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-300 transition-colors duration-150 hover:bg-rose-50 hover:text-rose-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/40 disabled:opacity-50 md:h-7 md:w-7"
-                    >
-                      <Trash2 className="h-4 w-4" aria-hidden="true" />
-                    </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setConfirmDeleteDocs([doc]);
+                          }}
+                          disabled={isDeleting}
+                          aria-label={`Xóa tài liệu ${doc.title}`}
+                          title="Chuyển vào Thùng rác"
+                          className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-300 transition-colors duration-150 hover:bg-rose-50 hover:text-rose-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/40 disabled:opacity-50 md:h-7 md:w-7"
+                        >
+                          <Trash2 className="h-4 w-4" aria-hidden="true" />
+                        </button>
+                      </>
+                    )}
                   </div>
                 </article>
               );
@@ -1716,7 +2088,20 @@ export function DocumentLibrary({
                         <span className="shrink-0">{getPageCountLabel(doc)}</span>
                       </div>
 
-                      {activeNav === 'folders' && doc.folder ? (
+                      {!isTrashView && doc.folderId && folderById.get(doc.folderId) ? (
+                        <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-[#F6F3EE] px-1.5 py-0.5 text-[11px] font-medium text-slate-700">
+                          <span
+                            className="h-2 w-2 rounded-full"
+                            style={{
+                              backgroundColor:
+                                folderById.get(doc.folderId)?.color || '#4F46E5',
+                            }}
+                          />
+                          <span className="max-w-[96px] truncate">
+                            {folderById.get(doc.folderId)?.name}
+                          </span>
+                        </span>
+                      ) : activeNav === 'folders' && doc.folder ? (
                         <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-[#F6F3EE] px-1.5 py-0.5 text-[11px] font-medium text-slate-600">
                           <Folder className="h-3 w-3 text-slate-400" aria-hidden="true" />
                           <span className="max-w-[100px] truncate">{doc.folder}</span>
@@ -1736,48 +2121,81 @@ export function DocumentLibrary({
 
                   {/* Card footer: Primary action + Secondary Open button */}
                   <div className="mt-auto flex items-center gap-2 pt-0.5">
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onOpenDocument(doc);
-                      }}
-                      className={`inline-flex min-h-[44px] flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl px-3 py-2 text-xs font-medium text-white shadow-sm transition-all duration-150 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 ${primaryAction.buttonClassName}`}
-                    >
-                      {doc.type === 'pptx' ? (
-                        <Play className="h-3.5 w-3.5 shrink-0 fill-current" aria-hidden="true" />
-                      ) : doc.type === 'xlsx' ? (
-                        <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                      ) : (
-                        <BookOpen className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                      )}
-                      <span>{primaryAction.label}</span>
-                    </button>
+                    {isTrashView ? (
+                      <>
+                        {onRestoreDocuments && (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void onRestoreDocuments([doc]);
+                            }}
+                            disabled={isDeleting}
+                            className="inline-flex min-h-[44px] flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl bg-emerald-600 px-3 py-2 text-xs font-medium text-white shadow-sm shadow-emerald-600/15 transition-all duration-150 hover:bg-emerald-700 active:scale-[0.98] disabled:opacity-50"
+                          >
+                            <RotateCcw className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                            <span>Khôi phục về Trang chủ</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setConfirmDeleteDocs([doc]);
+                          }}
+                          disabled={isDeleting}
+                          className="inline-flex min-h-[44px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 transition-colors hover:bg-rose-600 hover:text-white disabled:opacity-50"
+                        >
+                          <Trash2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                          <span>Xóa vĩnh viễn</span>
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onOpenDocument(doc);
+                          }}
+                          className={`inline-flex min-h-[44px] flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl px-3 py-2 text-xs font-medium text-white shadow-sm transition-all duration-150 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 ${primaryAction.buttonClassName}`}
+                        >
+                          {doc.type === 'pptx' ? (
+                            <Play className="h-3.5 w-3.5 shrink-0 fill-current" aria-hidden="true" />
+                          ) : doc.type === 'xlsx' ? (
+                            <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                          ) : (
+                            <BookOpen className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                          )}
+                          <span>{primaryAction.label}</span>
+                        </button>
 
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onOpenDocument(doc);
-                      }}
-                      className="inline-flex min-h-[44px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-xl border border-[#E2DDD5] bg-white px-3 py-2 text-xs font-medium text-slate-700 transition-colors duration-150 hover:bg-slate-50 hover:text-slate-900 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/35"
-                    >
-                      <span>Mở</span>
-                      <ArrowUpRight className="h-3.5 w-3.5 text-slate-500" aria-hidden="true" />
-                    </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onOpenDocument(doc);
+                          }}
+                          className="inline-flex min-h-[44px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-xl border border-[#E2DDD5] bg-white px-3 py-2 text-xs font-medium text-slate-700 transition-colors duration-150 hover:bg-slate-50 hover:text-slate-900 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/35"
+                        >
+                          <span>Mở</span>
+                          <ArrowUpRight className="h-3.5 w-3.5 text-slate-500" aria-hidden="true" />
+                        </button>
 
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onConvertDocument?.(doc);
-                      }}
-                      aria-label={`Chuyển đổi & Xuất tệp ${doc.title}`}
-                      title="Chuyển đổi & Xuất tệp"
-                      className="inline-flex h-[44px] w-[44px] shrink-0 items-center justify-center rounded-xl border border-[#E2DDD5] bg-white text-slate-600 transition-colors duration-150 hover:border-indigo-300 hover:bg-indigo-50/70 hover:text-indigo-700 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/35"
-                    >
-                      <FileOutput className="h-4 w-4" aria-hidden="true" />
-                    </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onConvertDocument?.(doc);
+                          }}
+                          aria-label={`Chuyển đổi & Xuất tệp ${doc.title}`}
+                          title="Chuyển đổi & Xuất tệp"
+                          className="inline-flex h-[44px] w-[44px] shrink-0 items-center justify-center rounded-xl border border-[#E2DDD5] bg-white text-slate-600 transition-colors duration-150 hover:border-indigo-300 hover:bg-indigo-50/70 hover:text-indigo-700 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/35"
+                        >
+                          <FileOutput className="h-4 w-4" aria-hidden="true" />
+                        </button>
+                      </>
+                    )}
                   </div>
                 </article>
               );
@@ -2036,14 +2454,18 @@ export function DocumentLibrary({
                   id="delete-confirm-title"
                   className="text-base font-semibold text-slate-900"
                 >
-                  {confirmDeleteDocs.length === 1
-                    ? 'Xóa tài liệu khỏi thư viện?'
-                    : `Xóa ${confirmDeleteDocs.length} tài liệu đã chọn?`}
+                  {isTrashView
+                    ? confirmDeleteDocs.length === 1
+                      ? 'Xóa vĩnh viễn tài liệu này?'
+                      : `Xóa vĩnh viễn ${confirmDeleteDocs.length} tài liệu đã chọn?`
+                    : confirmDeleteDocs.length === 1
+                      ? 'Chuyển tài liệu vào Thùng rác?'
+                      : `Chuyển ${confirmDeleteDocs.length} tài liệu vào Thùng rác?`}
                 </h2>
 
                 {confirmDeleteDocs.length === 1 ? (
                   <p className="mt-1.5 text-sm text-slate-600">
-                    Bạn sắp xóa tệp{' '}
+                    {isTrashView ? 'Bạn sắp xóa vĩnh viễn tệp ' : 'Bạn sắp chuyển tệp '}
                     <span className="font-semibold text-slate-900">
                       "{confirmDeleteDocs[0].title}"
                     </span>{' '}
@@ -2065,8 +2487,9 @@ export function DocumentLibrary({
                 )}
 
                 <p className="mt-2.5 text-xs leading-relaxed text-slate-500">
-                  Tệp và liên kết chia sẻ liên quan sẽ bị xóa vĩnh viễn khỏi thư viện trên
-                  thiết bị này cũng như tài khoản đám mây. Hành động này không thể hoàn tác.
+                  {isTrashView
+                    ? 'Tệp và liên kết chia sẻ liên quan sẽ bị xóa vĩnh viễn khỏi thư viện trên thiết bị này cũng như tài khoản đám mây. Hành động này không thể hoàn tác.'
+                    : 'Tài liệu sẽ được chuyển vào Thùng rác và lưu giữ trong 30 ngày để bạn có thể khôi phục về Trang chủ bất cứ lúc nào.'}
                 </p>
               </div>
             </div>
@@ -2092,17 +2515,221 @@ export function DocumentLibrary({
                 {isDeleting ? (
                   <>
                     <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                    <span>Đang xóa...</span>
+                    <span>Đang xử lý...</span>
                   </>
                 ) : (
                   <>
                     <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                    <span>Xóa vĩnh viễn</span>
+                    <span>
+                      {isTrashView ? 'Xóa vĩnh viễn' : 'Chuyển vào Thùng rác'}
+                    </span>
                   </>
                 )}
               </button>
             </div>
           </div>
+          </div>
+        </div>
+      )}
+
+      {isFolderModalOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="folder-modal-title"
+          onClick={() => setIsFolderModalOpen(false)}
+          className="fixed inset-0 z-50 bg-slate-900/45 backdrop-blur-[2px] pb-safe"
+        >
+          <div className="flex h-full w-full items-center justify-center p-4">
+            <form
+              onSubmit={handleSubmitFolderDialog}
+              onClick={(event) => event.stopPropagation()}
+              className="w-full max-w-sm rounded-2xl border border-[#EAE5DC] bg-white p-5 shadow-2xl space-y-4"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <h2
+                  id="folder-modal-title"
+                  className="text-base font-semibold text-slate-900"
+                >
+                  {editingFolderTarget ? 'Đổi tên & màu thư mục' : 'Tạo thư mục mới'}
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => setIsFolderModalOpen(false)}
+                  aria-label="Đóng"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-600">
+                    Tên thư mục
+                  </label>
+                  <input
+                    type="text"
+                    value={folderDraftName}
+                    onChange={(event) => setFolderDraftName(event.target.value)}
+                    placeholder="Ví dụ: Dự án Quý 4, Tài liệu học tập..."
+                    maxLength={48}
+                    autoFocus
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  />
+                </div>
+
+                <div>
+                  <span className="mb-1.5 block text-xs font-medium text-slate-600">
+                    Màu nhận diện
+                  </span>
+                  <div className="flex items-center gap-2.5">
+                    {FOLDER_COLOR_CHOICES.map((hex) => (
+                      <button
+                        key={hex}
+                        type="button"
+                        onClick={() => setFolderDraftColor(hex)}
+                        aria-label={`Chọn màu ${hex}`}
+                        className={`h-6 w-6 rounded-full transition-transform ${
+                          folderDraftColor === hex
+                            ? 'scale-110 ring-2 ring-offset-2 ring-slate-800'
+                            : 'opacity-80 hover:opacity-100'
+                        }`}
+                        style={{ backgroundColor: hex }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setIsFolderModalOpen(false)}
+                  className="rounded-xl border border-[#E2DDD5] bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  disabled={!folderDraftName.trim()}
+                  className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-xs hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {editingFolderTarget ? 'Lưu thay đổi' : 'Tạo thư mục'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {moveFolderTargetDocs && moveFolderTargetDocs.length > 0 && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="move-folder-modal-title"
+          onClick={() => setMoveFolderTargetDocs(null)}
+          className="fixed inset-0 z-50 bg-slate-900/45 backdrop-blur-[2px] pb-safe"
+        >
+          <div className="flex h-full w-full items-center justify-center p-4">
+            <div
+              onClick={(event) => event.stopPropagation()}
+              className="w-full max-w-sm rounded-2xl border border-[#EAE5DC] bg-white p-5 shadow-2xl space-y-4"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <h2
+                    id="move-folder-modal-title"
+                    className="text-base font-semibold text-slate-900"
+                  >
+                    Di chuyển vào thư mục
+                  </h2>
+                  <p className="mt-0.5 truncate text-xs text-slate-500">
+                    {moveFolderTargetDocs.length === 1
+                      ? moveFolderTargetDocs[0].title
+                      : `${moveFolderTargetDocs.length} tài liệu đã chọn`}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMoveFolderTargetDocs(null)}
+                  aria-label="Đóng"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="max-h-60 space-y-1.5 overflow-y-auto pr-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onMoveDocumentsToFolder?.(
+                      moveFolderTargetDocs.map((d) => d.id),
+                      null
+                    );
+                    setMoveFolderTargetDocs(null);
+                    setIsSelectionMode(false);
+                    setSelectedDeleteIds([]);
+                  }}
+                  className="flex w-full items-center gap-2.5 rounded-xl border border-slate-200 px-3 py-2 text-left text-xs font-medium text-slate-700 transition-colors hover:border-indigo-300 hover:bg-indigo-50/50"
+                >
+                  <Folder className="h-4 w-4 text-slate-400" aria-hidden="true" />
+                  <span>Trang chủ (Ngoài thư mục)</span>
+                </button>
+
+                {folders.map((folder) => {
+                  const isCurrent =
+                    moveFolderTargetDocs.length === 1 &&
+                    moveFolderTargetDocs[0].folderId === folder.id;
+                  return (
+                    <button
+                      key={folder.id}
+                      type="button"
+                      onClick={() => {
+                        onMoveDocumentsToFolder?.(
+                          moveFolderTargetDocs.map((d) => d.id),
+                          folder.id
+                        );
+                        setMoveFolderTargetDocs(null);
+                        setIsSelectionMode(false);
+                        setSelectedDeleteIds([]);
+                      }}
+                      className={`flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2 text-left text-xs font-semibold transition-colors ${
+                        isCurrent
+                          ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                          : 'border-slate-200 text-slate-800 hover:border-indigo-300 hover:bg-indigo-50/50'
+                      }`}
+                    >
+                      <span className="flex min-w-0 items-center gap-2.5">
+                        <span
+                          className="h-3 w-3 shrink-0 rounded-full"
+                          style={{ backgroundColor: folder.color || '#4F46E5' }}
+                        />
+                        <span className="truncate">{folder.name}</span>
+                      </span>
+                      {isCurrent && (
+                        <Check className="h-3.5 w-3.5 shrink-0 text-indigo-600" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {onCreateFolder && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMoveFolderTargetDocs(null);
+                    openCreateFolderDialog();
+                  }}
+                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-indigo-300 bg-indigo-50/40 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50"
+                >
+                  <FolderPlus className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Tạo thư mục mới</span>
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -2121,82 +2748,137 @@ export function DocumentLibrary({
             </p>
           </div>
           <div className="mt-1 flex flex-col gap-0.5">
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                const targetDoc = contextMenu.doc;
-                setContextMenu(null);
-                onOpenDocument(targetDoc);
-              }}
-              className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:bg-slate-100 focus-visible:outline-none"
-            >
-              <ArrowUpRight className="h-4 w-4 text-slate-500" aria-hidden="true" />
-              <span>Mở</span>
-            </button>
+            {isTrashView ? (
+              <>
+                {onRestoreDocuments && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      const targetDoc = contextMenu.doc;
+                      setContextMenu(null);
+                      void onRestoreDocuments([targetDoc]);
+                    }}
+                    className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-emerald-700 transition-colors hover:bg-emerald-50 focus-visible:bg-emerald-50 focus-visible:outline-none"
+                  >
+                    <RotateCcw className="h-4 w-4 text-emerald-600" aria-hidden="true" />
+                    <span>Khôi phục về Trang chủ</span>
+                  </button>
+                )}
 
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                const targetDoc = contextMenu.doc;
-                setContextMenu(null);
-                if (onShareDocument) {
-                  onShareDocument(targetDoc);
-                } else {
-                  onOpenDocument(targetDoc);
-                }
-              }}
-              className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-700 focus-visible:bg-indigo-50 focus-visible:outline-none"
-            >
-              <Share2 className="h-4 w-4 text-indigo-500" aria-hidden="true" />
-              <span>Chia sẻ</span>
-            </button>
+                <div className="my-0.5 border-t border-slate-100" />
 
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                const targetDoc = contextMenu.doc;
-                setContextMenu(null);
-                onConvertDocument?.(targetDoc);
-              }}
-              className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-700 focus-visible:bg-indigo-50 focus-visible:outline-none"
-            >
-              <FileOutput className="h-4 w-4 text-indigo-600" aria-hidden="true" />
-              <span>Chuyển đổi &amp; Xuất tệp</span>
-            </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={isDeleting}
+                  onClick={() => {
+                    const targetDoc = contextMenu.doc;
+                    setContextMenu(null);
+                    setConfirmDeleteDocs([targetDoc]);
+                  }}
+                  className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-rose-600 transition-colors hover:bg-rose-50 focus-visible:bg-rose-50 focus-visible:outline-none disabled:opacity-50"
+                >
+                  <Trash2 className="h-4 w-4" aria-hidden="true" />
+                  <span>Xóa vĩnh viễn</span>
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    const targetDoc = contextMenu.doc;
+                    setContextMenu(null);
+                    onOpenDocument(targetDoc);
+                  }}
+                  className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:bg-slate-100 focus-visible:outline-none"
+                >
+                  <ArrowUpRight className="h-4 w-4 text-slate-500" aria-hidden="true" />
+                  <span>Mở</span>
+                </button>
 
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                const targetDoc = contextMenu.doc;
-                setContextMenu(null);
-                onOpenVersionHistoryDoc?.(targetDoc);
-              }}
-              className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:bg-slate-100 focus-visible:outline-none"
-            >
-              <History className="h-4 w-4 text-slate-500" aria-hidden="true" />
-              <span>Lịch sử phiên bản</span>
-            </button>
+                {onMoveDocumentsToFolder && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      const targetDoc = contextMenu.doc;
+                      setContextMenu(null);
+                      setMoveFolderTargetDocs([targetDoc]);
+                    }}
+                    className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-700 focus-visible:bg-indigo-50 focus-visible:outline-none"
+                  >
+                    <FolderInput className="h-4 w-4 text-indigo-500" aria-hidden="true" />
+                    <span>Di chuyển vào thư mục...</span>
+                  </button>
+                )}
 
-            <div className="my-0.5 border-t border-slate-100" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    const targetDoc = contextMenu.doc;
+                    setContextMenu(null);
+                    if (onShareDocument) {
+                      onShareDocument(targetDoc);
+                    } else {
+                      onOpenDocument(targetDoc);
+                    }
+                  }}
+                  className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-700 focus-visible:bg-indigo-50 focus-visible:outline-none"
+                >
+                  <Share2 className="h-4 w-4 text-indigo-500" aria-hidden="true" />
+                  <span>Chia sẻ</span>
+                </button>
 
-            <button
-              type="button"
-              role="menuitem"
-              disabled={isDeleting}
-              onClick={() => {
-                const targetDoc = contextMenu.doc;
-                setContextMenu(null);
-                setConfirmDeleteDocs([targetDoc]);
-              }}
-              className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-rose-600 transition-colors hover:bg-rose-50 focus-visible:bg-rose-50 focus-visible:outline-none disabled:opacity-50"
-            >
-              <Trash2 className="h-4 w-4" aria-hidden="true" />
-              <span>Xóa</span>
-            </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    const targetDoc = contextMenu.doc;
+                    setContextMenu(null);
+                    onConvertDocument?.(targetDoc);
+                  }}
+                  className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-slate-700 transition-colors hover:bg-indigo-50 hover:text-indigo-700 focus-visible:bg-indigo-50 focus-visible:outline-none"
+                >
+                  <FileOutput className="h-4 w-4 text-indigo-600" aria-hidden="true" />
+                  <span>Chuyển đổi &amp; Xuất tệp</span>
+                </button>
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    const targetDoc = contextMenu.doc;
+                    setContextMenu(null);
+                    onOpenVersionHistoryDoc?.(targetDoc);
+                  }}
+                  className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:bg-slate-100 focus-visible:outline-none"
+                >
+                  <History className="h-4 w-4 text-slate-500" aria-hidden="true" />
+                  <span>Lịch sử phiên bản</span>
+                </button>
+
+                <div className="my-0.5 border-t border-slate-100" />
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={isDeleting}
+                  onClick={() => {
+                    const targetDoc = contextMenu.doc;
+                    setContextMenu(null);
+                    setConfirmDeleteDocs([targetDoc]);
+                  }}
+                  className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-rose-600 transition-colors hover:bg-rose-50 focus-visible:bg-rose-50 focus-visible:outline-none disabled:opacity-50"
+                >
+                  <Trash2 className="h-4 w-4" aria-hidden="true" />
+                  <span>Chuyển vào Thùng rác</span>
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}

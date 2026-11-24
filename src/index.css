@@ -3,11 +3,26 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    --lite-viewport-height: 100dvh;
+    --lite-keyboard-inset: 0px;
+  }
+
   html,
   body,
   #root {
-    height: 100%;
+    height: var(--lite-viewport-height, 100dvh);
+    max-height: var(--lite-viewport-height, 100dvh);
     margin: 0;
+  }
+
+  /* Ensure 100dvh containers adapt cleanly when Android virtual keyboard opens */
+  .h-\[100dvh\] {
+    height: var(--lite-viewport-height, 100dvh) !important;
+  }
+
+  .min-h-\[100dvh\] {
+    min-height: var(--lite-viewport-height, 100dvh) !important;
   }
 
   body {

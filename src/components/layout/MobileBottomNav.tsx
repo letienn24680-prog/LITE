@@ -7,12 +7,14 @@ import {
   Home,
   Presentation,
   Share2,
+  Trash2,
 } from 'lucide-react';
 import type { SidebarNavKey } from '../../types/document';
 
 export interface MobileBottomNavProps {
   activeNav: SidebarNavKey;
   onSelectNav: (nav: SidebarNavKey) => void;
+  trashCount?: number;
 }
 
 interface MobileNavItemConfig {
@@ -29,9 +31,14 @@ const MOBILE_NAV_ITEMS: readonly MobileNavItemConfig[] = [
   { key: 'pdf', label: 'PDF', icon: BookOpen },
   { key: 'folders', label: 'Vị trí', icon: Folder },
   { key: 'shared', label: 'Chia sẻ', icon: Share2 },
+  { key: 'trash', label: 'Thùng rác', icon: Trash2 },
 ];
 
-export function MobileBottomNav({ activeNav, onSelectNav }: MobileBottomNavProps) {
+export function MobileBottomNav({
+  activeNav,
+  onSelectNav,
+  trashCount = 0,
+}: MobileBottomNavProps) {
   return (
     <nav
       aria-label="Điều hướng di động"
@@ -61,11 +68,18 @@ export function MobileBottomNav({ activeNav, onSelectNav }: MobileBottomNavProps
                 />
               )}
 
-              <Icon
-                className="h-[19px] w-[19px] shrink-0"
-                strokeWidth={isActive ? 2.2 : 1.75}
-                aria-hidden="true"
-              />
+              <div className="relative">
+                <Icon
+                  className="h-[19px] w-[19px] shrink-0"
+                  strokeWidth={isActive ? 2.2 : 1.75}
+                  aria-hidden="true"
+                />
+                {item.key === 'trash' && trashCount > 0 && (
+                  <span className="absolute -right-2.5 -top-1 inline-flex min-w-[15px] items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold leading-[13px] text-white">
+                    {trashCount > 99 ? '99+' : trashCount}
+                  </span>
+                )}
+              </div>
               <span className="whitespace-nowrap text-[11px] font-medium leading-none tracking-[-0.01em]">
                 {item.label}
               </span>

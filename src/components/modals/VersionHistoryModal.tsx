@@ -296,6 +296,15 @@ export function VersionHistoryModal({
                             />
                             {formatVersionTimestamp(version.savedAt)}
                           </span>
+                          {version.saveKind === 'auto' ? (
+                            <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10.5px] font-semibold text-amber-700">
+                              Tự động lưu
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10.5px] font-semibold text-emerald-700">
+                              Lưu thủ công
+                            </span>
+                          )}
                           {isLatest && (
                             <span className="inline-flex items-center rounded-full bg-indigo-50 px-2 py-0.5 text-[10.5px] font-semibold text-[#4F46E5]">
                               Mới nhất

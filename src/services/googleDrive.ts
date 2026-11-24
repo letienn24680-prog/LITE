@@ -218,6 +218,42 @@ export function clearStoredGoogleDriveToken(userId?: string | null): void {
   }
 }
 
+/**
+ * Clears Google Drive folderId and fileId map caches in localStorage for a logged-out user
+ * (or all non-guest scopes) so no previous account metadata remains on the device.
+ */
+export function clearGoogleDriveUserCache(userId?: string | null): void {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) {
+      return;
+    }
+    const normalizedUser = normalizeUserId(userId);
+    if (normalizedUser) {
+      window.localStorage.removeItem(`${GOOGLE_FOLDER_STORAGE_KEY_PREFIX}${normalizedUser}`);
+      window.localStorage.removeItem(`${GOOGLE_FILEMAP_STORAGE_KEY_PREFIX}${normalizedUser}`);
+    }
+
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i += 1) {
+      const key = window.localStorage.key(i);
+      if (!key) continue;
+      if (
+        (key.startsWith(GOOGLE_FOLDER_STORAGE_KEY_PREFIX) &&
+          key !== `${GOOGLE_FOLDER_STORAGE_KEY_PREFIX}guest`) ||
+        (key.startsWith(GOOGLE_FILEMAP_STORAGE_KEY_PREFIX) &&
+          key !== `${GOOGLE_FILEMAP_STORAGE_KEY_PREFIX}guest`)
+      ) {
+        keysToRemove.push(key);
+      }
+    }
+    for (const key of keysToRemove) {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    // Ignore storage restrictions
+  }
+}
+
 function requireAccessToken(userId?: string | null): string {
   const token = getStoredGoogleDriveToken(userId);
   if (!token) {
@@ -386,7 +422,8 @@ async function extractGoogleApiError(response: Response): Promise<string> {
 }
 
 export async function listGoogleDriveFiles(
-  query?: string
+  query?: string,
+  options?: { folderOnly?: boolean }
 ): Promise<GoogleDriveFileItem[]> {
   const token = requireAccessToken();
 
@@ -394,6 +431,11 @@ export async function listGoogleDriveFiles(
     (mime) => `mimeType = '${mime}'`
   ).join(' or ');
   let q = `trashed = false and (${mimeFilter})`;
+
+  if (options?.folderOnly) {
+    const folderId = await ensureLiteWorkspaceFolder();
+    q += ` and '${escapeDriveQueryValue(folderId)}' in parents`;
+  }
 
   const trimmedQuery = query?.trim() ?? '';
   if (trimmedQuery.length > 0) {
