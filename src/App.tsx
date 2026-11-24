@@ -40,7 +40,7 @@ import {
 import {
   completeNativeOAuthCallback,
   isSupabaseConfigured,
-  startGoogleOAuthFlow,
+  requestGoogleDriveAccess,
   supabase,
 } from './lib/supabase';
 import {
@@ -350,14 +350,34 @@ function parseCollabShareFromDeepLink(rawUrl: string): ParsedCollabShareQuery | 
   }
 }
 
-function parseLegalPageFromPathname(pathname: string): LegalPageKind | null {
-  const normalized = pathname.replace(/\/+$/, '').toLowerCase();
-  if (normalized === '/privacy') {
+function parseLegalPageFromLocation(
+  pathname: string,
+  search = '',
+  hash = ''
+): LegalPageKind | null {
+  const normalizedPath = pathname.replace(/\/+$/, '').toLowerCase();
+  if (normalizedPath === '/privacy') {
     return 'privacy';
   }
-  if (normalized === '/terms') {
+  if (normalizedPath === '/terms') {
     return 'terms';
   }
+
+  try {
+    const params = new URLSearchParams(search);
+    const pageParam = params.get('page')?.trim().toLowerCase();
+    if (pageParam === 'privacy' || pageParam === 'terms') {
+      return pageParam;
+    }
+  } catch {
+    // Ignore malformed query string
+  }
+
+  const normalizedHash = hash.replace(/^#\/?/, '').replace(/\/+$/, '').toLowerCase();
+  if (normalizedHash === 'privacy' || normalizedHash === 'terms') {
+    return normalizedHash;
+  }
+
   return null;
 }
 
@@ -660,7 +680,11 @@ export function App() {
     () => Boolean(parseCollabShareFromSearch(window.location.search))
   );
   const [legalPage, setLegalPage] = useState<LegalPageKind | null>(() =>
-    parseLegalPageFromPathname(window.location.pathname)
+    parseLegalPageFromLocation(
+      window.location.pathname,
+      window.location.search,
+      window.location.hash
+    )
   );
   const [collabShareError, setCollabShareError] = useState<string | null>(null);
   const [collabCollaborators, setCollabCollaborators] = useState<
@@ -796,10 +820,16 @@ export function App() {
     };
   }, []);
 
-  // Priority Path, Hash & Query Routing: /privacy | /terms | ?share=<token>&mode=... -> #remote/<roomCode> -> #share/<shareToken> -> #doc/<id>
+  // Priority Path, Hash & Query Routing: /privacy | /terms | ?page=privacy|terms | ?share=<token>&mode=... -> #remote/<roomCode> -> #share/<shareToken> -> #doc/<id>
   useEffect(() => {
     const syncFromLocation = () => {
-      setLegalPage(parseLegalPageFromPathname(window.location.pathname));
+      setLegalPage(
+        parseLegalPageFromLocation(
+          window.location.pathname,
+          window.location.search,
+          window.location.hash
+        )
+      );
 
       const nextQueryShare = parseCollabShareFromSearch(
         window.location.search
@@ -1708,11 +1738,17 @@ export function App() {
     const url = new URL(window.location.href);
     const hasShareParam =
       url.searchParams.has('share') || url.searchParams.has('mode');
-    const isLegalPath = parseLegalPageFromPathname(url.pathname) !== null;
-    if (hasShareParam || window.location.hash || isLegalPath) {
+    const isLegalLocation =
+      parseLegalPageFromLocation(
+        url.pathname,
+        url.search,
+        window.location.hash
+      ) !== null;
+    if (hasShareParam || window.location.hash || isLegalLocation) {
       url.searchParams.delete('share');
       url.searchParams.delete('mode');
-      const targetPath = isLegalPath ? '/' : url.pathname;
+      url.searchParams.delete('page');
+      const targetPath = isLegalLocation ? '/' : url.pathname;
       window.history.pushState(null, '', `${targetPath}${url.search}`);
     }
   }, []);
@@ -3103,6 +3139,8 @@ export function App() {
 
   const handleBackFromLegal = useCallback(() => {
     setLegalPage(null);
+    setActiveUtilityModal(null);
+    setActiveWorkspaceDocId(null);
     try {
       window.history.pushState({}, '', '/');
     } catch {
@@ -3111,35 +3149,29 @@ export function App() {
   }, []);
 
   const handleConnectGoogleDrive = useCallback(async () => {
-    if (!isSupabaseConfigured || !supabase) {
-      setActiveUtilityModal('auth');
-      return;
-    }
-
     try {
-      const result = await startGoogleOAuthFlow();
+      const result = await requestGoogleDriveAccess({
+        userId: currentUserRef.current?.id,
+        loginHint: currentUserRef.current?.email,
+      });
       if (result.error) {
         setUploadNotice(
           `Không thể kết nối Google Drive: ${result.error.message}`
         );
         return;
       }
-      if (result.promptSuppressed) {
-        setActiveUtilityModal('auth');
-        return;
-      }
-      if (result.directSignedIn && result.driveConnected) {
+      if (result.driveConnected) {
         setHasGoogleToken(true);
         setUploadNotice('Đã kết nối trực tiếp Google Drive cá nhân của bạn.');
         return;
       }
-      if (result.directSignedIn && result.noticeMessage) {
+      if (result.noticeMessage) {
         setUploadNotice(result.noticeMessage);
         return;
       }
       if (result.openedExternally) {
         setUploadNotice(
-          'Đã mở trình duyệt để kết nối Google Drive. Sau khi xác thực, hệ thống sẽ tự quay lại LITE.'
+          'Đã mở trình duyệt để cấp quyền Google Drive. Sau khi xác thực, hệ thống sẽ tự quay lại LITE.'
         );
       }
     } catch (error) {

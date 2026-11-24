@@ -75,8 +75,9 @@ export function getSupabaseConfigStatus(): {
   };
 }
 
+export const GOOGLE_AUTH_BASIC_SCOPES = 'openid email profile';
 export const GOOGLE_DRIVE_DEFAULT_SCOPES =
-  'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
+  'https://www.googleapis.com/auth/drive.file';
 
 export interface GoogleOAuthFlowResult {
   isNativeApp: boolean;
@@ -84,6 +85,7 @@ export interface GoogleOAuthFlowResult {
   directSignedIn?: boolean;
   promptSuppressed?: boolean;
   driveConnected?: boolean;
+  driveAccessToken?: string;
   noticeMessage?: string;
   error: Error | null;
 }
@@ -118,18 +120,26 @@ export function isNativeAppEnvironment(): {
 
 /**
  * Starts the unified Google OAuth flow across Web, Electron Desktop, and Capacitor Android.
- * Packaged native shells redirect back to `liteapp://auth/callback` via external/in-app browser.
+ * - `mode: 'login'`: Uses basic identity scopes only (`openid email profile`), never requesting Drive.
+ * - `mode: 'drive'` (default for incremental Drive actions): Requests `https://www.googleapis.com/auth/drive.file` only.
  */
 export async function startGoogleOAuthFlow(
-  scopes: string = GOOGLE_DRIVE_DEFAULT_SCOPES
+  options?:
+    | string
+    | {
+        mode?: 'login' | 'drive';
+        scopes?: string;
+        userId?: string | null;
+        loginHint?: string | null;
+      }
 ): Promise<GoogleOAuthFlowResult> {
-  if (!isSupabaseConfigured || !supabase) {
-    return {
-      isNativeApp: false,
-      openedExternally: false,
-      error: new Error('Ứng dụng đang ở Chế độ cục bộ, chưa cấu hình Supabase.'),
-    };
-  }
+  const mode = typeof options === 'object' ? (options.mode ?? 'drive') : 'drive';
+  const explicitScopes =
+    typeof options === 'string' ? options : options?.scopes;
+  const targetScopes =
+    mode === 'login'
+      ? explicitScopes?.trim() || GOOGLE_AUTH_BASIC_SCOPES
+      : explicitScopes?.trim() || GOOGLE_DRIVE_DEFAULT_SCOPES;
 
   const { isNativeApp, isDesktopApp, isMobileNative, desktopBridge } =
     isNativeAppEnvironment();
@@ -137,26 +147,50 @@ export async function startGoogleOAuthFlow(
   // On standard Web browsers, use Google Identity Services directly (hides *.supabase.co)
   if (!isNativeApp) {
     const {
-      requestGoogleDriveAccessTokenDirect,
+      requestGoogleDriveAccess: requestDriveDirect,
       signInWithGoogleDirect,
     } = await import('../services/googleDirectAuth');
 
-    const { data: sessionData } = await supabase.auth.getSession();
-    const activeSession = sessionData.session;
+    let sessionUserId =
+      typeof options === 'object' ? (options.userId ?? null) : null;
+    let sessionEmail =
+      typeof options === 'object' ? (options.loginHint ?? null) : null;
 
-    if (activeSession?.user?.id) {
+    if (isSupabaseConfigured && supabase) {
       try {
-        await requestGoogleDriveAccessTokenDirect({
-          userId: activeSession.user.id,
-          loginHint: activeSession.user.email ?? undefined,
-          scopes,
-          prompt: 'consent',
-        });
+        const { data: sessionData } = await supabase.auth.getSession();
+        sessionUserId = sessionUserId ?? sessionData.session?.user?.id ?? null;
+        sessionEmail = sessionEmail ?? sessionData.session?.user?.email ?? null;
+      } catch {
+        // Ignore session lookup errors
+      }
+    }
+
+    if (mode === 'login') {
+      if (!isSupabaseConfigured || !supabase) {
+        return {
+          isNativeApp: false,
+          openedExternally: false,
+          error: new Error('Ứng dụng đang ở Chế độ cục bộ, chưa cấu hình Supabase.'),
+        };
+      }
+
+      try {
+        const directResult = await signInWithGoogleDirect();
+        if (directResult.status === 'prompt_suppressed') {
+          return {
+            isNativeApp: false,
+            openedExternally: false,
+            promptSuppressed: true,
+            noticeMessage: directResult.suppressedReason,
+            error: null,
+          };
+        }
         return {
           isNativeApp: false,
           openedExternally: false,
           directSignedIn: true,
-          driveConnected: true,
+          driveConnected: directResult.driveConnected,
           error: null,
         };
       } catch (err) {
@@ -166,28 +200,25 @@ export async function startGoogleOAuthFlow(
           error:
             err instanceof Error
               ? err
-              : new Error('Không thể liên kết Google Drive trực tiếp.'),
+              : new Error('Không thể đăng nhập Google trực tiếp.'),
         };
       }
     }
 
+    // Incremental Authorization for Google Drive (strictly drive.file)
     try {
-      const directResult = await signInWithGoogleDirect(scopes);
-      if (directResult.status === 'prompt_suppressed') {
-        return {
-          isNativeApp: false,
-          openedExternally: false,
-          promptSuppressed: true,
-          noticeMessage: directResult.suppressedReason,
-          error: null,
-        };
-      }
+      const token = await requestDriveDirect({
+        userId: sessionUserId,
+        loginHint: sessionEmail,
+        scopes: targetScopes,
+        prompt: 'consent',
+      });
       return {
         isNativeApp: false,
         openedExternally: false,
         directSignedIn: true,
-        driveConnected: directResult.driveConnected,
-        noticeMessage: directResult.driveError,
+        driveConnected: true,
+        driveAccessToken: token,
         error: null,
       };
     } catch (err) {
@@ -197,9 +228,17 @@ export async function startGoogleOAuthFlow(
         error:
           err instanceof Error
             ? err
-            : new Error('Không thể đăng nhập Google trực tiếp.'),
+            : new Error('Không thể cấp quyền truy cập Google Drive.'),
       };
     }
+  }
+
+  if (!isSupabaseConfigured || !supabase) {
+    return {
+      isNativeApp: true,
+      openedExternally: false,
+      error: new Error('Ứng dụng đang ở Chế độ cục bộ, chưa cấu hình Supabase.'),
+    };
   }
 
   // Packaged Native Apps (Electron Desktop & Capacitor Android) use system browser + deep link callback
@@ -210,11 +249,11 @@ export async function startGoogleOAuthFlow(
     options: {
       redirectTo,
       skipBrowserRedirect: true,
-      scopes,
-      queryParams: {
-        access_type: 'offline',
-        prompt: 'consent',
-      },
+      scopes: targetScopes,
+      queryParams:
+        mode === 'login'
+          ? { prompt: 'select_account' }
+          : { access_type: 'offline', prompt: 'consent' },
     },
   });
 
@@ -242,6 +281,22 @@ export async function startGoogleOAuthFlow(
     openedExternally: false,
     error: null,
   };
+}
+
+/**
+ * Incremental Authorization helper: only requests `https://www.googleapis.com/auth/drive.file`
+ * when the user explicitly initiates a Google Drive connection or upload action.
+ */
+export async function requestGoogleDriveAccess(options?: {
+  userId?: string | null;
+  loginHint?: string | null;
+}): Promise<GoogleOAuthFlowResult> {
+  return startGoogleOAuthFlow({
+    mode: 'drive',
+    scopes: GOOGLE_DRIVE_DEFAULT_SCOPES,
+    userId: options?.userId,
+    loginHint: options?.loginHint,
+  });
 }
 
 /**

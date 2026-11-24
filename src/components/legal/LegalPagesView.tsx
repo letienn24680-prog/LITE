@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ArrowLeft,
   CheckCircle2,
   FileText,
   FolderLock,
   HardDrive,
+  Mail,
   Scale,
   ShieldCheck,
 } from 'lucide-react';
@@ -25,6 +26,23 @@ export function LegalPagesView({
   const [internalPage, setInternalPage] = useState<LegalPageKind>(page);
   const activePage = onNavigatePage ? page : internalPage;
 
+  useEffect(() => {
+    setInternalPage(page);
+  }, [page]);
+
+  const handleBackToWorkspace = () => {
+    if (typeof window !== 'undefined') {
+      try {
+        if (window.location.pathname !== '/' || window.location.search) {
+          window.history.pushState({}, '', '/');
+        }
+      } catch {
+        // Ignore history push errors under file:// protocol
+      }
+    }
+    onBackToApp();
+  };
+
   const handleSwitchPage = (target: LegalPageKind) => {
     if (onNavigatePage) {
       onNavigatePage(target);
@@ -32,8 +50,12 @@ export function LegalPagesView({
     }
     setInternalPage(target);
     if (typeof window !== 'undefined') {
-      window.history.pushState({}, '', `/${target}`);
-      window.dispatchEvent(new PopStateEvent('popstate'));
+      try {
+        window.history.pushState({}, '', `/${target}`);
+        window.dispatchEvent(new PopStateEvent('popstate'));
+      } catch {
+        // Ignore history push errors under file:// protocol
+      }
     }
   };
 
@@ -45,11 +67,11 @@ export function LegalPagesView({
           <div className="flex items-center gap-3 min-w-0">
             <button
               type="button"
-              onClick={onBackToApp}
+              onClick={handleBackToWorkspace}
               className="inline-flex items-center gap-1.5 min-h-[38px] px-3 rounded-xl border border-[#E6E0D6] bg-[#FAF8F5] hover:bg-[#F2EDE4] text-xs font-semibold text-slate-700 hover:text-slate-950 transition-colors"
             >
               <ArrowLeft className="h-4 w-4 shrink-0" />
-              <span>Quay lại LITE</span>
+              <span>Quay lại LITE Workspace</span>
             </button>
 
             <div className="flex items-center gap-2 min-w-0">
@@ -200,6 +222,30 @@ export function LegalPagesView({
                   </li>
                 </ul>
               </section>
+
+              <section className="space-y-3">
+                <h2 className="text-base font-semibold text-slate-900 flex items-center gap-2">
+                  <Mail className="h-4 w-4 text-indigo-600 shrink-0" />
+                  <span>4. Liên hệ &amp; Hỗ trợ quyền riêng tư</span>
+                </h2>
+                <div className="rounded-2xl border border-[#EAE6DF] bg-[#FAF8F5] p-4 sm:p-5 space-y-2 text-sm text-slate-700">
+                  <p>
+                    <strong>Ứng dụng:</strong> LITE Workspace
+                  </p>
+                  <p>
+                    <strong>Nhà phát triển:</strong> Lê Thuận Tiến
+                  </p>
+                  <p>
+                    <strong>Email liên hệ &amp; Yêu cầu xóa dữ liệu:</strong>{' '}
+                    <a
+                      href="mailto:letienn24680@gmail.com"
+                      className="font-semibold text-indigo-600 hover:text-indigo-700 underline underline-offset-2"
+                    >
+                      letienn24680@gmail.com
+                    </a>
+                  </p>
+                </div>
+              </section>
             </>
           ) : (
             <>
@@ -291,7 +337,7 @@ export function LegalPagesView({
 
             <button
               type="button"
-              onClick={onBackToApp}
+              onClick={handleBackToWorkspace}
               className="inline-flex items-center gap-1.5 min-h-[40px] px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-xs font-semibold text-white transition-colors"
             >
               <ArrowLeft className="h-3.5 w-3.5" />

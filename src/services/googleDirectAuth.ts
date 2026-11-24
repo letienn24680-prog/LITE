@@ -1,13 +1,15 @@
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import {
+  getStoredGoogleDriveToken,
   setActiveGoogleDriveUser,
   setStoredGoogleDriveToken,
 } from './googleDrive';
 
 const GIS_SCRIPT_SRC = 'https://accounts.google.com/gsi/client';
 
-export const GOOGLE_DRIVE_DIRECT_SCOPES =
-  'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
+export const GOOGLE_AUTH_BASIC_SCOPES = 'openid email profile';
+export const GOOGLE_DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+export const GOOGLE_DRIVE_DIRECT_SCOPES = GOOGLE_DRIVE_FILE_SCOPE;
 
 interface GoogleIdCredentialResponse {
   credential?: string;
@@ -225,10 +227,11 @@ async function createNoncePair(): Promise<{
 }
 
 /**
- * Requests a Google Drive OAuth2 access token directly from Google via GIS TokenClient
- * (no intermediate `supabase.co` redirect) and saves it scoped to `userId`.
+ * Incremental Authorization: Requests ONLY `https://www.googleapis.com/auth/drive.file`
+ * directly from Google via GIS TokenClient when the user explicitly clicks
+ * "Lưu lên Google Drive" or "Kết nối Google Drive".
  */
-export async function requestGoogleDriveAccessTokenDirect(options?: {
+export async function requestGoogleDriveAccess(options?: {
   userId?: string | null;
   loginHint?: string | null;
   scopes?: string;
@@ -242,7 +245,7 @@ export async function requestGoogleDriveAccessTokenDirect(options?: {
   }
 
   const accounts = await loadGoogleIdentityScript();
-  const targetScopes = options?.scopes?.trim() || GOOGLE_DRIVE_DIRECT_SCOPES;
+  const targetScopes = options?.scopes?.trim() || GOOGLE_DRIVE_FILE_SCOPE;
   const loginHint = options?.loginHint?.trim() || undefined;
 
   const requestOnce = (
@@ -307,10 +310,12 @@ export async function requestGoogleDriveAccessTokenDirect(options?: {
   return accessToken;
 }
 
-async function exchangeIdTokenAndLinkDrive(
+/** Backwards-compatible alias for `requestGoogleDriveAccess`. */
+export const requestGoogleDriveAccessTokenDirect = requestGoogleDriveAccess;
+
+async function exchangeIdTokenForSession(
   credential: string,
-  rawNonce?: string,
-  scopes: string = GOOGLE_DRIVE_DIRECT_SCOPES
+  rawNonce?: string
 ): Promise<GoogleDirectSignInResult> {
   if (!isSupabaseConfigured || !supabase) {
     throw new Error('Ứng dụng đang ở Chế độ cục bộ, chưa cấu hình Supabase.');
@@ -334,41 +339,19 @@ async function exchangeIdTokenAndLinkDrive(
 
   setActiveGoogleDriveUser(user.id);
 
-  let driveConnected = false;
-  let driveError: string | undefined;
-
-  try {
-    await requestGoogleDriveAccessTokenDirect({
-      userId: user.id,
-      loginHint: user.email ?? undefined,
-      scopes,
-      prompt: 'consent',
-    });
-    driveConnected = true;
-  } catch (err) {
-    driveConnected = false;
-    driveError =
-      err instanceof Error
-        ? err.message
-        : 'Chưa thể tự động liên kết Google Drive trong bước này.';
-  }
-
   return {
     status: 'success',
     userId: user.id,
     email: user.email ?? null,
-    driveConnected,
-    driveError,
+    driveConnected: Boolean(getStoredGoogleDriveToken(user.id)),
   };
 }
 
 /**
  * Direct Web sign-in using Google Identity Services (`google.accounts.id` + Supabase `signInWithIdToken`)
- * followed by requesting Drive OAuth2 scopes directly from Google for the authenticated `userId`.
+ * with basic identity scopes only (`openid email profile`). Does NOT prompt for Google Drive access.
  */
-export async function signInWithGoogleDirect(
-  scopes: string = GOOGLE_DRIVE_DIRECT_SCOPES
-): Promise<GoogleDirectSignInResult> {
+export async function signInWithGoogleDirect(): Promise<GoogleDirectSignInResult> {
   const clientId = getGoogleClientId();
   if (!isGoogleDirectAuthConfigured()) {
     throw new Error(
@@ -417,7 +400,7 @@ export async function signInWithGoogleDirect(
         }
         const credential = response.credential;
         finish(() => {
-          void exchangeIdTokenAndLinkDrive(credential, rawNonce, scopes)
+          void exchangeIdTokenForSession(credential, rawNonce)
             .then(resolve)
             .catch(reject);
         });
@@ -462,7 +445,6 @@ export async function renderGoogleDirectSignInButton(
     onStart?: () => void;
     onSuccess: (result: GoogleDirectSignInResult) => void;
     onError: (error: Error) => void;
-    scopes?: string;
   }
 ): Promise<void> {
   const clientId = getGoogleClientId();
@@ -490,11 +472,7 @@ export async function renderGoogleDirectSignInButton(
         return;
       }
       callbacks.onStart?.();
-      void exchangeIdTokenAndLinkDrive(
-        response.credential,
-        rawNonce,
-        callbacks.scopes ?? GOOGLE_DRIVE_DIRECT_SCOPES
-      )
+      void exchangeIdTokenForSession(response.credential, rawNonce)
         .then(callbacks.onSuccess)
         .catch((err) => {
           callbacks.onError(

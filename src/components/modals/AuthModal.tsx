@@ -108,15 +108,10 @@ export function AuthModal({
         setIsGoogleLoading(true);
         setErrorMessage(null);
       },
-      onSuccess: (directRes) => {
+      onSuccess: () => {
         if (cancelled) return;
         setIsGoogleLoading(false);
         setShowDirectButtonFallback(false);
-        if (!directRes.driveConnected && directRes.driveError) {
-          setSuccessMessage(
-            `Đăng nhập Google thành công (${directRes.email ?? "tài khoản của bạn"}). Bạn có thể kết nối lại Google Drive trong mục Vị trí nếu trình duyệt chặn popup.`
-          );
-        }
         if (onAuthSuccess) {
           onAuthSuccess();
         } else {
@@ -205,8 +200,8 @@ export function AuthModal({
         return;
       }
 
-      // Trên App đóng gói (Electron Desktop / Capacitor Android): mở trình duyệt hệ thống + liteapp://auth/callback
-      const result = await startGoogleOAuthFlow();
+      // Trên App đóng gói (Electron Desktop / Capacitor Android): mở trình duyệt hệ thống + liteapp://auth/callback (chỉ xin quyền cơ bản openid email profile)
+      const result = await startGoogleOAuthFlow({ mode: "login" });
 
       if (result.error) {
         setErrorMessage(mapAuthErrorToVietnamese(result.error.message));

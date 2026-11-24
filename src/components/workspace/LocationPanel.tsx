@@ -13,7 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import type { CloudUserSummary } from '../../types/document';
-import { startGoogleOAuthFlow } from '../../lib/supabase';
+import { requestGoogleDriveAccess } from '../../lib/supabase';
 
 export type LocationSourceKey =
   | 'all'
@@ -388,7 +388,7 @@ export function LocationPanel({
             if (onAddGoogleAccount) {
               onAddGoogleAccount();
             } else {
-              void startGoogleOAuthFlow();
+              void requestGoogleDriveAccess();
             }
             if (isMobile) {
               onCloseMobile();

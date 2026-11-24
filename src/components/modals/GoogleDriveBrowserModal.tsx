@@ -20,7 +20,7 @@ import {
   type GoogleDriveTargetExt,
 } from '../../services/googleDrive';
 import { formatRelativeVietnameseTime } from '../../services/cloudSync';
-import { startGoogleOAuthFlow } from '../../lib/supabase';
+import { requestGoogleDriveAccess } from '../../lib/supabase';
 
 export interface GoogleDriveBrowserModalProps {
   isOpen: boolean;
@@ -337,7 +337,7 @@ export function GoogleDriveBrowserModal({
                   if (onConnectGoogle) {
                     onConnectGoogle();
                   } else {
-                    void startGoogleOAuthFlow();
+                    void requestGoogleDriveAccess();
                   }
                 }}
                 className="min-h-[44px] px-5 rounded-xl bg-[#4F46E5] hover:bg-indigo-700 text-white text-xs sm:text-sm font-semibold shadow-sm shadow-indigo-600/20 inline-flex items-center justify-center gap-2 transition-colors"

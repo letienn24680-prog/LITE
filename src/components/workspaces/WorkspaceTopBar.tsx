@@ -28,7 +28,7 @@ import {
 import { CollaboratorPresenceBar } from './CollaboratorPresenceBar';
 import type { CollaboratorPresence } from '../../services/realtimeCollab';
 import type { DocumentItem, DocumentType } from '../../types/document';
-import { startGoogleOAuthFlow } from '../../lib/supabase';
+import { requestGoogleDriveAccess } from '../../lib/supabase';
 import { useWorkspaceSync } from '../../contexts/WorkspaceSyncContext';
 import {
   buildDocumentUploadPayload,
@@ -403,36 +403,33 @@ export function WorkspaceTopBar({
     setIsConnectingGoogle(true);
     setDriveMessage(null);
     try {
-      const result = await startGoogleOAuthFlow();
+      const result = await requestGoogleDriveAccess({
+        userId: document.userId,
+      });
       if (result.error) {
         setDriveStatus('error');
         setDriveMessage(
-          result.error.message || 'Không thể khởi tạo đăng nhập Google Drive.'
+          result.error.message || 'Không thể khởi tạo kết nối Google Drive.'
         );
-      } else if (result.directSignedIn && result.driveConnected) {
+      } else if (result.driveConnected) {
         setDriveStatus('idle');
         setDriveMessage(
-          'Đã kết nối Google Drive trực tiếp! Đang sẵn sàng lưu tệp.'
+          'Đã kết nối Google Drive thành công! Đang sẵn sàng lưu tệp.'
         );
         await handleSaveToGoogleDrive();
-      } else if (result.directSignedIn && result.noticeMessage) {
+      } else if (result.noticeMessage) {
         setDriveStatus('error');
         setDriveMessage(result.noticeMessage);
-      } else if (result.promptSuppressed) {
-        setDriveStatus('auth_required');
-        setDriveMessage(
-          'Hộp thoại đăng nhập nhanh của Google bị trình duyệt ẩn. Vui lòng mở cửa sổ Tài khoản để đăng nhập trực tiếp.'
-        );
       } else if (result.openedExternally) {
         setDriveMessage(
-          'Đã mở trình duyệt để kết nối Google Drive. Sau khi xác thực, hệ thống sẽ tự quay lại LITE.'
+          'Đã mở trình duyệt để cấp quyền Google Drive. Sau khi xác thực, hệ thống sẽ tự quay lại LITE.'
         );
       }
     } catch (err: unknown) {
       setDriveStatus('error');
       setDriveMessage(
         err instanceof Error
-          ? (err instanceof Error ? err.message : String(err))
+          ? err.message
           : 'Đã xảy ra lỗi khi kết nối Google Drive.'
       );
     } finally {
@@ -441,7 +438,38 @@ export function WorkspaceTopBar({
   };
 
   const handleSaveToGoogleDrive = async () => {
-    const token = getStoredGoogleDriveToken(document.userId);
+    let token = getStoredGoogleDriveToken(document.userId);
+    if (!token) {
+      setIsConnectingGoogle(true);
+      setDriveMessage(null);
+      try {
+        const grantResult = await requestGoogleDriveAccess({
+          userId: document.userId,
+        });
+        if (grantResult.openedExternally) {
+          setDriveStatus('auth_required');
+          setDriveMessage(
+            'Đã mở trình duyệt để cấp quyền Google Drive. Sau khi xác nhận, bấm Lưu lên Google Drive lại.'
+          );
+          return;
+        }
+        if (grantResult.error || !grantResult.driveConnected) {
+          setDriveStatus('auth_required');
+          setDriveMessage(
+            grantResult.error?.message ||
+              'Bạn chưa cấp quyền Google Drive. Bấm Kết nối Google Drive để tải tệp lên Drive.'
+          );
+          setDriveViewLink(null);
+          return;
+        }
+        token =
+          grantResult.driveAccessToken ??
+          getStoredGoogleDriveToken(document.userId);
+      } finally {
+        setIsConnectingGoogle(false);
+      }
+    }
+
     if (!token) {
       setDriveStatus('auth_required');
       setDriveMessage(
