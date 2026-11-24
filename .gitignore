@@ -9,3 +9,4 @@ release/
 android/.gradle/
 android/app/build/
 android/local.properties
+!android/app/lite-signing.keystore

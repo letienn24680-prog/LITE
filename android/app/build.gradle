@@ -16,8 +16,20 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        liteRelease {
+            storeFile file('lite-signing.keystore')
+            storePassword 'LiteWorkspace2026'
+            keyAlias 'litekey'
+            keyPassword 'LiteWorkspace2026'
+        }
+    }
     buildTypes {
+        debug {
+            signingConfig signingConfigs.liteRelease
+        }
         release {
+            signingConfig signingConfigs.liteRelease
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
