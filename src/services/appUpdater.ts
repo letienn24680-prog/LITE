@@ -4,7 +4,7 @@ import { Capacitor } from '@capacitor/core';
 import {
   APP_BUILD_NUMBER,
   APP_VERSION,
-  PUBLIC_VERSION_MANIFEST_URL,
+  VERSION_MANIFEST_URLS,
 } from '../config/appVersion';
 
 export interface AppVersionManifest {
@@ -25,9 +25,13 @@ export const CURRENT_APP_VERSION = APP_VERSION;
 export const CURRENT_BUILD_NUMBER = APP_BUILD_NUMBER;
 
 const ENV_UPDATE_URL = (import.meta.env.VITE_APP_UPDATE_URL ?? '').trim();
-const REMOTE_VERSION_MANIFEST_URL = ENV_UPDATE_URL.startsWith('https://')
-  ? ENV_UPDATE_URL
-  : PUBLIC_VERSION_MANIFEST_URL;
+const REMOTE_VERSION_MANIFEST_URLS: readonly string[] =
+  ENV_UPDATE_URL.startsWith('https://') &&
+  !VERSION_MANIFEST_URLS.includes(
+    ENV_UPDATE_URL as (typeof VERSION_MANIFEST_URLS)[number]
+  )
+    ? [...VERSION_MANIFEST_URLS, ENV_UPDATE_URL]
+    : VERSION_MANIFEST_URLS;
 
 function parseBuildNumber(raw: unknown): number {
   if (typeof raw === 'number' && Number.isFinite(raw)) {
@@ -136,7 +140,13 @@ export async function checkForAndroidAppUpdate(options?: {
     };
   }
 
-  const manifest = await fetchManifestFromUrl(REMOTE_VERSION_MANIFEST_URL, 8000);
+  let manifest: AppVersionManifest | null = null;
+  for (const manifestUrl of REMOTE_VERSION_MANIFEST_URLS) {
+    manifest = await fetchManifestFromUrl(manifestUrl, 8000);
+    if (manifest) {
+      break;
+    }
+  }
   if (!manifest) {
     return {
       hasUpdate: false,
@@ -153,6 +163,8 @@ export async function checkForAndroidAppUpdate(options?: {
     latest: manifest,
   };
 }
+
+export const checkForAppUpdate = checkForAndroidAppUpdate;
 
 export async function launchApkUpdateDownload(downloadUrl: string): Promise<void> {
   const cleanUrl = downloadUrl.trim();
