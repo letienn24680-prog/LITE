@@ -29,6 +29,11 @@ jobs:
         run: npm ci
 
       - name: Build web bundle
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
+          VITE_PUBLIC_APP_URL: 'https://lite-git-main-ai-check-thd.vercel.app'
         run: npm run build
 
       - name: Package Windows installers (NSIS & Portable)
@@ -70,6 +75,11 @@ jobs:
         run: npm ci
 
       - name: Build web bundle
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
+          VITE_PUBLIC_APP_URL: 'https://lite-git-main-ai-check-thd.vercel.app'
         run: npm run build
 
       - name: Package Linux installers (.deb & .AppImage)
