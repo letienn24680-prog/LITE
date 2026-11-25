@@ -29,6 +29,7 @@ import {
   X,
 } from 'lucide-react';
 import { APP_BUILD_NUMBER, APP_VERSION } from '../../config/appVersion';
+import { hasSystemAiConfigured } from '../../services/aiAssistant';
 import type {
   CloudUserSummary,
   SyncStatus,
@@ -532,14 +533,16 @@ export function SettingsModal({
                   </h3>
                   <span
                     className={`rounded-full px-2 py-0.5 text-[10.5px] font-semibold ${
-                      settings.geminiApiKey?.trim()
+                      settings.geminiApiKey?.trim() || hasSystemAiConfigured()
                         ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                         : 'bg-slate-100 text-slate-600'
                     }`}
                   >
                     {settings.geminiApiKey?.trim()
-                      ? 'Đã gắn khóa Gemini'
-                      : 'Chế độ cục bộ (Offline)'}
+                      ? 'Đã gắn khóa cá nhân'
+                      : hasSystemAiConfigured()
+                        ? 'Đã kích hoạt AI hệ thống'
+                        : 'Chế độ cục bộ (Offline)'}
                   </span>
                 </div>
 
@@ -562,7 +565,11 @@ export function SettingsModal({
                             geminiApiKey: event.target.value,
                           })
                         }
-                        placeholder="AIzaSy... (để trống nếu dùng bộ xử lý cục bộ)"
+                        placeholder={
+                          hasSystemAiConfigured()
+                            ? 'AIzaSy... (không bắt buộc — hệ thống đã có AI mặc định)'
+                            : 'AIzaSy... (để trống nếu dùng bộ xử lý cục bộ)'
+                        }
                         autoComplete="off"
                         spellCheck={false}
                         className="w-full rounded-xl border border-[#DDD6CA] bg-white py-2 pl-8 pr-9 text-xs text-slate-900 placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
@@ -591,8 +598,17 @@ export function SettingsModal({
                     )}
                   </div>
                   <p className="text-[11px] leading-relaxed text-slate-500">
-                    Khóa chỉ lưu trên trình duyệt/thiết bị này và được dùng trực tiếp khi chạy{' '}
-                    <strong>AI Tools</strong> trong Word, Excel và PowerPoint. Khi ngoại tuyến hoặc không nhập khóa, LITE tự động chuyển sang bộ xử lý thông minh cục bộ.
+                    {hasSystemAiConfigured() ? (
+                      <>
+                        Hệ thống đã kích hoạt Gemini AI mặc định — bạn có thể dùng ngay{' '}
+                        <strong>AI Tools</strong> trong Word, Excel và PowerPoint mà không cần nhập thêm khóa. Chỉ nhập vào ô trên nếu bạn muốn dùng khóa Gemini cá nhân riêng (chỉ lưu trên thiết bị này).
+                      </>
+                    ) : (
+                      <>
+                        Khóa chỉ lưu trên trình duyệt/thiết bị này và được dùng trực tiếp khi chạy{' '}
+                        <strong>AI Tools</strong> trong Word, Excel và PowerPoint. Khi ngoại tuyến hoặc không nhập khóa, LITE tự động chuyển sang bộ xử lý thông minh cục bộ.
+                      </>
+                    )}
                   </p>
                 </div>
               </section>

@@ -34,10 +34,7 @@ export interface SlideDeckAiResult {
 const SETTINGS_STORAGE_KEY = 'lite_user_settings_v1';
 const AI_PROXY_URL = (import.meta.env.VITE_AI_API_URL ?? '').trim();
 
-export function getConfiguredGeminiApiKey(overrideKey?: string): string {
-  if (overrideKey && overrideKey.trim().length > 0) {
-    return overrideKey.trim();
-  }
+export function getPersonalGeminiApiKey(): string {
   if (typeof window !== 'undefined') {
     try {
       const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
@@ -53,6 +50,21 @@ export function getConfiguredGeminiApiKey(overrideKey?: string): string {
     } catch {
       // Ignore localStorage parse failures
     }
+  }
+  return '';
+}
+
+export function hasSystemAiConfigured(): boolean {
+  return Boolean((import.meta.env.VITE_GEMINI_API_KEY ?? '').trim() || AI_PROXY_URL);
+}
+
+export function getConfiguredGeminiApiKey(overrideKey?: string): string {
+  if (overrideKey && overrideKey.trim().length > 0) {
+    return overrideKey.trim();
+  }
+  const personalKey = getPersonalGeminiApiKey();
+  if (personalKey) {
+    return personalKey;
   }
   return (import.meta.env.VITE_GEMINI_API_KEY ?? '').trim();
 }

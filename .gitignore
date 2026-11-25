@@ -10,3 +10,6 @@ android/.gradle/
 android/app/build/
 android/local.properties
 !android/app/lite-signing.keystore
+
+dist
+dist-ssr

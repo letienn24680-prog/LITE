@@ -19,7 +19,8 @@ import {
 import {
   generateExcelFormulaWithAi,
   generateSlideDeckWithAi,
-  getConfiguredGeminiApiKey,
+  getPersonalGeminiApiKey,
+  hasSystemAiConfigured,
   isAiEndpointAvailable,
   runWordAiAssistant,
   saveConfiguredGeminiApiKey,
@@ -122,7 +123,7 @@ export function AIToolsDrawer({
   const accent = ACCENT_BY_MODE[mode];
 
   const [apiKeyInput, setApiKeyInput] = useState<string>(() =>
-    getConfiguredGeminiApiKey()
+    getPersonalGeminiApiKey()
   );
   const [showKeyBox, setShowKeyBox] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -163,7 +164,7 @@ export function AIToolsDrawer({
 
   useEffect(() => {
     if (!isOpen) return;
-    setApiKeyInput(getConfiguredGeminiApiKey());
+    setApiKeyInput(getPersonalGeminiApiKey());
     if (
       mode === 'word' &&
       (initialAction === 'summary' ||
@@ -230,6 +231,7 @@ export function AIToolsDrawer({
   }
 
   const activeGeminiReady = isAiEndpointAvailable(apiKeyInput);
+  const systemAiReady = hasSystemAiConfigured();
 
   const handleSaveApiKey = () => {
     saveConfiguredGeminiApiKey(apiKeyInput);
@@ -237,7 +239,9 @@ export function AIToolsDrawer({
     setStatusNotice(
       apiKeyInput.trim()
         ? 'Đã lưu khóa Gemini API cho AI Tools.'
-        : 'Đã chuyển AI Tools sang chế độ cục bộ (Offline).'
+        : systemAiReady
+          ? 'Đang sử dụng khóa Gemini AI mặc định của hệ thống.'
+          : 'Đã chuyển AI Tools sang chế độ cục bộ (Offline).'
     );
   };
 
@@ -409,7 +413,9 @@ export function AIToolsDrawer({
             }`}
           >
             <label className="block text-[11px] font-semibold">
-              Khóa Gemini API cá nhân (bỏ trống để chạy bộ xử lý cục bộ)
+              {systemAiReady
+                ? 'Khóa Gemini API cá nhân (tùy chọn — bỏ trống để dùng AI mặc định của hệ thống)'
+                : 'Khóa Gemini API cá nhân (bỏ trống để chạy bộ xử lý cục bộ)'}
             </label>
             <div className="flex items-center gap-2">
               <input
