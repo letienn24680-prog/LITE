@@ -15,6 +15,7 @@ import {
   Moon,
   RefreshCw,
   Settings,
+  Smartphone,
   Sparkles,
   Sun,
   CheckCheck,
@@ -27,6 +28,7 @@ import {
   WifiOff,
   X,
 } from 'lucide-react';
+import { APP_BUILD_NUMBER, APP_VERSION } from '../../config/appVersion';
 import type {
   CloudUserSummary,
   SyncStatus,
@@ -54,6 +56,7 @@ export interface SettingsModalProps {
   onManualSync: () => Promise<void> | void;
   onOpenAuth: () => void;
   onRequestLogout: () => void;
+  onCheckAppUpdate?: () => Promise<void> | void;
 }
 
 interface WordThemeOption {
@@ -152,6 +155,7 @@ export function SettingsModal({
   onManualSync,
   onOpenAuth,
   onRequestLogout,
+  onCheckAppUpdate,
 }: SettingsModalProps) {
 
   const [allowedList, setAllowedList] = useState<AllowedEmailRecord[]>([]);
@@ -217,6 +221,8 @@ export function SettingsModal({
 
   const [isManualSyncRunning, setIsManualSyncRunning] =
     useState<boolean>(false);
+  const [isCheckingAppUpdate, setIsCheckingAppUpdate] =
+    useState<boolean>(false);
 
   useEffect(() => {
     if (!isOpen) {
@@ -253,6 +259,18 @@ export function SettingsModal({
       await Promise.resolve(onManualSync());
     } finally {
       setIsManualSyncRunning(false);
+    }
+  };
+
+  const handleCheckAppUpdateClick = async () => {
+    if (!onCheckAppUpdate || isCheckingAppUpdate) {
+      return;
+    }
+    setIsCheckingAppUpdate(true);
+    try {
+      await Promise.resolve(onCheckAppUpdate());
+    } finally {
+      setIsCheckingAppUpdate(false);
     }
   };
 
@@ -816,6 +834,54 @@ export function SettingsModal({
                   )}
                 </section>
               )}
+
+              {/* App Version & Manual Update Check */}
+              <section
+                aria-labelledby="settings-app-version-heading"
+                className="space-y-2.5 pt-2 border-t border-[#EAE5DC]"
+              >
+                <h3
+                  id="settings-app-version-heading"
+                  className="text-xs font-semibold uppercase tracking-wider text-slate-500"
+                >
+                  Phiên bản ứng dụng
+                </h3>
+
+                <div className="rounded-2xl border border-[#EAE5DC] bg-[#FAF8F5] p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="h-9 w-9 shrink-0 rounded-xl bg-white border border-[#EAE5DC] flex items-center justify-center text-[#4F46E5]">
+                      <Smartphone className="h-4 w-4" />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-slate-900">
+                        {`Phiên bản hiện tại: v${APP_VERSION} (Build #${APP_BUILD_NUMBER})`}
+                      </p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        LITE Workspace · Kiểm tra bản phát hành mới nhất
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={isCheckingAppUpdate || !onCheckAppUpdate}
+                    onClick={() => void handleCheckAppUpdateClick()}
+                    className="w-full sm:w-auto shrink-0 inline-flex items-center justify-center gap-1.5 min-h-[40px] sm:min-h-[36px] px-3.5 rounded-xl bg-[#4F46E5] hover:bg-indigo-700 text-white text-xs font-semibold shadow-sm transition-colors disabled:opacity-55 disabled:cursor-not-allowed"
+                  >
+                    {isCheckingAppUpdate ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                        <span>Đang kiểm tra...</span>
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="h-3.5 w-3.5 shrink-0" />
+                        <span>Kiểm tra cập nhật</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </section>
 
             </div>
           </div>

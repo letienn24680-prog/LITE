@@ -98,7 +98,7 @@ const ApkUpdateModal = lazy(() =>
     default: m.ApkUpdateModal,
   }))
 );
-import { WifiOff } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, WifiOff } from 'lucide-react';
 import {
   checkForAndroidAppUpdate,
   type AppUpdateCheckResult,
@@ -1096,6 +1096,11 @@ export function App() {
     useState<AppUpdateCheckResult | null>(null);
   const [isApkUpdateModalOpen, setIsApkUpdateModalOpen] =
     useState<boolean>(false);
+  const [appUpdateToast, setAppUpdateToast] = useState<{
+    kind: 'latest' | 'error';
+    message: string;
+  } | null>(null);
+  const appUpdateToastTimerRef = useRef<number | null>(null);
 
   const createdObjectUrlsRef = useRef<string[]>([]);
   const deviceFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -2826,6 +2831,53 @@ export function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (appUpdateToastTimerRef.current !== null) {
+        window.clearTimeout(appUpdateToastTimerRef.current);
+        appUpdateToastTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const showAppUpdateToast = useCallback(
+    (kind: 'latest' | 'error', message: string) => {
+      setAppUpdateToast({ kind, message });
+      if (appUpdateToastTimerRef.current !== null) {
+        window.clearTimeout(appUpdateToastTimerRef.current);
+      }
+      appUpdateToastTimerRef.current = window.setTimeout(() => {
+        setAppUpdateToast(null);
+        appUpdateToastTimerRef.current = null;
+      }, 3500);
+    },
+    []
+  );
+
+  const handleManualCheckAppUpdate = useCallback(async () => {
+    try {
+      const res = await checkForAndroidAppUpdate({ force: true });
+      if (res.hasUpdate && res.latest) {
+        setApkUpdateResult(res);
+        setIsApkUpdateModalOpen(true);
+        return;
+      }
+      if (res.latest !== null) {
+        showAppUpdateToast('latest', 'Bạn đang sử dụng phiên bản mới nhất');
+        return;
+      }
+      showAppUpdateToast(
+        'error',
+        'Không thể kiểm tra cập nhật lúc này. Vui lòng thử lại.'
+      );
+    } catch {
+      showAppUpdateToast(
+        'error',
+        'Không thể kiểm tra cập nhật lúc này. Vui lòng thử lại.'
+      );
+    }
+  }, [showAppUpdateToast]);
 
   const handleSaveDocument = useCallback(
     (updatedDoc: DocumentItem, options?: { isManualSave?: boolean }) => {
@@ -5205,6 +5257,7 @@ export function App() {
             onManualSync={handleManualSync}
             onOpenAuth={handleOpenAuthModal}
             onRequestLogout={handleRequestLogout}
+            onCheckAppUpdate={handleManualCheckAppUpdate}
           />
         )}
 
@@ -5313,6 +5366,25 @@ export function App() {
           event.target.value = '';
         }}
       />
+
+      {appUpdateToast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`fixed bottom-20 left-1/2 z-[120] -translate-x-1/2 max-w-[92vw] inline-flex items-center gap-2 rounded-full px-4 py-2 text-xs font-semibold text-white shadow-lg ring-1 backdrop-blur-sm md:bottom-8 ${
+            appUpdateToast.kind === 'latest'
+              ? 'bg-emerald-600/95 ring-emerald-400/50'
+              : 'bg-amber-600/95 ring-amber-400/50'
+          }`}
+        >
+          {appUpdateToast.kind === 'latest' ? (
+            <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          ) : (
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          )}
+          <span>{appUpdateToast.message}</span>
+        </div>
+      )}
 
       {exitBackToastVisible && (
         <div

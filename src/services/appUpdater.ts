@@ -1,6 +1,11 @@
 import { App as CapacitorApp } from '@capacitor/app';
 import { Browser } from '@capacitor/browser';
 import { Capacitor } from '@capacitor/core';
+import {
+  APP_BUILD_NUMBER,
+  APP_VERSION,
+  PUBLIC_VERSION_MANIFEST_URL,
+} from '../config/appVersion';
 
 export interface AppVersionManifest {
   version: string;
@@ -16,11 +21,13 @@ export interface AppUpdateCheckResult {
   latest: AppVersionManifest | null;
 }
 
-export const CURRENT_BUILD_NUMBER = 2;
-export const CURRENT_APP_VERSION = '1.0.1';
-const REMOTE_VERSION_MANIFEST_URL =
-  (import.meta.env.VITE_APP_UPDATE_URL ?? '').trim() ||
-  'https://raw.githubusercontent.com/letienn24680-prog/LITE/main/public/version.json';
+export const CURRENT_APP_VERSION = APP_VERSION;
+export const CURRENT_BUILD_NUMBER = APP_BUILD_NUMBER;
+
+const ENV_UPDATE_URL = (import.meta.env.VITE_APP_UPDATE_URL ?? '').trim();
+const REMOTE_VERSION_MANIFEST_URL = ENV_UPDATE_URL.startsWith('https://')
+  ? ENV_UPDATE_URL
+  : PUBLIC_VERSION_MANIFEST_URL;
 
 function parseBuildNumber(raw: unknown): number {
   if (typeof raw === 'number' && Number.isFinite(raw)) {
@@ -32,7 +39,7 @@ function parseBuildNumber(raw: unknown): number {
       return num;
     }
   }
-  return CURRENT_BUILD_NUMBER;
+  return APP_BUILD_NUMBER;
 }
 
 function isValidManifest(value: unknown): value is AppVersionManifest {
@@ -40,11 +47,12 @@ function isValidManifest(value: unknown): value is AppVersionManifest {
     return false;
   }
   const obj = value as Record<string, unknown>;
+  const normalizedBuild = Number(obj.buildNumber);
   return (
     typeof obj.version === 'string' &&
     obj.version.trim().length > 0 &&
-    typeof obj.buildNumber === 'number' &&
-    Number.isFinite(obj.buildNumber) &&
+    Number.isFinite(normalizedBuild) &&
+    normalizedBuild > 0 &&
     typeof obj.downloadUrl === 'string' &&
     obj.downloadUrl.trim().length > 0 &&
     typeof obj.changelog === 'string'
@@ -53,7 +61,7 @@ function isValidManifest(value: unknown): value is AppVersionManifest {
 
 async function fetchManifestFromUrl(
   url: string,
-  timeoutMs = 5000
+  timeoutMs = 8000
 ): Promise<AppVersionManifest | null> {
   const controller =
     typeof AbortController !== 'undefined' ? new AbortController() : null;
@@ -72,7 +80,15 @@ async function fetchManifestFromUrl(
       return null;
     }
     const json: unknown = await res.json();
-    return isValidManifest(json) ? json : null;
+    if (!isValidManifest(json)) {
+      return null;
+    }
+    return {
+      version: json.version.trim(),
+      buildNumber: Number(json.buildNumber),
+      downloadUrl: json.downloadUrl.trim(),
+      changelog: json.changelog,
+    };
   } catch {
     return null;
   } finally {
@@ -88,20 +104,20 @@ export async function getCurrentNativeAppInfo(): Promise<{
 }> {
   if (!Capacitor.isNativePlatform()) {
     return {
-      version: CURRENT_APP_VERSION,
-      buildNumber: CURRENT_BUILD_NUMBER,
+      version: APP_VERSION,
+      buildNumber: APP_BUILD_NUMBER,
     };
   }
   try {
     const info = await CapacitorApp.getInfo();
     return {
-      version: info.version?.trim() || CURRENT_APP_VERSION,
+      version: info.version?.trim() || APP_VERSION,
       buildNumber: parseBuildNumber(info.build),
     };
   } catch {
     return {
-      version: CURRENT_APP_VERSION,
-      buildNumber: CURRENT_BUILD_NUMBER,
+      version: APP_VERSION,
+      buildNumber: APP_BUILD_NUMBER,
     };
   }
 }
@@ -110,36 +126,30 @@ export async function checkForAndroidAppUpdate(options?: {
   force?: boolean;
 }): Promise<AppUpdateCheckResult> {
   const isNative = Capacitor.isNativePlatform();
-  const { version: currentVersion, buildNumber: currentBuildNumber } =
-    await getCurrentNativeAppInfo();
 
   if (!isNative && !options?.force) {
     return {
       hasUpdate: false,
-      currentVersion,
-      currentBuildNumber,
+      currentVersion: APP_VERSION,
+      currentBuildNumber: APP_BUILD_NUMBER,
       latest: null,
     };
   }
 
-  let manifest = await fetchManifestFromUrl(REMOTE_VERSION_MANIFEST_URL, 4500);
-  if (!manifest) {
-    manifest = await fetchManifestFromUrl('./version.json', 3000);
-  }
-
+  const manifest = await fetchManifestFromUrl(REMOTE_VERSION_MANIFEST_URL, 8000);
   if (!manifest) {
     return {
       hasUpdate: false,
-      currentVersion,
-      currentBuildNumber,
+      currentVersion: APP_VERSION,
+      currentBuildNumber: APP_BUILD_NUMBER,
       latest: null,
     };
   }
 
   return {
-    hasUpdate: manifest.buildNumber > currentBuildNumber,
-    currentVersion,
-    currentBuildNumber,
+    hasUpdate: Number(manifest.buildNumber) > APP_BUILD_NUMBER,
+    currentVersion: APP_VERSION,
+    currentBuildNumber: APP_BUILD_NUMBER,
     latest: manifest,
   };
 }
